@@ -1,0 +1,26 @@
+name: トレ通知の送信
+
+on:
+  schedule:
+    - cron: '0 * * * *'   # 毎時0分(UTC)。各端末のタイムゾーンで設定時刻を判定して送信
+  workflow_dispatch:        # 手動テスト用
+
+# 同時実行を防ぐ(重複送信の保険)
+concurrency:
+  group: reminders
+  cancel-in-progress: false
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: install firebase-admin
+        run: npm install firebase-admin@13
+      - name: send reminders
+        run: node scripts/send-reminders.mjs
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}

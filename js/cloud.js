@@ -7,6 +7,9 @@ import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/fir
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
+import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-messaging.js";
+
+const VAPID_KEY = "BO4Smn0zkWu-S04O0uB82JVf9dDYkM5RonKKnnD6DD1Ez8-wouj_gJi_TGbMnhHZNcx1IXYphpXEk1trrkmgC8U";
 
 const firebaseConfig = {
   apiKey: "AIzaSyB6cNjUGULa4Nkikb8z66eCWwYCTZTQ_T4",
@@ -28,6 +31,13 @@ try {
   console.warn('[cloud] Firebase init failed — 同期は無効、ローカルのみで動作します', e);
 }
 
+// この端末を識別するID (通知トークンを端末ごとに1件で管理する)
+function deviceId() {
+  let id = localStorage.getItem('kintoreLab.deviceId');
+  if (!id) { id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('kintoreLab.deviceId', id); }
+  return id;
+}
+
 // このタブ固有のトークン (自分の書き込みエコーを無視するため)
 const originToken = 'kl_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
 let currentUser = null;
@@ -37,7 +47,9 @@ let lastUpdatedAt = 0;     // 直近に採用した _updatedAt
 let syncing = false;
 let lastSyncLabel = '';
 
-function uidRef(uid) { return ref(db, 'kintoreLab/' + uid); }
+// 同期する状態は /state に置く (通知トークン /pushTokens を state の set() で消さないため)
+function uidRef(uid) { return ref(db, 'kintoreLab/' + uid + '/state'); }
+function tokenRef(uid) { return ref(db, 'kintoreLab/' + uid + '/pushTokens/' + deviceId()); }
 
 function nowLabel() {
   const d = new Date();
@@ -95,10 +107,16 @@ async function onLogin(user) {
   if (!db) return;
   try {
     syncing = true; refreshUI();
-    const snap = await get(uidRef(user.uid));
-    if (snap.exists()) {
-      const payload = snap.val();
-      const rt = Number(payload && payload._updatedAt) || 0;
+    let snap = await get(uidRef(user.uid));
+    let payload = snap.exists() ? snap.val() : null;
+    // 旧パス(/kintoreLab/{uid} 直下に state を置いていた版)からの移行
+    if (!payload) {
+      const legacy = await get(ref(db, 'kintoreLab/' + user.uid));
+      const lv = legacy.exists() ? legacy.val() : null;
+      if (lv && Array.isArray(lv.logs)) payload = lv; // 旧形式(直下に logs を持つ)なら採用
+    }
+    if (payload) {
+      const rt = Number(payload._updatedAt) || 0;
       const res = window.__klApplyRemote(({ ...payload, _updatedAt: rt }));
       lastUpdatedAt = rt;
       // ローカルにクラウドへ未反映の分があれば書き戻す
@@ -114,6 +132,7 @@ async function onLogin(user) {
   } finally {
     syncing = false;
     startListening(user.uid);
+    if (reminder.enabled) syncTokenRecord().catch(() => {}); // 通知ONならトークンを最新化
     refreshUI();
   }
 }
@@ -126,6 +145,89 @@ function onLogout() {
 }
 
 function refreshUI() { if (window.__klOnAuth) window.__klOnAuth(); }
+
+// ===== プッシュ通知 (FCM) =====
+// ローカルに保持するリマインダー設定 (端末ごと)
+let reminder = loadReminderPref();
+let messaging = null;
+let swReg = null;
+let fcmToken = null;
+
+function loadReminderPref() {
+  try { return { enabled: false, hour: 19, ...(JSON.parse(localStorage.getItem('kintoreLab.reminder') || '{}')) }; }
+  catch (e) { return { enabled: false, hour: 19 }; }
+}
+function saveReminderPref() { try { localStorage.setItem('kintoreLab.reminder', JSON.stringify(reminder)); } catch (e) {} }
+
+async function ensureMessaging() {
+  if (messaging) return messaging;
+  if (!app) return null;
+  try { if (!(await isSupported())) return null; } catch (e) { return null; }
+  try { messaging = getMessaging(app); } catch (e) { return null; }
+  // 前面表示中に届いたら軽く知らせる
+  try {
+    onMessage(messaging, payload => {
+      const d = (payload && (payload.notification || payload.data)) || {};
+      if (window.toast) window.toast('🔔 ' + (d.title || '筋トレLAB') + ': ' + (d.body || 'トレの時間です'));
+    });
+  } catch (e) {}
+  return messaging;
+}
+
+async function getFcmToken() {
+  const m = await ensureMessaging();
+  if (!m) throw new Error('この端末は通知に対応していません');
+  if (!swReg) swReg = await navigator.serviceWorker.register('firebase-messaging-sw.js');
+  await navigator.serviceWorker.ready;
+  fcmToken = await getToken(m, { vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
+  return fcmToken;
+}
+
+// トークン記録を /kintoreLab/{uid}/pushTokens/{deviceId} に保存
+async function syncTokenRecord() {
+  if (!currentUser || !db) return;
+  if (!fcmToken) { try { await getFcmToken(); } catch (e) { return; } }
+  const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || 'Asia/Tokyo';
+  await set(tokenRef(currentUser.uid), {
+    token: fcmToken, hour: reminder.hour, tz,
+    enabled: !!reminder.enabled, updatedAt: Date.now(),
+  });
+}
+
+async function enableReminders(hour) {
+  if (!currentUser) { alert('通知を使うにはまずGoogleでログインしてください。'); return { ok: false, reason: 'login' }; }
+  if (!('Notification' in window)) { alert('この端末は通知に対応していません。'); return { ok: false, reason: 'unsupported' }; }
+  let perm = Notification.permission;
+  if (perm !== 'granted') perm = await Notification.requestPermission();
+  if (perm !== 'granted') { return { ok: false, reason: 'denied' }; }
+  reminder.enabled = true;
+  if (typeof hour === 'number') reminder.hour = hour;
+  saveReminderPref();
+  try {
+    await getFcmToken();
+    await syncTokenRecord();
+  } catch (e) {
+    console.warn('[cloud] enableReminders failed', e);
+    reminder.enabled = false; saveReminderPref();
+    return { ok: false, reason: 'token', message: e.message };
+  }
+  refreshUI();
+  return { ok: true };
+}
+
+async function disableReminders() {
+  reminder.enabled = false;
+  saveReminderPref();
+  try { if (currentUser && db) await set(tokenRef(currentUser.uid), { token: fcmToken || '', hour: reminder.hour, enabled: false, updatedAt: Date.now() }); } catch (e) {}
+  refreshUI();
+  return { ok: true };
+}
+
+async function setReminderHour(hour) {
+  reminder.hour = hour; saveReminderPref();
+  if (reminder.enabled) { try { await syncTokenRecord(); } catch (e) {} }
+  refreshUI();
+}
 
 // ===== 公開API (app.js から利用) =====
 window.__klCloud = {
@@ -150,6 +252,11 @@ window.__klCloud = {
     });
   },
   signOut() { if (auth) signOut(auth); },
+  // 通知リマインダー
+  reminderStatus() {
+    return { enabled: !!reminder.enabled, hour: reminder.hour, permission: (typeof Notification !== 'undefined' ? Notification.permission : 'unsupported') };
+  },
+  enableReminders, disableReminders, setReminderHour,
 };
 
 // ===== 認証状態の監視 =====

@@ -350,6 +350,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 2200);
 }
+window.toast = toast; // cloud.js (通知) から利用
 
 function openModal(html) {
   closeModal();
@@ -1380,11 +1381,25 @@ function cloudCardHtml() {
   if (!c) return `<div class="card"><h2>☁️ 端末間同期</h2><p class="card-note">読み込み中...</p></div>`;
   const st = c.status();
   if (st.user) {
+    const rm = c.reminderStatus ? c.reminderStatus() : { enabled: false, hour: 19, permission: 'default' };
+    const hourOpts = Array.from({ length: 18 }, (_, i) => i + 5) // 5〜22時
+      .map(h => `<option value="${h}" ${h === rm.hour ? 'selected' : ''}>${h}:00</option>`).join('');
+    const denied = rm.permission === 'denied';
     return `<div class="card"><h2>☁️ 端末間同期<span class="tag good" style="font-size:10px">ON</span></h2>
       <p style="font-size:13.5px">${esc(st.user.name || st.user.email || 'ログイン中')} でログイン中。この端末の記録は自動でクラウドに保存され、同じGoogleアカウントの別端末と同期されます。</p>
       <p class="card-note">${st.syncing ? '同期中...' : (st.lastSync ? '最終同期: ' + st.lastSync : 'まもなく同期します')}</p>
       <button class="btn ghost" id="cloud-signout">ログアウト(同期を止める)</button>
       <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。</p>
+    </div>
+    <div class="card"><h2>🔔 トレ通知<span class="tag ${rm.enabled ? 'good' : 'none'}" style="font-size:10px">${rm.enabled ? 'ON' : 'OFF'}</span></h2>
+      ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。ブラウザ(またはスマホの設定アプリ)でこのサイトの通知を許可してください。</p>` : ''}
+      <p style="font-size:13.5px;margin-bottom:10px">トレの日の設定時刻に「今日は○○の日💪」を通知します。アプリを閉じていても届きます。</p>
+      <div class="field"><label>通知する時刻</label><select id="rm-hour" ${denied ? 'disabled' : ''}>${hourOpts}</select></div>
+      ${rm.enabled
+        ? `<button class="btn ghost" id="rm-off">通知をOFFにする</button>`
+        : `<button class="btn" id="rm-on" ${denied ? 'disabled' : ''}>この端末で通知をONにする</button>`}
+      <p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのま
+まONでOK。</p>
     </div>`;
   }
   return `<div class="card"><h2>☁️ 端末間同期</h2>
@@ -1402,6 +1417,27 @@ function bindCloudCard(root) {
     if (confirm('ログアウトします。この端末のデータは残りますが、以後の変更は同期されません。')) {
       if (window.__klCloud) window.__klCloud.signOut();
     }
+  });
+
+  const hourSel = $('#rm-hour', root);
+  if (hourSel) hourSel.addEventListener('change', () => {
+    if (window.__klCloud && window.__klCloud.setReminderHour) window.__klCloud.setReminderHour(Number(hourSel.value));
+  });
+  const rmOn = $('#rm-on', root);
+  if (rmOn) rmOn.addEventListener('click', async () => {
+    rmOn.disabled = true; rmOn.textContent = '設定中...';
+    const hour = hourSel ? Number(hourSel.value) : 19;
+    const res = await window.__klCloud.enableReminders(hour);
+    if (res && res.ok) toast('🔔 通知をONにしました。トレの日にお知らせします');
+    else if (res && res.reason === 'denied') toast('通知が許可されませんでした');
+    else if (res && res.reason === 'token') toast('通知の登録に失敗: ' + (res.message || ''));
+    if (currentView() === 'tools') renderTools();
+  });
+  const rmOff = $('#rm-off', root);
+  if (rmOff) rmOff.addEventListener('click', async () => {
+    await window.__klCloud.disableReminders();
+    toast('通知をOFFにしました');
+    if (currentView() === 'tools') renderTools();
   });
 }
 
