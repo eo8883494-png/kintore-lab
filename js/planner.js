@@ -47,6 +47,50 @@ const SPLITS = {
   ],
 };
 
+// 姿勢改善用の分割: 引く筋肉(背中上部・リアデルト)・体幹・尻を軸に、前面の維持日を混ぜる
+const POSTURE_SPLITS = {
+  1: [{ name: '姿勢リセット全身', parts: ['back', 'shoulder', 'abs', 'glutes'] }],
+  2: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'back', 'legs:ham'] },
+  ],
+  3: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'legs:ham'] },
+    { name: '姿勢C(総合)', parts: ['back', 'shoulder', 'abs', 'glutes'] },
+  ],
+  4: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'legs:ham'] },
+    { name: '全身維持(前面バランス)', parts: ['chest', 'legs:quad', 'arms', 'calves'] },
+    { name: '姿勢C(総合)', parts: ['back', 'shoulder', 'abs', 'glutes'] },
+  ],
+  5: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'legs:ham'] },
+    { name: '全身維持(前面バランス)', parts: ['chest', 'legs:quad', 'arms', 'calves'] },
+    { name: '姿勢C(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢D(体幹・尻)', parts: ['glutes', 'abs', 'back'] },
+  ],
+  6: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'legs:ham'] },
+    { name: '全身維持(前面バランス)', parts: ['chest', 'legs:quad', 'arms', 'calves'] },
+    { name: '姿勢C(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢D(体幹・尻)', parts: ['glutes', 'abs', 'back'] },
+    { name: '全身維持B(前面バランス)', parts: ['legs:quad', 'chest', 'calves', 'arms'] },
+  ],
+  7: [
+    { name: '姿勢A(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢B(体幹・尻)', parts: ['glutes', 'abs', 'legs:ham'] },
+    { name: '全身維持(前面バランス)', parts: ['chest', 'legs:quad', 'arms', 'calves'] },
+    { name: '姿勢C(背中・肩甲骨)', parts: ['back', 'shoulder', 'abs'] },
+    { name: '姿勢D(体幹・尻)', parts: ['glutes', 'abs', 'back'] },
+    { name: '全身維持B(前面バランス)', parts: ['legs:quad', 'chest', 'calves', 'arms'] },
+    { name: 'コア・モビリティ', parts: ['abs', 'back', 'glutes'] },
+  ],
+};
+
 // 週日数 → 曜日割り当て (0=日,1=月...)
 const WEEKDAY_ASSIGN = {
   1: [6], 2: [1, 4], 3: [1, 3, 5], 4: [1, 2, 4, 5],
@@ -133,7 +177,7 @@ function dayMinutes(items) {
 // profile: {days, minutes, env, level, goal}, focus: {part: 'grow'|'tone'}, seed: number
 function generatePlan(db, profile, focus, seed) {
   const days = Math.min(Math.max(profile.days, 1), 7);
-  const template = SPLITS[days];
+  const template = (profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS)[days];
   const weekdays = WEEKDAY_ASSIGN[days];
   const rng = mulberry32(seed);
   const budget = profile.minutes;
@@ -153,7 +197,9 @@ function generatePlan(db, profile, focus, seed) {
     const pools = specs.map(spec => {
       const pool = exercisePool(db, spec, profile.env, profile.level, profile.gear)
         .map(ex => ({ ex, r: rng() }))
-        .sort((a, b) => (b.ex.compound - a.ex.compound) || (a.r - b.r))
+        .sort((a, b) =>
+          (profile.goal === 'posture' ? ((b.ex.posture ? 1 : 0) - (a.ex.posture ? 1 : 0)) : 0) ||
+          (b.ex.compound - a.ex.compound) || (a.r - b.r))
         .map(x => x.ex);
       return { spec, pool, taken: 0 };
     });
@@ -166,7 +212,8 @@ function generatePlan(db, profile, focus, seed) {
       for (const p of pools) {
         const { part } = parsePartSpec(p.spec);
         const isPriority = !!focus[part];
-        const maxTake = isPriority ? 3 : 2;
+        // 姿勢改善は高頻度・低ボリューム(1部位1日1種目)。多日にまたがるので週セット数が最適帯に収まる
+        const maxTake = profile.goal === 'posture' && !isPriority ? 1 : (isPriority ? 3 : 2);
         if (p.taken >= maxTake) continue;
         const goal = focus[part] === 'tone' ? 'hyp' : profile.goal; // 引き締めも刺激は筋肥大レンジ(絞りは食事で)
         const cur = items.reduce((s, it) => s + exMinutes(it), 0) + SCIENCE.warmupMin;

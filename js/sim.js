@@ -28,7 +28,9 @@ function simulate(minutes, days, profile, plan) {
       perPart[p.key] = Math.round((plan.weeklySets[p.key] / planTotal) * totalSets * 10) / 10;
     });
   } else {
-    const template = SPLITS[Math.min(Math.max(days, 1), 7)];
+    // ゴールに応じた分割で配分 (姿勢改善は背中・肩・腹・尻に寄せる)
+    const table = profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS;
+    const template = table[Math.min(Math.max(days, 1), 7)];
     template.forEach(day => {
       const share = setsPerDay / day.parts.length;
       day.parts.forEach(spec => {
@@ -46,7 +48,7 @@ function simulate(minutes, days, profile, plan) {
     return {
       part: p.key, name: p.name, sets,
       effect: effectFromSets(capped),
-      verdict: volumeVerdict(p.key, sets),
+      verdict: volumeVerdict(p.key, sets, profile.goal),
     };
   });
   const trained = partResults.filter(r => r.sets > 0);
@@ -86,6 +88,23 @@ function simulate(minutes, days, profile, plan) {
     overallEffect, monthlyGain, cumGain, weeklyBurn, tdee, protein,
     junk, low, plus15, plusDay, dietMode, monthlyFatLoss,
   };
+}
+
+// 最適な時間×日数を全探索: 「最高効率」と「最高の95%を最小の週合計時間で達成(コスパ最強)」
+function optimalPlan(profile) {
+  const candidates = [];
+  for (let days = 1; days <= 7; days++) {
+    for (let m = 15; m <= 120; m += 15) {
+      const eff = simulate(m, days, profile, null).overallEffect;
+      candidates.push({ days, minutes: m, eff, weekly: days * m });
+    }
+  }
+  let best = candidates[0];
+  candidates.forEach(c => { if (c.eff > best.eff + 1e-9) best = c; });
+  const eco = candidates
+    .filter(c => c.eff >= best.eff * 0.95)
+    .sort((a, b) => (a.weekly - b.weekly) || (b.eff - a.eff))[0] || best;
+  return { best, eco };
 }
 
 // 総合効果だけをさっと出す補助 (限界効用の計算用)

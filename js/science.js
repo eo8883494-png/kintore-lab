@@ -20,7 +20,7 @@ const SCIENCE = {
   femaleFactor: 0.55,
 
   // タンパク質推奨量 g/体重kg (目標別)
-  proteinPerKg: { hyp: 2.0, str: 1.8, diet: 2.2, fit: 1.5 },
+  proteinPerKg: { hyp: 2.0, str: 1.8, diet: 2.2, fit: 1.5, posture: 1.5 },
 
   // 1セットの実施時間(秒)とインターバル(秒)
   setSeconds: 40,
@@ -29,6 +29,7 @@ const SCIENCE = {
     str:  { comp: 180, iso: 120 },
     diet: { comp: 75,  iso: 45 },
     fit:  { comp: 90,  iso: 60 },
+    posture: { comp: 90, iso: 60 },
   },
   warmupMin: 6,
 
@@ -37,6 +38,7 @@ const SCIENCE = {
     str:  { name: '筋力アップ', desc: '高重量を挙げる力' },
     diet: { name: '引き締め・減量', desc: '脂肪を落として絞る' },
     fit:  { name: '健康・体力維持', desc: '無理なく続ける' },
+    posture: { name: '姿勢改善', desc: '猫背・巻き肩を直す' },
   },
   envs: {
     home_none: { name: '自宅(器具なし)', allow: ['bodyweight'] },
@@ -55,9 +57,24 @@ function effectFromSets(sets) {
   return 1 - Math.exp(-sets / 7.5);
 }
 
-// 週セット数の評価ラベル
-function volumeVerdict(part, sets) {
+// 姿勢改善ゴールで主役になる部位
+SCIENCE.postureParts = ['back', 'shoulder', 'abs', 'glutes'];
+
+// 週セット数の評価ラベル (goal='posture' ではターゲット外の部位を「維持」扱いにする)
+function volumeVerdict(part, sets, goal) {
   const p = SCIENCE.partMap[part];
+  if (goal === 'posture') {
+    if (SCIENCE.postureParts.indexOf(part) < 0) {
+      if (sets <= 0) return { label: '休み', cls: 'none' };
+      return { label: '維持OK', cls: 'good' };
+    }
+    // 姿勢目的は筋肥大より少ないボリュームで足りる (質と頻度が主役)
+    if (sets <= 0) return { label: '未実施', cls: 'none' };
+    if (sets < 6) return { label: 'やや不足', cls: 'low' };
+    if (sets <= 18) return { label: '最適', cls: 'good' };
+    if (sets <= p.mrv) return { label: '多め(回復注意)', cls: 'high' };
+    return { label: 'やり過ぎ(効率低下)', cls: 'junk' };
+  }
   if (sets <= 0) return { label: '未実施', cls: 'none' };
   if (sets < p.optMin) return { label: 'やや不足', cls: 'low' };
   if (sets <= p.optMax) return { label: '最適', cls: 'good' };

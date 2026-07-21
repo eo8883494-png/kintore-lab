@@ -1,18 +1,28 @@
 // 筋トレLAB — アプリ本体 (状態管理・ルーティング・各画面)
 
-// ===== DB 正規化 =====
+// ===== DB 正規化 (オリジナル種目も合流させるため再構築可能にする) =====
 const DB = { byPart: {}, byId: {} };
-Object.keys(EXDB_RAW).forEach(part => {
-  DB.byPart[part] = (EXDB_RAW[part] || []).map(ex => ({ ...ex, part }));
-  DB.byPart[part].forEach(ex => { DB.byId[ex.id] = ex; });
-});
+function rebuildDB(customList) {
+  DB.byPart = {}; DB.byId = {};
+  Object.keys(EXDB_RAW).forEach(part => {
+    DB.byPart[part] = (EXDB_RAW[part] || []).map(ex => ({ ...ex, part }));
+    DB.byPart[part].forEach(ex => { DB.byId[ex.id] = ex; });
+  });
+  (customList || []).forEach(ex => {
+    if (DB.byId[ex.id]) return;
+    const p = { ...ex, custom: true };
+    (DB.byPart[p.part] = DB.byPart[p.part] || []).push(p);
+    DB.byId[p.id] = p;
+  });
+}
+rebuildDB();
 const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: 'バーベル', machine: 'マシン', cable: 'ケーブル' };
 
 // ===== 状態 =====
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '' };
+  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -88,8 +98,12 @@ function sanitizeState(s) {
       if (!DATE_RE.test(dt) || !s.dayDone[dt] || typeof s.dayDone[dt] !== 'object') return;
       const m = {};
       Object.keys(s.dayDone[dt]).forEach(ex => {
-        const v = Number(s.dayDone[dt][ex]);
-        if (Number.isInteger(v)) m[ex.slice(0, 60)] = v;
+        const raw = s.dayDone[dt][ex];
+        if (typeof raw === 'number' && Number.isInteger(raw)) {
+          m[ex.slice(0, 60)] = { id: raw, src: 'plan' }; // 旧形式を正規化
+        } else if (raw && typeof raw === 'object' && Number.isInteger(Number(raw.id))) {
+          m[ex.slice(0, 60)] = { id: Number(raw.id), src: typeof raw.src === 'string' ? raw.src.slice(0, 40) : 'plan' };
+        }
       });
       out.dayDone[dt] = m;
     });
@@ -103,6 +117,51 @@ function sanitizeState(s) {
     if (out.plan && Number.isInteger(idx) && idx >= 0 && idx < out.plan.days.length) out.swap = { date: s.swap.date, idx };
   }
   if (typeof s.swapDismiss === 'string' && DATE_RE.test(s.swapDismiss)) out.swapDismiss = s.swapDismiss;
+
+  // オリジナル種目
+  if (Array.isArray(s.customEx)) {
+    const seenC = new Set();
+    s.customEx.slice(0, 50).forEach((ex, i) => {
+      if (!ex || typeof ex !== 'object' || typeof ex.name !== 'string' || !ex.name.trim()) return;
+      const part = SCIENCE.partMap[ex.part] ? ex.part : 'abs';
+      const eq = ['bodyweight', 'dumbbell', 'barbell', 'machine', 'cable'].indexOf(ex.equipment) >= 0 ? ex.equipment : 'bodyweight';
+      const id = typeof ex.id === 'string' && /^custom-\d+$/.test(ex.id) ? ex.id : 'custom-' + (i + 1);
+      if (seenC.has(id)) return;
+      seenC.add(id);
+      out.customEx.push({
+        id, name: ex.name.slice(0, 30), part, equipment: eq,
+        sub: [SCIENCE.partMap[part].name], level: 1, mets: numIn(ex.mets, 2, 9, 4), compound: false,
+        form: ['自分の種目: いつものフォームでOK', '効かせたい部位を意識する', '無理のない重量で丁寧に'],
+        mistake: '', repHyp: '10-15', repStr: '8-12', repEnd: '15-20', custom: true,
+      });
+    });
+  }
+
+  // マイメニュー
+  if (Array.isArray(s.myMenus)) {
+    const seenM = new Set();
+    s.myMenus.slice(0, 20).forEach(m => {
+      if (!m || typeof m !== 'object' || typeof m.name !== 'string' || !Array.isArray(m.items)) return;
+      const items = m.items.slice(0, 15).map(it => (it && typeof it.exId === 'string') ? {
+        exId: it.exId.slice(0, 60),
+        part: SCIENCE.partMap[it.part] ? it.part : 'abs',
+        sets: Math.round(numIn(it.sets, 1, 10, 3)),
+        reps: typeof it.reps === 'string' ? it.reps.slice(0, 20) : '10-15',
+        rest: Math.round(numIn(it.rest, 15, 600, 90)),
+        priority: false,
+      } : null).filter(Boolean);
+      if (!items.length) return;
+      let id = Number(m.id);
+      if (!Number.isInteger(id) || id <= 0) id = out.myMenus.length + 1;
+      while (seenM.has(id)) id++;
+      seenM.add(id);
+      out.myMenus.push({ id, name: m.name.slice(0, 20), items });
+    });
+  }
+  if (s.myToday && typeof s.myToday === 'object' && typeof s.myToday.date === 'string' && DATE_RE.test(s.myToday.date)) {
+    const mid = Number(s.myToday.id);
+    if (out.myMenus.some(m => m.id === mid)) out.myToday = { date: s.myToday.date, id: mid };
+  }
   return out;
 }
 
@@ -159,6 +218,7 @@ function saveState() {
 
 // 状態の初期化は全ヘルパー定義後に行う (const のTDZを踏まないよう必ずこの位置)
 let S = loadState();
+rebuildDB(S.customEx); // オリジナル種目をDBに合流
 // 保存済みデータを正規形に書き直しておく (旧形式とのバイト差分で同期処理が空振りしないように)
 try { if (localStorage.getItem(LS_KEY)) localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { /* 書けない環境は無視 */ }
 function newId() { const id = S.nextId++; saveState(); return id; }
@@ -413,6 +473,18 @@ const TIPS = [
   '記録をつける人はつけない人より伸びる。前回の自分がライバル。',
 ];
 
+// dayDoneエントリの正規化: 旧形式(数値)は plan コンテキスト扱い
+function ddGet(dayMap, exId) {
+  const v = dayMap && dayMap[exId];
+  if (v == null) return null;
+  if (typeof v === 'number') return { id: v, src: 'plan' };
+  return v; // { id, src }
+}
+// 今日実施中のコンテキストキー (通常プラン or 特定マイメニュー)
+function ctxKeyOf(ctx) {
+  return ctx && ctx.myMenu && S.myToday ? 'menu:' + S.myToday.id : 'plan';
+}
+
 // 直近7日で「プラン日なのに記録ゼロ」の未消化日を探す
 // (最後にトレした日より前・プラン作成日より前は見ない)
 function findMissedDay() {
@@ -453,10 +525,17 @@ function findCarryover(excludeIds) {
   ).slice(0, 2);
 }
 
-// 今日実施すべきメニュー (振替・積み残し込み)
+// 今日実施すべきメニュー (マイメニュー・振替・積み残し込み)
 function todayPlanContext() {
-  if (!S.plan) return { day: null, idx: -1, swapped: false, carry: [] };
   const today = todayStr();
+  if (S.myToday && S.myToday.date === today) {
+    const menu = S.myMenus.find(m => m.id === S.myToday.id);
+    if (menu) {
+      const day = { name: menu.name, weekday: new Date().getDay(), items: menu.items, minutes: dayMinutes(menu.items) };
+      return { day, idx: -1, swapped: false, carry: [], myMenu: true };
+    }
+  }
+  if (!S.plan) return { day: null, idx: -1, swapped: false, carry: [] };
   let idx = S.plan.days.findIndex(d => d.weekday === new Date().getDay());
   let swapped = false;
   if (S.swap && S.swap.date === today && S.plan.days[S.swap.idx]) { idx = S.swap.idx; swapped = true; }
@@ -482,20 +561,21 @@ function renderHome() {
       <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
     </div>`;
 
-  if (!S.profile) {
+  const ctx0 = todayPlanContext();
+  if (!S.profile && !ctx0.myMenu) {
     html += `<div class="card"><div class="empty"><span class="big-emoji">💪</span>まずはプロフィール設定から。<br>30秒であなた専用メニューを作ります。</div>
       <button class="btn" id="home-setup">はじめる</button></div>`;
-  } else if (!S.plan) {
+  } else if (!S.plan && !ctx0.myMenu) {
     html += `<div class="card"><div class="empty"><span class="big-emoji">📋</span>メニューがまだありません。</div>
       <button class="btn" onclick="location.hash='plan'">メニューを作る</button></div>`;
   } else {
-    const ctx = todayPlanContext();
+    const ctx = ctx0;
     const doneMap = (S.dayDone[today] || {});
 
     // 未消化日バナー (振替の提案)。今日すでにトレ済みなら出さない
     const missed = findMissedDay();
     const trainedToday = S.logs.some(l => l.date === today);
-    if (missed && !ctx.swapped && !trainedToday && missed.idx !== ctx.idx && (!S.swapDismiss || S.swapDismiss < missed.date)) {
+    if (missed && !ctx.swapped && !ctx.myMenu && !trainedToday && missed.idx !== ctx.idx && (!S.swapDismiss || S.swapDismiss < missed.date)) {
       const md = S.plan.days[missed.idx];
       html += `<div class="card" style="border-color:var(--warn)">
         <h2>⏰ ${WEEKDAY_NAMES[md.weekday]}曜の「${esc(md.name)}」が未消化</h2>
@@ -507,10 +587,12 @@ function renderHome() {
     }
 
     homeCarry = ctx.carry; // チェック処理と表示のズレを防ぐスナップショット
+    const curCtxKey = ctxKeyOf(ctx); // 通常プランとマイメニューでチェック状態を分離
     const exRow = (it, isCarry) => {
       const ex = DB.byId[it.exId];
       if (!ex) return '';
-      const done = !!doneMap[it.exId];
+      const de = ddGet(doneMap, it.exId);
+      const done = !!(de && de.src === curCtxKey);
       const lastW = S.lastW[it.exId];
       const isBW = ex.equipment === 'bodyweight';
       const unit = ex.isometric ? '秒キープ' : '回';
@@ -527,10 +609,10 @@ function renderHome() {
 
     if (ctx.day) {
       const burn = S.profile ? sessionBurn([...ctx.day.items, ...ctx.carry], DB.byId, S.profile.w) : 0;
-      html += `<div class="card"><h2>🏋️ 今日は「${esc(ctx.day.name)}」${ctx.swapped ? '<span class="tag high" style="font-size:10px">振替</span>' : ''}<span class="sub">約${ctx.day.minutes}分 / 約${burn}kcal</span></h2>`;
+      html += `<div class="card"><h2>🏋️ 今日は「${esc(ctx.day.name)}」${ctx.swapped ? '<span class="tag high" style="font-size:10px">振替</span>' : ''}${ctx.myMenu ? '<span class="tag low" style="font-size:10px">マイ</span>' : ''}<span class="sub">約${ctx.day.minutes}分 / 約${burn}kcal</span></h2>`;
       ctx.day.items.forEach(it => { html += exRow(it, false); });
       ctx.carry.forEach(it => { html += exRow(it, true); });
-      html += `<p class="card-note">チェックすると記録に自動保存。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}</p></div>`;
+      html += `<p class="card-note">チェックすると記録に自動保存。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}${ctx.myMenu ? ' <button class="btn small ghost" id="mymenu-undo">通常メニューに戻す</button>' : ''}</p></div>`;
     } else {
       const dow = new Date().getDay();
       const nextDays = S.plan.days.map((d, i) => ({ ...d, idx: i, diff: (d.weekday - dow + 7) % 7 || 7 })).sort((a, b) => a.diff - b.diff);
@@ -577,6 +659,10 @@ function renderHome() {
   if (swapUndo) swapUndo.addEventListener('click', () => {
     S.swap = null; saveState(); renderHome();
   });
+  const myUndo = $('#mymenu-undo', root);
+  if (myUndo) myUndo.addEventListener('click', () => {
+    S.myToday = null; saveState(); renderHome();
+  });
   const restStart = $('#rest-start', root);
   if (restStart) restStart.addEventListener('click', () => {
     if (homeDate !== todayStr()) { renderHome(); return; }
@@ -605,8 +691,10 @@ function toggleDone(exId, checked) {
   if (homeDate !== today) { renderHome(); return; } // 画面表示中に日付が変わっていたら再描画のみ(誤記録防止)
   if (!S.dayDone[today]) S.dayDone[today] = {};
   const ctx = todayPlanContext();
+  const ck = ctxKeyOf(ctx);
   const allItems = ctx.day ? [...ctx.day.items, ...homeCarry] : [];
   const item = allItems.find(i => i.exId === exId);
+  const doneInCtx = i => { const e = ddGet(S.dayDone[today], i.exId); return e && e.src === ck; };
   if (checked && item) {
     const winp = $(`input.winp[data-ex="${exId}"]`);
     const w = winp ? Number(winp.value) || 0 : 0;
@@ -616,15 +704,16 @@ function toggleDone(exId, checked) {
       id: logId, date: today, exId,
       sets: Array.from({ length: item.sets }, () => ({ w, r: repMid(item.reps) })),
     });
-    S.dayDone[today][exId] = logId;
+    S.dayDone[today][exId] = { id: logId, src: ck };
     saveState();
-    const remaining = allItems.filter(i => DB.byId[i.exId] && !S.dayDone[today][i.exId]).length;
+    const remaining = allItems.filter(i => DB.byId[i.exId] && !doneInCtx(i)).length;
     toast(remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`);
     if (remaining === 0) setTimeout(() => { if (!$('#modal-bg')) openShareModal(today); }, 900); // 完遂したらシェアを提案 (別モーダル表示中は邪魔しない)
   } else {
-    const logId = S.dayDone[today][exId];
-    if (logId) {
-      S.logs = S.logs.filter(l => l.id !== logId);
+    const e = ddGet(S.dayDone[today], exId);
+    // 現在のコンテキストで作った記録だけを消す (別セッションの記録は触らない)
+    if (e && e.src === ck) {
+      S.logs = S.logs.filter(l => l.id !== e.id);
       delete S.dayDone[today][exId];
       saveState();
     }
@@ -695,17 +784,16 @@ function renderPlan() {
     html += `<div class="card"><h2>📊 部位別 週セット数</h2>`;
     SCIENCE.parts.forEach(pt => {
       const sets = S.plan.weeklySets[pt.key] || 0;
-      const verdict = volumeVerdict(pt.key, sets);
+      const verdict = volumeVerdict(pt.key, sets, S.profile.goal);
       const pct = Math.min(100, (sets / pt.mrv) * 100);
       html += `<div class="vol-row"><span class="nm">${esc(pt.name)}</span>
         <span class="bar"><i style="width:${pct}%"></i></span>
         <span class="val">${sets}<span class="tag ${verdict.cls}">${verdict.label}</span></span></div>`;
     });
-    const hasLow = SCIENCE.parts.some(pt => {
-      const s = S.plan.weeklySets[pt.key] || 0;
-      return s > 0 && s < pt.optMin;
-    });
-    html += `<p class="card-note">筋肥大の最適は部位あたり週10〜20セット。${hasLow ? '<b>「やや不足」は今の時間×日数で入る上限</b>です。1日+15分か週+1日で最適圏に届きます(効率タブで試算可)。' : ''}シミュレーターで効率を確認できます。</p></div>`;
+    const hasLow = SCIENCE.parts.some(pt => volumeVerdict(pt.key, S.plan.weeklySets[pt.key] || 0, S.profile.goal).cls === 'low');
+    html += `<p class="card-note">${S.profile.goal === 'posture'
+      ? '姿勢改善は背中・肩・体幹・尻が主役。前面(胸・脚など)は「維持OK」なら十分です。'
+      : `筋肥大の最適は部位あたり週10〜20セット。${hasLow ? '<b>「やや不足」は今の時間×日数で入る上限</b>です。1日+15分か週+1日で最適圏に届きます(効率タブで試算可)。' : ''}`}シミュレーターで効率を確認できます。</p></div>`;
   }
 
   root.innerHTML = html;
@@ -756,8 +844,17 @@ function renderSim() {
     return;
   }
   if (!simState) simState = { minutes: S.profile.minutes, days: S.profile.days, usePlan: !!S.plan };
+  const opt = optimalPlan(S.profile);
 
   root.innerHTML = `
+    <div class="card"><h2>🏆 あなたの最適解<span class="sub">全56通りを試算</span></h2>
+      <div class="focus-chips">
+        <span class="chip grow">コスパ最強: 週${opt.eco.days}日 × ${opt.eco.minutes}分 (効率${Math.round(opt.eco.eff * 100)}%)</span>
+        <span class="chip">理論上の最高: 週${opt.best.days}日 × ${opt.best.minutes}分 (${Math.round(opt.best.eff * 100)}%)</span>
+      </div>
+      <p class="card-note">「コスパ最強」は最高効率の95%以上を最小の週合計時間で出せる設定。これ以上増やしても伸びは数%です。効率%は標準的な部位配分での試算なので、現在のメニュー配分とは数%前後します。</p>
+      <button class="btn small ghost" id="opt-apply">この設定をスライダーで試す</button>
+    </div>
     <div class="card"><h2>⚗️ 効率シミュレーター</h2>
       <div class="field"><label>1日の時間 <span class="range-val" id="sim-min-val">${simState.minutes}分</span></label>
         <input type="range" id="sim-min" min="15" max="120" step="5" value="${simState.minutes}"></div>
@@ -775,6 +872,13 @@ function renderSim() {
   };
   $('#sim-min', root).addEventListener('input', e => { simState.minutes = Number(e.target.value); update(); });
   $('#sim-days', root).addEventListener('input', e => { simState.days = Number(e.target.value); update(); });
+  $('#opt-apply', root).addEventListener('click', () => {
+    simState.minutes = opt.eco.minutes;
+    simState.days = opt.eco.days;
+    simState.usePlan = false; // カードの試算と同じ標準配分で表示を揃える
+    renderSim();
+    toast(`週${opt.eco.days}日×${opt.eco.minutes}分で試算中(メニュー配分の適用は一旦OFF)。気に入ったらプロフィール編集で設定を`);
+  });
   const up = $('#sim-useplan', root);
   if (up) up.addEventListener('change', e => { simState.usePlan = e.target.checked; update(); });
   update();
@@ -790,7 +894,7 @@ function renderSimResults(container) {
   let html = `
     <div class="card"><h2>🏆 総合効率スコア</h2>
       <div class="hero-num">${pct}<small>%</small></div>
-      <p class="card-note">週${r.totalSets}セット(1回あたり約${r.setsPerDay}セット)。理論上の最大成長ペースに対する到達度です。</p>
+      <p class="card-note">週${r.totalSets}セット(1回あたり約${r.setsPerDay}セット)。理論上の最大成長ペースに対する到達度です。${S.profile.goal === 'posture' ? '<br>姿勢改善は筋量より「引く筋肉を起こす」のが目的。4〜8週で肩の開き・立ち姿の変化を実感するのが目安です。' : ''}</p>
       <canvas class="chart" id="sim-curve"></canvas>
       <p class="card-note">緑の帯が最適ゾーン(部位あたり週10〜20セット)。曲線が寝てきたら時間を増やすより回復と食事に投資。</p>
     </div>
@@ -883,6 +987,16 @@ function renderLog() {
       <button class="btn" id="save-log">記録する</button>
     </div>
 
+    <div class="card"><h2>📝 マイメニュー<span class="sub">自分のルーティンを保存</span></h2>
+      <div id="mymenu-list">${S.myMenus.length ? S.myMenus.map(m => `
+        <div class="log-entry"><div><div class="nm">${esc(m.name)}</div>
+          <div class="sets">${m.items.length}種目 / 約${dayMinutes(m.items)}分</div></div>
+          <button class="btn small" data-mm-run="${m.id}" style="margin-left:auto">▶ 今日やる</button>
+          <button class="del" data-mm-del="${m.id}">🗑</button></div>`).join('')
+        : '<p class="card-note">よくやる自分の組み合わせを保存すると、ホームでワンタップ実行&チェック記録できます。DBにない種目も「オリジナル種目」として追加OK。</p>'}</div>
+      <button class="btn ghost" id="mymenu-new">+ 新しいマイメニュー</button>
+    </div>
+
     <div class="card"><h2>⚖️ 体重記録</h2>
       <div style="display:flex;gap:8px">
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
@@ -960,6 +1074,23 @@ function renderLog() {
     renderLog();
   });
 
+  // マイメニュー
+  $('#mymenu-new', root).addEventListener('click', () => openMyMenuModal());
+  $all('[data-mm-run]', root).forEach(btn => btn.addEventListener('click', () => {
+    S.myToday = { date: todayStr(), id: Number(btn.dataset.mmRun) };
+    saveState();
+    toast('今日のメニューにセットしました💪');
+    location.hash = 'home';
+  }));
+  $all('[data-mm-del]', root).forEach(btn => btn.addEventListener('click', () => {
+    if (!confirm('このマイメニューを削除しますか?(記録は残ります)')) return;
+    const id = Number(btn.dataset.mmDel);
+    S.myMenus = S.myMenus.filter(m => m.id !== id);
+    if (S.myToday && S.myToday.id === id) S.myToday = null;
+    saveState();
+    renderLog();
+  }));
+
   // 体重
   $('#bw-save', root).addEventListener('click', () => {
     const v = Number($('#bw-input', root).value);
@@ -1035,7 +1166,7 @@ function renderLog() {
         const id = Number(btn.dataset.del);
         S.logs = S.logs.filter(l => l.id !== id);
         Object.keys(S.dayDone).forEach(d => {
-          Object.keys(S.dayDone[d]).forEach(ex => { if (S.dayDone[d][ex] === id) delete S.dayDone[d][ex]; });
+          Object.keys(S.dayDone[d]).forEach(ex => { const e = ddGet(S.dayDone[d], ex); if (e && e.id === id) delete S.dayDone[d][ex]; });
         });
         saveState();
         toast('削除しました');
@@ -1043,6 +1174,83 @@ function renderLog() {
       });
     });
   }
+}
+
+// ===== マイメニュー作成モーダル =====
+function openMyMenuModal() {
+  const goal = S.profile ? S.profile.goal : 'hyp';
+  const exListHtml = () => SCIENCE.parts.map(pt => {
+    const list = DB.byPart[pt.key] || [];
+    if (!list.length) return '';
+    return `<div style="font-size:11px;font-weight:800;color:var(--ink-dim);margin:8px 0 4px">${esc(pt.name)}</div>` +
+      list.map(ex => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:3px 0">
+        <input type="checkbox" class="mm-ex" value="${ex.id}"> ${esc(ex.name)}${ex.custom ? ' <span class="chip" style="font-size:9px;padding:1px 6px">オリジナル</span>' : ''}</label>`).join('');
+  }).join('');
+
+  const bg = openModal(`
+    <h2>📝 マイメニュー作成</h2>
+    <p class="modal-sub">よくやる組み合わせに名前を付けて保存。セット数・レップは目標(${esc(SCIENCE.goals[goal].name)})の推奨値が入ります。</p>
+    <div class="field"><label>メニュー名</label><input type="text" id="mm-name" maxlength="20" placeholder="例: いつもの朝トレ"></div>
+    <div class="field"><label>種目を選ぶ</label><div class="mm-exlist" id="mm-exlist">${exListHtml()}</div></div>
+    <details class="acc"><summary>+ DBにない種目を追加(オリジナル種目)</summary><div class="acc-body">
+      <div class="field"><label>種目名</label><input type="text" id="mm-cx-name" maxlength="30" placeholder="例: チューブローイング"></div>
+      <div class="grid2">
+        <div class="field"><label>部位</label><select id="mm-cx-part">${SCIENCE.parts.map(p => `<option value="${p.key}">${esc(p.name)}</option>`).join('')}</select></div>
+        <div class="field"><label>器具</label><select id="mm-cx-eq"><option value="bodyweight">自重・チューブ等</option><option value="dumbbell">ダンベル</option><option value="barbell">バーベル</option><option value="machine">マシン</option><option value="cable">ケーブル</option></select></div>
+      </div>
+      <button class="btn small ghost" id="mm-cx-add">追加してリストに入れる</button>
+    </div></details>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn" id="mm-save">保存</button>
+    </div>`);
+
+  $('#mm-cx-add', bg).addEventListener('click', () => {
+    const name = ($('#mm-cx-name', bg).value || '').trim();
+    if (!name) { toast('種目名を入れてください'); return; }
+    const maxN = S.customEx.reduce((m, e) => Math.max(m, Number((e.id.match(/\d+$/) || [0])[0])), 0);
+    const ex = {
+      id: 'custom-' + (maxN + 1), name: name.slice(0, 30),
+      part: $('#mm-cx-part', bg).value, equipment: $('#mm-cx-eq', bg).value,
+      sub: [SCIENCE.partMap[$('#mm-cx-part', bg).value].name], level: 1, mets: 4, compound: false,
+      form: ['自分の種目: いつものフォームでOK', '効かせたい部位を意識する', '無理のない重量で丁寧に'],
+      mistake: '', repHyp: '10-15', repStr: '8-12', repEnd: '15-20', custom: true,
+    };
+    S.customEx.push(ex);
+    saveState();
+    rebuildDB(S.customEx);
+    const checked = $all('.mm-ex:checked', bg).map(c => c.value);
+    $('#mm-exlist', bg).innerHTML = exListHtml();
+    checked.concat([ex.id]).forEach(id => { const c = $(`.mm-ex[value="${id}"]`, bg); if (c) c.checked = true; });
+    $('#mm-cx-name', bg).value = '';
+    toast(`「${ex.name}」を追加しました`);
+  });
+
+  $('#mm-save', bg).addEventListener('click', () => {
+    const name = ($('#mm-name', bg).value || '').trim();
+    const ids = $all('.mm-ex:checked', bg).map(c => c.value);
+    if (!name) { toast('メニュー名を入れてください'); return; }
+    if (!ids.length) { toast('種目を1つ以上選んでください'); return; }
+    if (ids.length > 15) { toast('種目は15個までにしてください'); return; }
+    const items = ids.map(id => {
+      const ex = DB.byId[id];
+      if (!ex) return null; // 選択中にDBが再構築され種目が消えた場合の保険
+      return {
+        exId: id, part: ex.part,
+        sets: setsFor(goal, false),
+        reps: repsFor(ex, goal),
+        rest: restFor(ex, goal),
+        priority: false,
+      };
+    }).filter(Boolean);
+    if (!items.length) { toast('種目が見つかりませんでした。選び直してください'); return; }
+    const newId2 = S.myMenus.reduce((m, x) => Math.max(m, x.id), 0) + 1;
+    S.myMenus.push({ id: newId2, name: name.slice(0, 20), items });
+    saveState();
+    closeModal();
+    toast(`マイメニュー「${name}」を保存しました`);
+    renderLog();
+  });
 }
 
 // ===== TOOLS =====
@@ -1203,6 +1411,7 @@ function renderTools() {
         const parsed = JSON.parse($('#import-text', bg).value);
         if (!parsed || typeof parsed !== 'object' || !('logs' in parsed)) throw new Error('形式が違います');
         S = sanitizeState(parsed);
+        rebuildDB(S.customEx);
         saveState();
         closeModal();
         toast('インポートしました');
@@ -1223,6 +1432,7 @@ function renderTools() {
       }
     } catch (e) { /* 消せない環境は無視 */ }
     S = defaultState();
+    rebuildDB(S.customEx);
     simState = null;
     toast('リセットしました');
     location.hash = 'home';
@@ -1291,6 +1501,7 @@ function refreshFromStorage() {
     if (!raw && cur === JSON.stringify(defaultState())) return; // 未保存×初期状態
   } catch (e) { /* 比較失敗時は再読込にフォールバック */ }
   S = loadState();
+  rebuildDB(S.customEx);
   if (!$('#modal-bg')) route(); // モーダル(ウィザード等)操作中は描画を壊さない
 }
 window.addEventListener('storage', e => { if (e.key === LS_KEY) refreshFromStorage(); });
