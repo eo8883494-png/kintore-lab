@@ -1,5 +1,6 @@
 // 筋トレLAB — 端末間同期 (Firebase / Google Sign-In)
-// zzZFM と同じ Firebase プロジェクト(zzzfm-beaaa)を共用。データは /kintoreLab/{uid} に保存。
+// 専用 Firebase プロジェクト(kintore-lab)。データは /kintoreLab/{uid} に保存。
+// ルールは本人のみ読み書き可 (auth.uid === $uid)。
 // ログインは任意: 未ログインでもアプリは完全にローカルで動く。ここは「あれば同期する」追加層。
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
@@ -8,13 +9,14 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyD3KXbGaNLcfVImgeWPkdwl8byS-c54YYE",
-  authDomain: "zzzfm-beaaa.firebaseapp.com",
-  databaseURL: "https://zzzfm-beaaa-default-rtdb.firebaseio.com",
-  projectId: "zzzfm-beaaa",
-  storageBucket: "zzzfm-beaaa.firebasestorage.app",
-  messagingSenderId: "586925220038",
-  appId: "1:586925220038:web:1960d6fb18a53c2ed7f7c7"
+  apiKey: "AIzaSyB6cNjUGULa4Nkikb8z66eCWwYCTZTQ_T4",
+  authDomain: "kintore-lab.firebaseapp.com",
+  databaseURL: "https://kintore-lab-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "kintore-lab",
+  storageBucket: "kintore-lab.firebasestorage.app",
+  messagingSenderId: "1082300556359",
+  appId: "1:1082300556359:web:53c260a798259ca8dabd62",
+  measurementId: "G-DXJS557V3X"
 };
 
 let app, db, auth;
