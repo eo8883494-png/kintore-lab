@@ -201,6 +201,92 @@ function sanitizePlan(pl) {
   return plan;
 }
 
+// ===== 端末間マージ =====
+// 方針: トレ記録(logs)と体重(weights)は両端末を統合して絶対に消さない。
+// 設定類(profile/plan/lastW等)は新しい方(_updatedAt)を採用。
+// オリジナル種目/マイメニューはID衝突を remap して安全に統合する。
+function customContentKey(e) { return `${e.name}|${e.part}|${e.equipment}`; }
+function logContentKey(l) { return `${l.date}|${l.exId}|${(l.sets || []).map(s => `${s.w || 0}x${s.r || 0}`).join(',')}`; }
+function menuContentKey(m) { return `${m.name}|${m.items.map(i => i.exId).join(',')}`; }
+
+function mergeStates(local, remote) {
+  const a = sanitizeState(local), b = sanitizeState(remote);
+  const at = Number(local && local._updatedAt) || 0;
+  const bt = Number(remote && remote._updatedAt) || 0;
+  const remotePrimary = bt >= at; // 同値ならリモート(=同期済み)を優先
+  const primary = remotePrimary ? b : a;
+  const secondary = remotePrimary ? a : b;
+
+  // 1) オリジナル種目: 内容で統合。二次側の衝突IDだけ改番し、参照を remap する
+  const byId = {}, byContent = {};
+  let maxN = 0;
+  const merged = [];
+  const takeN = id => { const n = Number((String(id).match(/\d+$/) || [0])[0]); if (n > maxN) maxN = n; };
+  primary.customEx.forEach(e => { byId[e.id] = e; byContent[customContentKey(e)] = e.id; takeN(e.id); merged.push(e); });
+  const remap = {};
+  secondary.customEx.forEach(e => {
+    const ck = customContentKey(e);
+    if (byContent[ck] != null) { remap[e.id] = byContent[ck]; return; } // 同じ種目が既にある
+    let id = e.id;
+    if (byId[id]) id = 'custom-' + (++maxN); else takeN(id); // 別内容でID衝突→改番
+    remap[e.id] = id;
+    const ne = { ...e, id };
+    byId[id] = ne; byContent[ck] = id; merged.push(ne);
+  });
+  const remapEx = id => remap[id] || id;
+
+  // 2) logs: 内容キーで union (二次側の exId は remap 済みで突き合わせる)
+  const logMap = new Map();
+  primary.logs.forEach(l => logMap.set(logContentKey(l), { ...l }));
+  secondary.logs.forEach(l0 => {
+    const l = { ...l0, exId: remapEx(l0.exId) };
+    const k = logContentKey(l);
+    if (!logMap.has(k)) logMap.set(k, l);
+  });
+  let nid = 1;
+  const logs = [...logMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1)).map(l => ({ ...l, id: nid++ }));
+
+  // 3) weights: 日付で union (primary 優先)
+  const wMap = new Map();
+  secondary.weights.forEach(w => wMap.set(w.date, w));
+  primary.weights.forEach(w => wMap.set(w.date, w));
+  const weights = [...wMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1));
+
+  // 4) マイメニュー: remap 後に内容で union、改番。primary の myToday を追従
+  let mid = 1;
+  const menuIdMap = new Map(); // contentKey -> new id
+  const menuMap = new Map();
+  const primaryMenus = primary.myMenus.map(m => ({ ...m, _src: 'p' }));
+  const secondaryMenus = secondary.myMenus.map(m => ({ ...m, items: m.items.map(i => ({ ...i, exId: remapEx(i.exId) })), _src: 's' }));
+  [...primaryMenus, ...secondaryMenus].forEach(m => {
+    const k = menuContentKey(m);
+    if (menuMap.has(k)) return;
+    const nm = { id: mid++, name: m.name, items: m.items.map(({ _src, ...it }) => it) };
+    menuMap.set(k, nm); menuIdMap.set(k, nm.id);
+  });
+  const myMenus = [...menuMap.values()];
+  let myToday = null;
+  if (primary.myToday) {
+    const srcMenu = primary.myMenus.find(m => m.id === primary.myToday.id);
+    if (srcMenu) { const nid2 = menuIdMap.get(menuContentKey(srcMenu)); if (nid2 != null) myToday = { date: primary.myToday.date, id: nid2 }; }
+  }
+
+  // 5) lastW: 統合 (primary 優先)、dayDone は logs から今日分だけ再構築
+  const lastW = { ...secondary.lastW, ...primary.lastW };
+  const today = todayStr();
+  const dayDone = {};
+  logs.filter(l => l.date === today).forEach(l => { (dayDone[today] = dayDone[today] || {})[l.exId] = { id: l.id, src: 'plan' }; });
+
+  const out = defaultState();
+  Object.assign(out, {
+    profile: primary.profile, focus: primary.focus, plan: primary.plan,
+    mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
+    logs, weights, lastW, customEx: merged, myMenus, myToday, dayDone,
+    nextId: nid,
+  });
+  return out;
+}
+
 function loadState() {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -211,10 +297,36 @@ function loadState() {
     return defaultState();
   }
 }
+let applyingRemote = false; // リモート適用中はクラウドへ再pushしない (エコー防止)
 function saveState() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
   catch (e) { console.warn('state save failed', e); }
+  if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
 }
+
+// ===== cloud.js とのブリッジ =====
+// 現在の状態を取得 (クラウドへ書き込む用)
+window.__klGetState = () => S;
+// リモート(別端末/初回ログイン)の状態をローカルに統合して反映
+// 戻り値 { changed, state }: changed=trueなら統合でローカルに追加が入った=クラウドへ書き戻す
+window.__klApplyRemote = (remoteState) => {
+  applyingRemote = true;
+  let changed = false;
+  try {
+    const before = JSON.stringify(S);
+    const merged = mergeStates(S, remoteState);
+    changed = JSON.stringify(merged) !== before;
+    S = merged;
+    localStorage.setItem(LS_KEY, JSON.stringify(S));
+    rebuildDB(S.customEx);
+    simState = null;
+    if (!$('#modal-bg')) route();
+  } catch (e) { console.warn('remote merge failed', e); }
+  applyingRemote = false;
+  return { changed, state: S };
+};
+// ログイン状態が変わったら該当画面(ツール)を再描画
+window.__klOnAuth = () => { if (currentView() === 'tools' && !$('#modal-bg')) route(); };
 
 // 状態の初期化は全ヘルパー定義後に行う (const のTDZを踏まないよう必ずこの位置)
 let S = loadState();
@@ -1263,11 +1375,42 @@ function ensureAudio() {
     if (audioCtx.state === 'suspended') audioCtx.resume();
   } catch (e) { /* 音が出せない環境は無視 */ }
 }
+function cloudCardHtml() {
+  const c = window.__klCloud;
+  if (!c) return `<div class="card"><h2>☁️ 端末間同期</h2><p class="card-note">読み込み中...</p></div>`;
+  const st = c.status();
+  if (st.user) {
+    return `<div class="card"><h2>☁️ 端末間同期<span class="tag good" style="font-size:10px">ON</span></h2>
+      <p style="font-size:13.5px">${esc(st.user.name || st.user.email || 'ログイン中')} でログイン中。この端末の記録は自動でクラウドに保存され、同じGoogleアカウントの別端末と同期されます。</p>
+      <p class="card-note">${st.syncing ? '同期中...' : (st.lastSync ? '最終同期: ' + st.lastSync : 'まもなく同期します')}</p>
+      <button class="btn ghost" id="cloud-signout">ログアウト(同期を止める)</button>
+      <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。</p>
+    </div>`;
+  }
+  return `<div class="card"><h2>☁️ 端末間同期</h2>
+    <p style="font-size:13.5px;margin-bottom:10px">Googleでログインすると、記録・メニュー・体重が<b>スマホとPCなど複数の端末で同期</b>されます。機種変更してもデータが引き継がれます。</p>
+    <button class="btn" id="cloud-signin">Googleでログイン</button>
+    <p class="card-note">ログインしなくても全機能そのまま使えます(データはこの端末に保存)。ログインは任意です。</p>
+  </div>`;
+}
+
+function bindCloudCard(root) {
+  const inBtn = $('#cloud-signin', root);
+  if (inBtn) inBtn.addEventListener('click', () => { if (window.__klCloud) window.__klCloud.signIn(); });
+  const outBtn = $('#cloud-signout', root);
+  if (outBtn) outBtn.addEventListener('click', () => {
+    if (confirm('ログアウトします。この端末のデータは残りますが、以後の変更は同期されません。')) {
+      if (window.__klCloud) window.__klCloud.signOut();
+    }
+  });
+}
+
 function renderTools() {
   const root = $('#view-tools');
   const p = S.profile;
 
   root.innerHTML = `
+    ${cloudCardHtml()}
     <div class="card"><h2>⏱️ 休憩タイマー</h2>
       <div class="timer-display" id="timer-disp">${fmtTimer(timer.sec)}</div>
       <div class="timer-btns">
@@ -1340,6 +1483,8 @@ function renderTools() {
       筋トレLAB v1.0 — 本アプリの数値は研究に基づく一般的な目安で、医学的助言ではありません。
       持病・怪我・痛みがある場合は医師やトレーナーに相談してください。
     </p>`;
+
+  bindCloudCard(root);
 
   // タイマー
   $all('[data-t]', root).forEach(b => b.addEventListener('click', () => {
