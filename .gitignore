@@ -2,3 +2,5 @@
 seed-demo.html
 share-preview.html
 .claude/
+# 内部戦略ドキュメント (Pagesで公開配信されるため絶対にpush/デプロイしない)
+docs/
