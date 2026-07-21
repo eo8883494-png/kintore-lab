@@ -1,0 +1,4 @@
+# 開発用ページ (seed-demo は開くと localStorage を上書きするため絶対に公開しない)
+seed-demo.html
+share-preview.html
+.claude/
