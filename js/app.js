@@ -22,7 +22,7 @@ const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: '
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null };
+  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -162,6 +162,7 @@ function sanitizeState(s) {
     const mid = Number(s.myToday.id);
     if (out.myMenus.some(m => m.id === mid)) out.myToday = { date: s.myToday.date, id: mid };
   }
+  out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
 
@@ -283,6 +284,7 @@ function mergeStates(local, remote) {
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
     logs, weights, lastW, customEx: merged, myMenus, myToday, dayDone,
     nextId: nid,
+    pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
   return out;
 }
@@ -303,6 +305,21 @@ function saveState() {
   catch (e) { console.warn('state save failed', e); }
   if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
 }
+
+// ===== Pro (買い切り) — 2026-07-22 ドーマント実装 =====
+// 現状は「無料検証フェーズ」= どの機能もロックしない(isPro参照箇所ゼロ)。
+// Web牽引ゲート到達時に PRO_UI_ENABLED=true + 各機能を if(!isPro()) でゲートすれば解禁。
+// アンロック機構(状態フラグ/解除コード/端末間sticky-true同期)だけ先に通しておく。
+const PRO_UI_ENABLED = false;           // trueにすると設定にProコード入力欄が出る(launch時)
+const PRO_CODE = 'KLPRO-SETME';         // launch時に確定=BOOTH/note配布コード。ドーマント中は未使用
+function isPro() { return !!(S && S.pro); }
+// 解除コード適用: 成功でtrue。S.proを立ててsaveState()→cloud syncにも伝播、mergeでsticky維持。
+function applyProCode(code) {
+  if (typeof code !== 'string' || code.trim().toUpperCase() !== PRO_CODE) return false;
+  if (!S.pro) { S.pro = true; saveState(); }
+  return true;
+}
+window.__klPro = { isPro, applyCode: applyProCode, uiEnabled: PRO_UI_ENABLED };
 
 // ===== cloud.js とのブリッジ =====
 // 現在の状態を取得 (クラウドへ書き込む用)

@@ -1,2 +1,4 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://eo8883494-png.github.io/kintore-lab/sitemap.xml
