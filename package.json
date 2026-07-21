@@ -1,0 +1,19 @@
+{
+  "name": "kintore-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "筋トレLAB — iOS(Capacitor)ラッパー。Web版は素の静的サイトのまま、iOSは www/ を内包してビルドする。",
+  "type": "module",
+  "scripts": {
+    "build:www": "node scripts/build-www.mjs",
+    "sync": "npm run build:www && cap sync",
+    "ios:open": "npm run build:www && cap sync ios && cap open ios"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.4.0"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.4.0",
+    "@capacitor/ios": "^8.4.0"
+  }
+}

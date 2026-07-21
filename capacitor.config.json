@@ -1,0 +1,8 @@
+{
+  "appId": "com.hatarakuai.kintorelab",
+  "appName": "筋トレLAB",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "always"
+  }
+}
