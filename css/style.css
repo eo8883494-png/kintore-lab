@@ -314,3 +314,56 @@ details.acc summary { padding: 11px 14px; font-weight: 700; font-size: 13.5px; c
 details.acc summary::-webkit-details-marker { display: none; }
 details.acc .acc-body { padding: 12px 14px; font-size: 12.5px; }
 details.acc .acc-body ul { padding-left: 18px; }
+
+/* ================= デスクトップ (≥960px): 左サイドバー + マソンリー ================= */
+@media (min-width: 960px) {
+  body { padding-bottom: 0; }
+
+  /* トップバー: サイドバーより前面に出してロゴをサイドバー頭に見せる */
+  .topbar { padding-left: 24px; z-index: 30; }
+  .logo { font-size: 20px; }
+
+  /* 下タブ → 左の縦型ナビ */
+  .tabbar {
+    top: 0; bottom: 0; left: 0; right: auto; width: 232px;
+    flex-direction: column; justify-content: flex-start; gap: 4px;
+    background: var(--bg); backdrop-filter: none;
+    border-top: none; border-right: 1px solid var(--line);
+    padding: 72px 14px 18px;
+  }
+  .tabbar a {
+    flex: 0 0 auto; width: 100%;
+    display: flex; align-items: center; gap: 13px; text-align: left;
+    font-size: 14.5px; font-weight: 700; padding: 12px 14px; border-radius: 12px;
+    transition: background 0.12s, color 0.12s;
+  }
+  .tabbar a .ticon { display: inline-block; font-size: 21px; line-height: 1; }
+  .tabbar a:hover { background: var(--surface); color: var(--ink); }
+  .tabbar a.active { background: var(--surface2); color: var(--accent); }
+
+  /* コンテンツ: サイドバーの右、幅に応じて 1〜2 カラムのマソンリー */
+  main { max-width: 1240px; margin: 0; margin-left: 232px; padding: 26px 40px 40px; }
+  .view.active { columns: 440px; column-gap: 22px; }
+  .view.active > * { break-inside: avoid; }
+  .card, .plan-day, details.acc, .stat-row { break-inside: avoid; }
+  .card { margin-bottom: 22px; }
+  /* stat-row をカラム内に収めても3タイルが読める幅を確保 */
+  .stat-tile .v { font-size: 24px; }
+
+  /* デスクトップの操作感: ボタン/カードにホバー */
+  .btn { cursor: pointer; transition: filter 0.12s, transform 0.06s; }
+  .btn:hover { filter: brightness(1.06); }
+  .btn.ghost:hover { background: var(--surface); }
+  .chip, .today-ex, .plan-ex, .log-entry, .meal-item { }
+  .plan-ex:hover, [data-open-ex]:hover { background: var(--surface2); cursor: pointer; }
+
+  /* モーダルは中央やや上に */
+  .modal { max-width: 600px; }
+  .toast { bottom: 28px; }
+}
+
+/* 超ワイド: カラムをもう少し広げて余白を締める */
+@media (min-width: 1500px) {
+  main { max-width: 1400px; }
+  .view.active { columns: 460px; }
+}
