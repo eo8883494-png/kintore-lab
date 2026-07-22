@@ -22,7 +22,7 @@ const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: '
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], pro: false };
+  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -177,6 +177,15 @@ function sanitizeState(s) {
       });
     });
   }
+  // 食事の手動PFC目標(設定時のみ・カロリーはP/F/Cから導出)
+  if (s.mealTargets && typeof s.mealTargets === 'object' && s.mealTargets.custom) {
+    out.mealTargets = {
+      custom: true,
+      p: Math.round(numIn(s.mealTargets.p, 20, 400, 120)),
+      f: Math.round(numIn(s.mealTargets.f, 10, 300, 60)),
+      c: Math.round(numIn(s.mealTargets.c, 0, 1000, 250)),
+    };
+  }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -305,6 +314,7 @@ function mergeStates(local, remote) {
   const tpMap = new Map();
   [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
   out.timerPresets = [...tpMap.values()].slice(0, 30);
+  out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
   return out;
 }
 
@@ -914,20 +924,22 @@ function renderPlan() {
 
   if (S.plan) {
     html += `<div class="card"><h2>📋 週間メニュー<span class="sub">${S.plan.createdAt} 生成</span></h2>`;
-    S.plan.days.forEach(day => {
+    S.plan.days.forEach((day, di) => {
       html += `<div class="plan-day"><div class="plan-day-head"><span class="wd">${WEEKDAY_NAMES[day.weekday]}</span>${esc(day.name)}<span class="mins">約${day.minutes}分</span></div>`;
-      day.items.forEach(it => {
+      day.items.forEach((it, ii) => {
         const ex = DB.byId[it.exId];
         if (!ex) return;
         html += `<div class="plan-ex" data-open-ex="${it.exId}">
           <div><div class="nm">${esc(ex.name)}${it.priority ? '<span class="pri">◆優先</span>' : ''}</div>
           <div class="meta">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]}</div></div>
           <div class="setrep">${it.sets}×${esc(it.reps)}${ex.isometric ? '秒' : ''}<small>休${it.rest}秒</small></div>
+          <button class="plan-ex-edit" data-di="${di}" data-ii="${ii}" aria-label="編集" style="flex:none;background:none;border:none;color:inherit;opacity:.55;font-size:16px;padding:4px 2px 4px 6px;cursor:pointer">✎</button>
         </div>`;
       });
+      html += `<div style="padding:8px 14px"><button class="btn ghost small add-ex" data-di="${di}" style="width:100%">＋ 種目を追加</button></div>`;
       html += `</div>`;
     });
-    html += `<p class="card-note">種目タップでフォーム解説。曜日は目安なのでズレてもOK。</p></div>`;
+    html += `<p class="card-note">種目タップでフォーム解説、✎でセット/レップ/休憩を編集。＋で種目追加。曜日は目安なのでズレてもOK。</p></div>`;
 
     // 週間ボリュームと判定
     html += `<div class="card"><h2>📊 部位別 週セット数</h2>`;
@@ -977,9 +989,104 @@ function renderPlan() {
     toast('シャッフルしました');
     renderPlan();
   });
+  $all('.plan-ex-edit', root).forEach(b => b.addEventListener('click', (e) => {
+    e.stopPropagation(); // 行タップ(フォーム解説)を抑止して編集を開く
+    openPlanItemEditor(Number(b.dataset.di), Number(b.dataset.ii));
+  }));
+  $all('.add-ex', root).forEach(b => b.addEventListener('click', () => openPlanExercisePicker(Number(b.dataset.di), null)));
   $all('[data-open-ex]', root).forEach(el => {
     el.addEventListener('click', () => openExerciseModal(el.dataset.openEx));
   });
+}
+
+// プラン編集: セット数/ボリュームなどの派生値を再計算(sanitizePlanと同じロジック)
+function recomputePlanDerived() {
+  if (!S.plan) return;
+  const ws = {};
+  SCIENCE.parts.forEach(pt => { ws[pt.key] = 0; });
+  S.plan.days.forEach(d => {
+    d.items.forEach(it => { if (ws[it.part] != null) ws[it.part] += it.sets; });
+    d.minutes = dayMinutes(d.items);
+  });
+  S.plan.weeklySets = ws;
+}
+
+// プラン: 1種目のセット/レップ/休憩を自由編集(+削除・種目変更)
+function openPlanItemEditor(di, ii) {
+  const day = S.plan && S.plan.days[di];
+  const item = day && day.items[ii];
+  if (!item) return;
+  const ex = DB.byId[item.exId];
+  const bg = openModal(`
+    <h2>${esc(ex ? ex.name : '種目')}</h2>
+    <p class="modal-sub">セット・レップ・休憩を自由に調整できます。</p>
+    <div class="grid2">
+      <div class="field"><label>セット数</label><input type="number" id="pe-sets" value="${item.sets}" min="1" max="10" inputmode="numeric"></div>
+      <div class="field"><label>${ex && ex.isometric ? 'キープ秒' : 'レップ'}</label><input type="text" id="pe-reps" value="${esc(item.reps)}" maxlength="20" placeholder="例: 8-12"></div>
+    </div>
+    <div class="field"><label>休憩（秒・15〜600）</label><input type="number" id="pe-rest" value="${item.rest}" min="15" max="600" step="15" inputmode="numeric"></div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button class="btn ghost small" id="pe-swap" style="flex:1">別の種目に変更</button>
+      <button class="btn ghost small" id="pe-del" style="flex:1;color:var(--warn,#f87171)">この種目を削除</button>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn" id="pe-save">保存</button>
+    </div>`);
+  $('#pe-save', bg).addEventListener('click', () => {
+    item.sets = Math.max(1, Math.min(10, Math.round(Number($('#pe-sets', bg).value) || item.sets)));
+    const reps = ($('#pe-reps', bg).value || '').trim().slice(0, 20);
+    if (reps) item.reps = reps;
+    item.rest = Math.max(15, Math.min(600, Math.round(Number($('#pe-rest', bg).value) || item.rest)));
+    recomputePlanDerived(); saveState(); closeModal(); toast('更新しました'); renderPlan();
+  });
+  $('#pe-del', bg).addEventListener('click', () => {
+    day.items.splice(ii, 1);
+    recomputePlanDerived(); saveState(); closeModal(); toast('削除しました'); renderPlan();
+  });
+  $('#pe-swap', bg).addEventListener('click', () => { closeModal(); openPlanExercisePicker(di, ii); });
+}
+
+// プラン: 種目を選ぶ(replaceIi=null なら追加、番号指定なら差し替え)
+function openPlanExercisePicker(di, replaceIi) {
+  if (!S.plan || !S.plan.days[di]) return;
+  const goal = S.profile.goal;
+  const partBtns = SCIENCE.parts.map(pt => `<button class="btn ghost small pick-part" data-part="${pt.key}">${esc(pt.name)}</button>`).join('');
+  const bg = openModal(`
+    <h2>${replaceIi != null ? '種目を変更' : '種目を追加'}</h2>
+    <p class="modal-sub">部位を選ぶと種目一覧が出ます。器具が無い種目も選べます（自由設定）。</p>
+    <div class="focus-chips" id="pick-parts" style="flex-wrap:wrap;gap:6px">${partBtns}</div>
+    <div id="pick-list" style="margin-top:10px;max-height:44vh;overflow:auto"></div>
+    <div style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`);
+  const listEl = $('#pick-list', bg);
+  const showPart = (part) => {
+    const exs = DB.byPart[part] || [];
+    listEl.innerHTML = exs.length ? exs.map(e => `<div class="plan-ex pick-ex" data-id="${esc(e.id)}" data-part="${part}" style="cursor:pointer">
+        <div><div class="nm">${esc(e.name)}</div><div class="meta">${EQUIP_NAMES[e.equipment]} / ${'★'.repeat(e.level)}${'☆'.repeat(3 - e.level)}</div></div>
+        <div class="setrep" style="margin-left:auto">＋</div></div>`).join('') : '<p class="card-note">該当する種目がありません。</p>';
+    $all('.pick-ex', listEl).forEach(el => el.addEventListener('click', () => {
+      const e = DB.byId[el.dataset.id];
+      if (!e) return;
+      const base = replaceIi != null ? S.plan.days[di].items[replaceIi] : null;
+      const newItem = {
+        exId: e.id, part: el.dataset.part,
+        sets: base ? base.sets : setsFor(goal, false),
+        reps: repsFor(e, goal),
+        rest: restFor(e, goal),
+        priority: base ? base.priority : false,
+      };
+      if (replaceIi != null) S.plan.days[di].items[replaceIi] = newItem;
+      else S.plan.days[di].items.push(newItem);
+      recomputePlanDerived(); saveState(); closeModal();
+      toast(replaceIi != null ? '種目を変更しました' : '種目を追加しました');
+      renderPlan();
+    }));
+  };
+  $all('.pick-part', bg).forEach(b => b.addEventListener('click', () => {
+    $all('.pick-part', bg).forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    showPart(b.dataset.part);
+  }));
 }
 
 // ===== SIM =====

@@ -122,7 +122,10 @@ function scaleMeal(template, kcalTarget, pTarget) {
 
 // 1日分の献立を生成 (dayIndex+seedで日替わりローテーション)
 function generateMealPlan(profile, seed) {
-  const t = mealTargets(profile);
+  let t = mealTargets(profile);
+  // 手動PFC目標が設定されていれば上書き(カロリーはP/F/Cから導出)
+  const mt = (typeof S !== 'undefined' && S && S.mealTargets && S.mealTargets.custom) ? S.mealTargets : null;
+  if (mt) t = { ...t, p: mt.p, f: mt.f, c: mt.c, kcal: mt.p * 4 + mt.f * 9 + mt.c * 4, mode: 'custom' };
   const dayIndex = Math.floor(new Date(todayStr() + 'T12:00:00').getTime() / 86400000);
   const meals = MEAL_META.map((m, mi) => {
     const variants = MEAL_TEMPLATES[m.key];
@@ -228,8 +231,9 @@ function renderMeals() {
   const goalName = SCIENCE.goals[S.profile.goal].name;
   const g = n => Math.round(n);
 
+  const isCustom = t.mode === 'custom';
   let html = `
-    <div class="card"><h2>🎯 今日の栄養目標<span class="sub">${esc(goalName)}向け</span></h2>
+    <div class="card"><h2>🎯 今日の栄養目標<span class="sub">${isCustom ? '<span class="tag good" style="font-size:10px">手動設定</span>' : esc(goalName) + '向け'}</span></h2>
       <div class="hero-num">${t.kcal}<small> kcal/日</small></div>
       <div class="focus-chips" style="margin-top:8px">
         <span class="chip grow">タンパク質 ${t.p}g</span>
@@ -237,11 +241,16 @@ function renderMeals() {
         <span class="chip">炭水化物 ${t.c}g</span>
       </div>
       <p class="card-note">${
-        t.mode === 'teen' ? `成長期はカロリーを削る減量をしません。維持カロリー(約${t.tdee}kcal)+タンパク質+運動で体を作るのが一番安全で確実です。`
+        isCustom ? `自分で設定した目標です（P/F/Cからカロリーを算出）。献立はこの目標に合わせて生成されます。`
+        : t.mode === 'teen' ? `成長期はカロリーを削る減量をしません。維持カロリー(約${t.tdee}kcal)+タンパク質+運動で体を作るのが一番安全で確実です。`
         : t.mode === 'recomp' ? `体重が軽めなのでカロリーは維持(約${t.tdee}kcal)のまま。筋トレ+タンパク質で引き締めるリコンプ設計です。`
         : t.mode === 'maintain' ? `体重は足りているのでカロリーは維持(約${t.tdee}kcal)。このまま重量を伸ばすフェーズです。`
         : t.kcal !== t.tdee + t.adjust ? `健康のため下限${t.kcal}kcal/日に調整しています(維持カロリー約${t.tdee}kcal)。`
-        : `維持カロリー約${t.tdee}kcalに${t.adjust >= 0 ? '+' + t.adjust : t.adjust}kcal(${esc(goalName)})。`}体重や目標を変えると自動で更新されます。</p>
+        : `維持カロリー約${t.tdee}kcalに${t.adjust >= 0 ? '+' + t.adjust : t.adjust}kcal(${esc(goalName)})。`}${isCustom ? '' : '体重や目標を変えると自動で更新されます。'}</p>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn ghost small" id="meals-custom" style="flex:1">🎯 目標を自分で設定</button>
+        ${isCustom ? `<button class="btn ghost small" id="meals-auto" style="flex:1">自動に戻す</button>` : ''}
+      </div>
     </div>
     <button class="btn ghost" id="meals-shuffle" style="margin-bottom:14px">🔀 別のパターンにする</button>`;
 
@@ -317,5 +326,42 @@ function renderMeals() {
     saveState();
     toast('献立を変えました');
     renderMeals();
+  });
+  const customBtn = $('#meals-custom', root);
+  if (customBtn) customBtn.addEventListener('click', () => openMealTargetEditor(t));
+  const autoBtn = $('#meals-auto', root);
+  if (autoBtn) autoBtn.addEventListener('click', () => {
+    S.mealTargets = null; saveState(); toast('自動計算に戻しました'); renderMeals();
+  });
+}
+
+// 食事: PFC目標を自分で設定(カロリーはP/F/Cから導出)
+function openMealTargetEditor(cur) {
+  const bg = openModal(`
+    <h2>栄養目標を自分で設定</h2>
+    <p class="modal-sub">P/F/C（グラム）を入力。カロリーは自動計算されます。</p>
+    <div class="grid2">
+      <div class="field"><label>タンパク質 P（g）</label><input type="number" id="mt-p" value="${cur.p}" min="20" max="400" inputmode="numeric"></div>
+      <div class="field"><label>脂質 F（g）</label><input type="number" id="mt-f" value="${cur.f}" min="10" max="300" inputmode="numeric"></div>
+    </div>
+    <div class="grid2">
+      <div class="field"><label>炭水化物 C（g）</label><input type="number" id="mt-c" value="${cur.c}" min="0" max="1000" inputmode="numeric"></div>
+      <div class="field"><label>カロリー（自動）</label><input type="text" id="mt-kcal" value="${cur.kcal} kcal" readonly style="opacity:.7"></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn" id="mt-save">保存</button>
+    </div>`);
+  const upd = () => {
+    const p = Number($('#mt-p', bg).value) || 0, f = Number($('#mt-f', bg).value) || 0, c = Number($('#mt-c', bg).value) || 0;
+    $('#mt-kcal', bg).value = (p * 4 + f * 9 + c * 4) + ' kcal';
+  };
+  ['mt-p', 'mt-f', 'mt-c'].forEach(id => $('#' + id, bg).addEventListener('input', upd));
+  $('#mt-save', bg).addEventListener('click', () => {
+    const p = Math.max(20, Math.min(400, Math.round(Number($('#mt-p', bg).value) || cur.p)));
+    const f = Math.max(10, Math.min(300, Math.round(Number($('#mt-f', bg).value) || cur.f)));
+    const c = Math.max(0, Math.min(1000, Math.round(Number($('#mt-c', bg).value) || cur.c)));
+    S.mealTargets = { custom: true, p, f, c };
+    saveState(); closeModal(); toast('目標を設定しました'); renderMeals();
   });
 }
