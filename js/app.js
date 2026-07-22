@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -244,6 +244,15 @@ function sanitizeState(s) {
   if (isValidAvatar(s.publicAvatar)) out.publicAvatar = s.publicAvatar;
   out.fillDays = !!s.fillDays;     // 除外しても指定日数で組む(オプトイン)
   out.activeRest = !!s.activeRest; // 休養日にアクティブレストを提案(オプトイン)
+  // セット進捗カウント(日付→'ctx|exId'→完了セット数)
+  if (s.setCount && typeof s.setCount === 'object') {
+    Object.keys(s.setCount).forEach(dt => {
+      if (!DATE_RE.test(dt) || !s.setCount[dt] || typeof s.setCount[dt] !== 'object') return;
+      const m = {};
+      Object.keys(s.setCount[dt]).forEach(k => { const n = Math.round(numIn(s.setCount[dt][k], 0, 30, 0)); if (n > 0) m[k.slice(0, 80)] = n; });
+      if (Object.keys(m).length) out.setCount[dt] = m;
+    });
+  }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -384,6 +393,10 @@ function mergeStates(local, remote) {
   out.publicLink = primary.publicLink || secondary.publicLink || '';
   out.fillDays = primary.fillDays;      // オプトイン設定はprimary優先
   out.activeRest = primary.activeRest;
+  // セット進捗: 日付ごとに union(primary優先で上書き)
+  const sc = {};
+  [secondary.setCount, primary.setCount].forEach(src => { if (src) Object.keys(src).forEach(dt => { sc[dt] = { ...(sc[dt] || {}), ...src[dt] }; }); });
+  out.setCount = sc;
   return out;
 }
 
@@ -851,12 +864,16 @@ function renderHome() {
       const lastW = S.lastW[it.exId];
       const isBW = ex.equipment === 'bodyweight';
       const unit = ex.isometric ? '秒キープ' : '回';
+      const scKey = curCtxKey + '|' + it.exId;
+      const cnt = done ? it.sets : ((S.setCount[today] && S.setCount[today][scKey]) || 0);
+      const dots = Array.from({ length: it.sets }, (_, i) => `<span class="sd ${i < cnt ? 'on' : ''}" data-i="${i}"></span>`).join('');
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
           <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}">
             <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
-            <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it.sets}セット × ${esc(it.reps)}${unit} / 休憩${it.rest}秒</div>
+            <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
+            <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
           </div>
           ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${lastW != null ? lastW : ''}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
           <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱</button>
@@ -949,6 +966,48 @@ function renderHome() {
       if (w > 0) { S.lastW[inp.dataset.ex] = w; saveState(); }
     });
   });
+  $all('.setdots .sd', root).forEach(dot => {
+    dot.addEventListener('click', e => {
+      e.stopPropagation(); // 種目タップ(フォーム解説)を抑止
+      const exId = dot.closest('.setdots').dataset.ex;
+      const i = Number(dot.dataset.i);
+      const ctx = todayPlanContext();
+      const key = ctxKeyOf(ctx) + '|' + exId;
+      const cur = (S.setCount[today] && S.setCount[today][key]) || 0;
+      // 一番上の点を再タップ=1つ戻す、それ以外=その点まで進める
+      setExerciseProgress(exId, cur === i + 1 ? i : i + 1);
+    });
+  });
+}
+
+// ホーム: 種目のセット進捗を更新。満了で自動チェック(記録)、以降は休憩タイマーも出す
+function setExerciseProgress(exId, newCount) {
+  const today = todayStr();
+  if (homeDate !== today) { renderHome(); return; }
+  const ctx = todayPlanContext();
+  const ck = ctxKeyOf(ctx);
+  const allItems = ctx.day ? [...ctx.day.items, ...homeCarry] : [];
+  const item = allItems.find(i => i.exId === exId);
+  if (!item) return;
+  const total = item.sets;
+  newCount = Math.max(0, Math.min(total, Math.round(newCount)));
+  if (!S.setCount[today]) S.setCount[today] = {};
+  const key = ck + '|' + exId;
+  const prev = S.setCount[today][key] || 0;
+  S.setCount[today][key] = newCount;
+  const de = ddGet(S.dayDone[today], exId);
+  const wasDone = !!(de && de.src === ck);
+  // 満了 → 記録(自動チェック)。満了未満へ戻す → 記録解除。どちらも toggleDone が再描画する
+  if (newCount >= total && !wasDone) { saveState(); toggleDone(exId, true); return; }
+  if (newCount < total && wasDone) { saveState(); toggleDone(exId, false); return; }
+  // 途中のセット完了(増加時のみ)は休憩タイマーを出す
+  if (newCount > prev && newCount < total) {
+    const ex = DB.byId[exId];
+    startRestTimer(Number(item.rest) || 90, (ex ? ex.name : '') + ' の休憩');
+    toast(`⏱ ${newCount}/${total}セット完了・休憩${Math.round(Number(item.rest) || 90)}秒`);
+  }
+  saveState();
+  renderHome();
 }
 
 function toggleDone(exId, checked) {
@@ -970,6 +1029,8 @@ function toggleDone(exId, checked) {
       sets: Array.from({ length: item.sets }, () => ({ w, r: repMid(item.reps) })),
     });
     S.dayDone[today][exId] = { id: logId, src: ck };
+    if (!S.setCount[today]) S.setCount[today] = {};
+    S.setCount[today][ck + '|' + exId] = item.sets; // ドット表示を満了に同期
     saveState();
     const remaining = allItems.filter(i => DB.byId[i.exId] && !doneInCtx(i)).length;
     toast(remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`);
@@ -980,6 +1041,7 @@ function toggleDone(exId, checked) {
     if (e && e.src === ck) {
       S.logs = S.logs.filter(l => l.id !== e.id);
       delete S.dayDone[today][exId];
+      if (S.setCount[today]) delete S.setCount[today][ck + '|' + exId]; // ドット進捗もクリア
       saveState();
     }
   }
