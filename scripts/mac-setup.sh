@@ -41,8 +41,12 @@ ok "Homebrew OK ($(brew --version | head -1))"
 
 # 2) Node + CocoaPods ---------------------------------------------------------
 say "Node と CocoaPods を導入"
-brew list node       >/dev/null 2>&1 || brew install node
-brew list cocoapods  >/dev/null 2>&1 || brew install cocoapods
+brew list node >/dev/null 2>&1 || brew install node
+# CocoaPods: 古いHomebrewだと 'brew install cocoapods' が壊れたcask(GUIアプリ)を
+# 掴むことがある。--formula で正しいCLIを明示。ダメなら gem で入れる。
+if ! command -v pod >/dev/null 2>&1; then
+  brew install --formula cocoapods || sudo gem install cocoapods
+fi
 ok "node $(node -v) / npm $(npm -v) / pod $(pod --version)"
 
 # 3) npm 依存(core/ios/cli=Capacitor6 は package.json 済。android を同バージョンで追加)----
