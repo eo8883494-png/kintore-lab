@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -135,6 +135,12 @@ function sanitizeState(s) {
     Object.keys(s.lastW).forEach(k => {
       const v = numIn(s.lastW[k], 0.5, 2000, 0);
       if (v) out.lastW[k.slice(0, 60)] = v;
+    });
+  }
+  if (s.lastR && typeof s.lastR === 'object') {
+    Object.keys(s.lastR).forEach(k => {
+      const v = Math.round(numIn(s.lastR[k], 1, 1000, 0));
+      if (v) out.lastR[k.slice(0, 60)] = v;
     });
   }
 
@@ -366,8 +372,9 @@ function mergeStates(local, remote) {
     if (srcMenu) { const nid2 = menuIdMap.get(menuContentKey(srcMenu)); if (nid2 != null) myToday = { date: primary.myToday.date, id: nid2 }; }
   }
 
-  // 5) lastW: 統合 (primary 優先)、dayDone は logs から今日分だけ再構築
+  // 5) lastW/lastR: 統合 (primary 優先)、dayDone は logs から今日分だけ再構築
   const lastW = { ...secondary.lastW, ...primary.lastW };
+  const lastR = { ...secondary.lastR, ...primary.lastR };
   const today = todayStr();
   const dayDone = {};
   logs.filter(l => l.date === today).forEach(l => { (dayDone[today] = dayDone[today] || {})[l.exId] = { id: l.id, src: 'plan' }; });
@@ -376,7 +383,7 @@ function mergeStates(local, remote) {
   Object.assign(out, {
     profile: primary.profile, focus: primary.focus, exclude: primary.exclude, plan: primary.plan,
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
-    logs, weights, lastW, customEx: merged, myMenus, myToday, dayDone,
+    logs, weights, lastW, lastR, customEx: merged, myMenus, myToday, dayDone,
     nextId: nid,
     pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
@@ -862,8 +869,10 @@ function renderHome() {
       const de = ddGet(doneMap, it.exId);
       const done = !!(de && de.src === curCtxKey);
       const lastW = S.lastW[it.exId];
+      const lastR = S.lastR[it.exId];
       const isBW = ex.equipment === 'bodyweight';
       const unit = ex.isometric ? '秒キープ' : '回';
+      const rUnit = ex.isometric ? '秒' : '回';
       const scKey = curCtxKey + '|' + it.exId;
       const cnt = done ? it.sets : ((S.setCount[today] && S.setCount[today][scKey]) || 0);
       const dots = Array.from({ length: it.sets }, (_, i) => `<span class="sd ${i < cnt ? 'on' : ''}" data-i="${i}"></span>`).join('');
@@ -876,6 +885,7 @@ function renderHome() {
             <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
           </div>
           ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${lastW != null ? lastW : ''}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
+          <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1"><span class="unit">${rUnit}</span>
           <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱</button>
         </div>`;
     };
@@ -966,6 +976,12 @@ function renderHome() {
       if (w > 0) { S.lastW[inp.dataset.ex] = w; saveState(); }
     });
   });
+  $all('input.rinp', root).forEach(inp => {
+    inp.addEventListener('change', () => {
+      const r = Math.round(Number(inp.value));
+      if (r > 0) { S.lastR[inp.dataset.ex] = r; saveState(); }
+    });
+  });
   $all('.setdots .sd', root).forEach(dot => {
     dot.addEventListener('click', e => {
       e.stopPropagation(); // 種目タップ(フォーム解説)を抑止
@@ -1023,10 +1039,13 @@ function toggleDone(exId, checked) {
     const winp = $(`input.winp[data-ex="${exId}"]`);
     const w = winp ? Number(winp.value) || 0 : 0;
     if (w > 0) S.lastW[exId] = w;
+    const rinp = $(`input.rinp[data-ex="${exId}"]`);
+    const r = rinp && Number(rinp.value) > 0 ? Math.round(Number(rinp.value)) : repMid(item.reps); // 実際の回数を優先(未入力なら目標の中央値)
+    if (r > 0) S.lastR[exId] = r;
     const logId = newId();
     S.logs.push({
       id: logId, date: today, exId,
-      sets: Array.from({ length: item.sets }, () => ({ w, r: repMid(item.reps) })),
+      sets: Array.from({ length: item.sets }, () => ({ w, r })),
     });
     S.dayDone[today][exId] = { id: logId, src: ck };
     if (!S.setCount[today]) S.setCount[today] = {};
