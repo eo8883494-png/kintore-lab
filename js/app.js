@@ -22,7 +22,7 @@ const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: '
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, pro: false };
+  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -162,6 +162,21 @@ function sanitizeState(s) {
     const mid = Number(s.myToday.id);
     if (out.myMenus.some(m => m.id === mid)) out.myToday = { date: s.myToday.date, id: mid };
   }
+  // インターバルタイマーの保存プリセット
+  if (Array.isArray(s.timerPresets)) {
+    s.timerPresets.slice(0, 30).forEach(t => {
+      if (!t || typeof t !== 'object' || typeof t.name !== 'string' || !t.name.trim()) return;
+      out.timerPresets.push({
+        name: t.name.slice(0, 20),
+        prep: Math.round(numIn(t.prep, 0, 60, 5)),
+        work: Math.round(numIn(t.work, 1, 3600, 60)),
+        rest: Math.round(numIn(t.rest, 0, 3600, 30)),
+        reps: Math.round(numIn(t.reps, 1, 100, 8)),
+        sets: Math.round(numIn(t.sets, 1, 50, 1)),
+        setRest: Math.round(numIn(t.setRest, 0, 3600, 60)),
+      });
+    });
+  }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -286,6 +301,10 @@ function mergeStates(local, remote) {
     nextId: nid,
     pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
+  // タイマープリセット: 内容で union(primary優先・上限30)
+  const tpMap = new Map();
+  [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
+  out.timerPresets = [...tpMap.values()].slice(0, 30);
   return out;
 }
 
@@ -1479,6 +1498,8 @@ function renderTools() {
       <p class="card-note">終了時に音とバイブでお知らせ。コンパウンド種目は2〜3分、アイソレーションは60〜90秒が目安。</p>
     </div>
 
+    ${itCardHtml()}
+
     <div class="card"><h2>🏋️ 1RM計算機</h2>
       <div class="grid2">
         <div class="field"><label>重量 kg</label><input type="number" id="rm-w" placeholder="60" step="0.5"></div>
@@ -1548,6 +1569,9 @@ function renderTools() {
   }));
   $('#timer-toggle', root).addEventListener('click', () => { timer.iv ? stopTimer() : startTimer(); });
   $('#timer-reset', root).addEventListener('click', () => { stopTimer(); timer.sec = timer.total || 0; updateTimerDisp(); });
+
+  // インターバルタイマー
+  bindITimer(root);
 
   // 1RM
   const rmCalc = () => {
@@ -1689,6 +1713,215 @@ function timerAlarm() {
   toast('⏱️ 休憩終了!次のセット!');
 }
 
+// ===== インターバルタイマー(自由設定・プリセット保存) =====
+const IT_LIMITS = { prep: [0, 60], work: [1, 3600], rest: [0, 3600], reps: [1, 100], sets: [1, 50], setRest: [0, 3600] };
+let itCfg = { prep: 5, work: 60, rest: 30, reps: 8, sets: 1, setRest: 60 };
+let iTimer = { phases: [], idx: 0, sec: 5, endAt: 0, iv: null, lastBeep: -1 };
+
+// 設定→フェーズ列を組む(準備→[トレ→休憩]×繰り返し→セット間 ×セット数)
+function itBuildPhases(c) {
+  const ph = [];
+  if (c.prep > 0) ph.push({ type: 'prep', label: '準備', sec: c.prep });
+  for (let s = 1; s <= c.sets; s++) {
+    for (let r = 1; r <= c.reps; r++) {
+      ph.push({ type: 'work', label: 'トレーニング', sec: c.work, set: s, rep: r });
+      if (c.rest > 0 && r < c.reps) ph.push({ type: 'rest', label: '休憩', sec: c.rest, set: s, rep: r });
+    }
+    if (c.setRest > 0 && s < c.sets) ph.push({ type: 'setrest', label: 'セット間', sec: c.setRest, set: s });
+  }
+  return ph;
+}
+function itTotalSec(c) { return itBuildPhases(c).reduce((a, p) => a + p.sec, 0); }
+function itPhaseColor(t) { return t === 'work' ? '#4ade80' : t === 'prep' ? '#fbbf24' : t === 'setrest' ? '#f472b6' : '#60a5fa'; }
+function itMetaText() {
+  if (!iTimer.phases.length) return `トレ${itCfg.work}秒 / 休憩${itCfg.rest}秒 を ${itCfg.reps}回 × ${itCfg.sets}セット`;
+  const cur = iTimer.phases[iTimer.idx];
+  if (!cur) return '完了 🎉';
+  let m = '';
+  if (cur.set) m += `セット ${cur.set}/${itCfg.sets}`;
+  if (cur.rep) m += `${m ? ' ・ ' : ''}${cur.rep}/${itCfg.reps}回`;
+  return m || cur.label;
+}
+function itField(label, key, val, unit) {
+  return `<div class="field"><label>${label}${unit ? '（' + unit + '）' : ''}</label>
+    <input type="number" class="it-in" data-k="${key}" value="${val}" min="${IT_LIMITS[key][0]}" max="${IT_LIMITS[key][1]}" inputmode="numeric"></div>`;
+}
+function itCardHtml() {
+  const c = itCfg;
+  const running = !!iTimer.iv;
+  const cur = iTimer.phases[iTimer.idx];
+  const active = iTimer.phases.length > 0;
+  const dispSec = active ? iTimer.sec : (c.prep > 0 ? c.prep : c.work);
+  const phaseLabel = active ? (cur ? cur.label : '完了 🎉') : 'スタート待ち';
+  const color = active && cur ? itPhaseColor(cur.type) : 'var(--text, #e6e8ea)';
+  const chips = (S.timerPresets || []).map((t, i) =>
+    `<span class="it-chip" style="display:inline-flex;align-items:center;border:1px solid rgba(255,255,255,.18);border-radius:999px;overflow:hidden">
+      <button class="it-load" data-i="${i}" style="background:none;border:none;color:inherit;padding:6px 4px 6px 12px;font-size:13px;cursor:pointer">${esc(t.name)}</button>
+      <button class="it-del" data-i="${i}" aria-label="削除" style="background:none;border:none;color:inherit;opacity:.55;padding:6px 10px 6px 4px;font-size:14px;cursor:pointer">×</button>
+    </span>`).join('');
+  return `<div class="card"><h2>⏱️ インターバルタイマー</h2>
+    <p class="card-note" style="margin-top:-4px">HIIT・タバタ・サーキットを自由に設定。準備→トレ→休憩を繰り返し、複数セットも対応。</p>
+    <div class="timer-display ${running ? 'running' : ''}" id="it-time" style="color:${color}">${fmtTimer(dispSec)}</div>
+    <div id="it-phase" style="text-align:center;font-weight:700;font-size:15px;margin:-6px 0 2px;color:${color}">${phaseLabel}</div>
+    <div id="it-meta" class="card-note" style="text-align:center;margin-bottom:10px">${itMetaText()}</div>
+    <div class="timer-btns">
+      <button class="btn" id="it-toggle">${running ? '⏸ 一時停止' : '▶ スタート'}</button>
+      <button class="btn ghost" id="it-reset">リセット</button>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px">
+      ${itField('準備', 'prep', c.prep, '秒')}
+      ${itField('トレーニング', 'work', c.work, '秒')}
+      ${itField('休憩', 'rest', c.rest, '秒')}
+      ${itField('繰り返し回数', 'reps', c.reps, '回')}
+      ${itField('セット数', 'sets', c.sets, '')}
+      ${itField('セット間の準備', 'setRest', c.setRest, '秒')}
+    </div>
+    <p class="card-note" id="it-total">合計 約 ${fmtTimer(itTotalSec(c))}（フェーズ切替と残り3秒で音・バイブ）</p>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <input type="text" id="it-name" placeholder="メニュー名を付けて保存" maxlength="20"
+        style="flex:1;min-width:0;padding:9px 12px;border:1px solid rgba(255,255,255,.18);border-radius:8px;background:rgba(255,255,255,.04);color:inherit;font-size:14px">
+      <button class="btn small" id="it-save">保存</button>
+    </div>
+    ${(S.timerPresets || []).length ? `<div class="it-presets" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">${chips}</div>` : ''}
+  </div>`;
+}
+function itSyncDisp() {
+  const cur = iTimer.phases[iTimer.idx];
+  const color = iTimer.phases.length && cur ? itPhaseColor(cur.type) : '';
+  const t = document.getElementById('it-time');
+  if (t) { t.textContent = fmtTimer(iTimer.sec); t.classList.toggle('running', !!iTimer.iv); if (color) t.style.color = color; }
+  const ph = document.getElementById('it-phase');
+  if (ph) { ph.textContent = iTimer.phases.length ? (cur ? cur.label : '完了 🎉') : 'スタート待ち'; if (color) ph.style.color = color; }
+  const mt = document.getElementById('it-meta');
+  if (mt) mt.textContent = itMetaText();
+  const tg = document.getElementById('it-toggle');
+  if (tg) tg.textContent = iTimer.iv ? '⏸ 一時停止' : '▶ スタート';
+}
+function itLoadPhase(i) {
+  iTimer.idx = i;
+  const p = iTimer.phases[i];
+  iTimer.sec = p ? p.sec : 0;
+  iTimer.lastBeep = -1;
+}
+function itStart() {
+  if (iTimer.iv) return;
+  ensureAudio();
+  if (!iTimer.phases.length || iTimer.idx >= iTimer.phases.length) {
+    iTimer.phases = itBuildPhases(itCfg);
+    if (!iTimer.phases.length) { toast('設定を確認してください'); return; }
+    itLoadPhase(0);
+  }
+  iTimer.endAt = Date.now() + iTimer.sec * 1000;
+  iTimer.iv = setInterval(itTick, 200);
+  itSyncDisp();
+}
+function itPause() {
+  clearInterval(iTimer.iv); iTimer.iv = null;
+  iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
+  itSyncDisp();
+}
+function itReset() {
+  clearInterval(iTimer.iv); iTimer.iv = null;
+  iTimer.phases = []; iTimer.idx = 0; iTimer.lastBeep = -1;
+  iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work;
+  itSyncDisp();
+}
+function itTick() {
+  const remMs = iTimer.endAt - Date.now();
+  iTimer.sec = Math.max(0, Math.ceil(remMs / 1000));
+  const rem = iTimer.sec;
+  if (rem > 0 && rem <= 3 && rem !== iTimer.lastBeep) { iTimer.lastBeep = rem; itBeep(660, 0.12); }
+  if (remMs <= 0) itAdvance();
+  else itSyncDisp();
+}
+function itAdvance() {
+  const next = iTimer.idx + 1;
+  if (next >= iTimer.phases.length) {
+    clearInterval(iTimer.iv); iTimer.iv = null;
+    iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
+    itFinishAlarm();
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+    itSyncDisp();
+    return;
+  }
+  itLoadPhase(next);
+  iTimer.endAt = Date.now() + iTimer.sec * 1000;
+  const p = iTimer.phases[next];
+  itBeep(p.type === 'work' ? 880 : 520, 0.18);
+  if (navigator.vibrate) navigator.vibrate(p.type === 'work' ? [120, 60, 120] : [200]);
+  itSyncDisp();
+}
+function itBeep(freq, dur) {
+  try {
+    ensureAudio(); const ac = audioCtx; if (!ac) return;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.connect(g); g.connect(ac.destination);
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.25, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+    o.start(); o.stop(ac.currentTime + dur + 0.02);
+  } catch (e) { /* 音が出せない環境は無視 */ }
+}
+function itFinishAlarm() {
+  try {
+    ensureAudio(); const ac = audioCtx; if (!ac) throw new Error('no audio');
+    [0, 0.22, 0.44, 0.7].forEach((t, i) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.connect(g); g.connect(ac.destination);
+      o.frequency.value = i < 3 ? 784 : 1046;
+      g.gain.setValueAtTime(0.3, ac.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.2);
+      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.24);
+    });
+  } catch (e) { /* 無視 */ }
+  toast('🎉 メニュー完了!お疲れさま!');
+}
+function bindITimer(root) {
+  $all('.it-in', root).forEach(inp => inp.addEventListener('input', () => {
+    const k = inp.dataset.k, lim = IT_LIMITS[k];
+    let v = Math.round(Number(inp.value));
+    if (!isFinite(v)) return;
+    v = Math.max(lim[0], Math.min(lim[1], v));
+    itCfg[k] = v;
+    const tot = document.getElementById('it-total');
+    if (tot) tot.textContent = `合計 約 ${fmtTimer(itTotalSec(itCfg))}（フェーズ切替と残り3秒で音・バイブ）`;
+    if (!iTimer.iv && !iTimer.phases.length) { iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work; itSyncDisp(); }
+  }));
+  const tg = $('#it-toggle', root);
+  if (tg) tg.addEventListener('click', () => { iTimer.iv ? itPause() : itStart(); });
+  const rs = $('#it-reset', root);
+  if (rs) rs.addEventListener('click', itReset);
+  const sv = $('#it-save', root);
+  if (sv) sv.addEventListener('click', () => {
+    const nameInp = $('#it-name', root);
+    const name = (nameInp ? nameInp.value : '').trim();
+    if (!name) { toast('メニュー名を入力してください'); return; }
+    S.timerPresets = S.timerPresets || [];
+    if (S.timerPresets.length >= 30) { toast('保存は30件までです'); return; }
+    S.timerPresets.push({ name: name.slice(0, 20), prep: itCfg.prep, work: itCfg.work, rest: itCfg.rest, reps: itCfg.reps, sets: itCfg.sets, setRest: itCfg.setRest });
+    saveState();
+    toast('💾 メニューを保存しました');
+    renderTools();
+  });
+  const pc = root.querySelector('.it-presets');
+  if (pc) pc.addEventListener('click', (e) => {
+    const del = e.target.closest('.it-del'), load = e.target.closest('.it-load');
+    if (del) {
+      const i = Number(del.dataset.i);
+      if (S.timerPresets && S.timerPresets[i]) { S.timerPresets.splice(i, 1); saveState(); renderTools(); }
+      return;
+    }
+    if (load) {
+      const i = Number(load.dataset.i), t = S.timerPresets && S.timerPresets[i];
+      if (!t) return;
+      itCfg = { prep: t.prep, work: t.work, rest: t.rest, reps: t.reps, sets: t.sets, setRest: t.setRest };
+      itReset();
+      renderTools();
+      toast(`「${t.name}」を読み込みました`);
+    }
+  });
+}
+
 // ===== 複数タブ・復帰時の同期 =====
 // 別タブの保存を取り込む: 取り込まないと古いメモリ状態の上書き保存で記録が消える
 function refreshFromStorage() {
@@ -1706,6 +1939,7 @@ window.addEventListener('storage', e => { if (e.key === LS_KEY) refreshFromStora
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   if (timer.iv) tickTimer(); // ロック中に満了したタイマーは復帰直後に鳴らす
+  if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   refreshFromStorage();
 });
 
