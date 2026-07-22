@@ -34,6 +34,28 @@ function detectPlatform(url) {
 // みんなのメニューで選べるアイコン(絵文字プリセット。自由入力は不可でモデレーション簡略化)
 const PUB_ICONS = ['💪', '🔥', '⚡', '🏋️', '🦍', '🐺', '🐉', '🦁', '🐻', '🦏', '🥇', '👑', '🎯', '🚀', '😤', '💯', '🧊', '🥶', '🦵', '🍚', '🥩', '🌱', '⭐', '😎'];
 
+// アバター画像のdataURLが安全か厳格チェック(XSS防止: img srcに入れる前に必ず通す)
+const AVATAR_RE = /^data:image\/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+function isValidAvatar(s) { return typeof s === 'string' && s.length <= 24000 && AVATAR_RE.test(s); }
+
+// 画像ファイル → 正方形に中央クロップ→128px JPEG dataURL(サイズ上限に収める)
+function avatarFromFile(file, cb) {
+  const img = new Image();
+  img.onload = () => {
+    const size = 128;
+    const cv = document.createElement('canvas'); cv.width = size; cv.height = size;
+    const ctx = cv.getContext('2d');
+    const s = Math.min(img.width, img.height);
+    ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+    URL.revokeObjectURL(img.src);
+    let q = 0.7, url = cv.toDataURL('image/jpeg', q);
+    while (url.length > 20000 && q > 0.3) { q -= 0.1; url = cv.toDataURL('image/jpeg', q); }
+    cb(url.length <= 24000 && AVATAR_RE.test(url) ? url : null);
+  };
+  img.onerror = () => { URL.revokeObjectURL(img.src); cb(null); };
+  img.src = URL.createObjectURL(file);
+}
+
 // ===== 状態 =====
 const LS_KEY = 'kintoreLab.v1';
 
@@ -218,6 +240,7 @@ function sanitizeState(s) {
   if (typeof s.publicName === 'string') out.publicName = s.publicName.slice(0, 30);
   if (typeof s.publicIcon === 'string') out.publicIcon = s.publicIcon.slice(0, 8);
   if (typeof s.publicAppeal === 'string') out.publicAppeal = s.publicAppeal.slice(0, 120);
+  if (isValidAvatar(s.publicAvatar)) out.publicAvatar = s.publicAvatar;
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -1168,12 +1191,20 @@ function openMenuPublishModal(menu) {
     return;
   }
   const curIcon = S.publicIcon || PUB_ICONS[0];
+  const curAvatar = isValidAvatar(S.publicAvatar) ? S.publicAvatar : '';
   const iconGrid = PUB_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === curIcon ? 'on' : ''}" data-ic="${ic}">${ic}</button>`).join('');
   const bg = openModal(`
     <h2>「${esc(menu.name)}」を公開</h2>
     <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。アイコンとひとことで自分をアピール💪</p>
-    <div class="field"><label>アイコンを選ぶ</label>
-      <div class="icon-picker" id="pub-icons">${iconGrid}</div></div>
+    <div class="field"><label>アイコン(絵文字 or 画像)</label>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div class="gal-avatar" id="pub-avatar-prev">${curAvatar ? `<img src="${curAvatar}" alt="">` : curIcon}</div>
+        <label class="btn ghost small" style="width:auto">📷 画像を使う<input type="file" accept="image/*" id="pub-avatar-file" hidden></label>
+        <button type="button" class="btn ghost small" id="pub-avatar-clear" style="width:auto;${curAvatar ? '' : 'display:none'}">絵文字に戻す</button>
+      </div>
+      <div class="icon-picker" id="pub-icons">${iconGrid}</div>
+      <p class="card-note">画像は正方形に切り抜いて小さく保存します。⚠️ 公序良俗に反する画像・他人の写真の無断使用は禁止(通報対象)。</p>
+    </div>
     <div class="field"><label>表示名(好きな名前でOK)</label>
       <input type="text" id="pub-name" placeholder="例: きんとれ太郎" maxlength="30" value="${esc(S.publicName || (c.status && c.status().user ? c.status().user.name : '') || '')}"></div>
     <div class="field"><label>ひとことアピール(任意)<span style="float:right;color:var(--ink-dim);font-size:11px" id="appeal-count">0/80</span></label>
@@ -1187,12 +1218,30 @@ function openMenuPublishModal(menu) {
       <button class="btn" id="pub-go">${menu.published ? '更新する' : '公開する'}</button>
     </div>
     ${menu.published && menu.pubId ? '<button class="btn ghost small" id="pub-remove" style="margin-top:10px;width:100%;color:var(--warn,#f87171)">公開を取り消す</button>' : ''}`);
-  // アイコン選択
+  // アイコン選択(絵文字 or 画像。画像があれば優先)
   let pickedIcon = curIcon;
+  let pickedAvatar = curAvatar;
+  const prevEl = $('#pub-avatar-prev', bg), clearBtn = $('#pub-avatar-clear', bg), fileInput = $('#pub-avatar-file', bg);
+  const refreshPrev = () => {
+    if (pickedAvatar) { prevEl.innerHTML = `<img src="${pickedAvatar}" alt="">`; clearBtn.style.display = ''; }
+    else { prevEl.textContent = pickedIcon; clearBtn.style.display = 'none'; }
+  };
   $all('.icon-pick', bg).forEach(b => b.addEventListener('click', () => {
     $all('.icon-pick', bg).forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); pickedIcon = b.dataset.ic;
+    b.classList.add('on'); pickedIcon = b.dataset.ic; pickedAvatar = ''; // 絵文字を選んだら画像は外す
+    refreshPrev();
   }));
+  if (fileInput) fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0];
+    fileInput.value = '';
+    if (!f) return;
+    if (f.size > 12 * 1024 * 1024) { toast('画像が大きすぎます(12MBまで)'); return; }
+    avatarFromFile(f, url => {
+      if (!url) { toast('画像を読み込めませんでした'); return; }
+      pickedAvatar = url; refreshPrev();
+    });
+  });
+  if (clearBtn) clearBtn.addEventListener('click', () => { pickedAvatar = ''; refreshPrev(); });
   const appealBox = $('#pub-appeal', bg), appealCount = $('#appeal-count', bg);
   const updCount = () => { if (appealCount) appealCount.textContent = (appealBox.value.length) + '/80'; };
   if (appealBox) { appealBox.addEventListener('input', updCount); updCount(); }
@@ -1214,11 +1263,11 @@ function openMenuPublishModal(menu) {
     const appeal = (appealBox ? appealBox.value : '').trim().slice(0, 80);
     const items = menu.items.map(it => { const ex = DB.byId[it.exId]; return { exId: it.exId, name: ex ? ex.name : '種目', part: it.part, sets: it.sets, reps: it.reps, rest: it.rest }; });
     const btn = $('#pub-go', bg); btn.disabled = true; btn.textContent = '送信中...';
-    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName, { icon: pickedIcon, appeal });
+    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName, { icon: pickedIcon, appeal, avatar: pickedAvatar });
     if (res.ok) {
       menu.pubId = res.id; menu.pubLink = link; menu.published = true;
       if (dispName) S.publicName = dispName; // 次回以降の既定として保存
-      S.publicIcon = pickedIcon; S.publicAppeal = appeal;
+      S.publicIcon = pickedIcon; S.publicAppeal = appeal; S.publicAvatar = pickedAvatar || '';
       saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
     } else {
       toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
@@ -1280,9 +1329,11 @@ async function openPublicGalleryModal() {
     const exList = (pm.items || []).slice(0, 8).map(it => esc(it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目')).join('、');
     const icon = (typeof pm.icon === 'string' && pm.icon) ? pm.icon : '💪';
     const appeal = (typeof pm.appeal === 'string' && pm.appeal.trim()) ? pm.appeal.trim() : '';
+    // 画像アバターは厳格チェックを通ったものだけ img で表示(XSS防止)。それ以外は絵文字
+    const avatarImg = isValidAvatar(pm.avatar) ? `<img src="${pm.avatar}" alt="">` : esc(icon);
     return `<div class="card" style="margin-bottom:10px">
       <div style="display:flex;align-items:center;gap:10px">
-        <div class="gal-avatar">${esc(icon)}</div>
+        <div class="gal-avatar">${avatarImg}</div>
         <div style="flex:1;min-width:0"><div class="nm" style="font-weight:800">${esc(pm.name)}</div>
         <div class="meta" style="font-size:11.5px;color:var(--ink-dim)">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目</div></div>
         ${pf && SNS_RE.test(pm.link) ? `<a class="btn small ghost" href="${esc(pm.link)}" target="_blank" rel="noopener nofollow ugc">${pf} ▶</a>` : ''}

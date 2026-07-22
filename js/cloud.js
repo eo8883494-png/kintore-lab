@@ -247,6 +247,7 @@ async function publishMenu(menu, link, platform, displayName, extra) {
     name: String(menu.name || '').slice(0, 40),
     icon: String(extra.icon || '').slice(0, 8),
     appeal: String(extra.appeal || '').slice(0, 120),
+    avatar: String(extra.avatar || '').slice(0, 24000), // 縮小済みJPEGのdataURL(任意)
     items: (menu.items || []).slice(0, 15).map(it => ({
       exId: String(it.exId || '').slice(0, 60),
       name: String(it.name || '').slice(0, 40),
