@@ -45,10 +45,11 @@ brew list node       >/dev/null 2>&1 || brew install node
 brew list cocoapods  >/dev/null 2>&1 || brew install cocoapods
 ok "node $(node -v) / npm $(npm -v) / pod $(pod --version)"
 
-# 3) npm 依存(core/ios/cli は package.json 済。android と RevenueCat を追加)----
-say "依存パッケージを導入"
+# 3) npm 依存(core/ios/cli=Capacitor6 は package.json 済。android を同バージョンで追加)----
+#    ※RevenueCat(課金)は後で連携する時に Capacitor6 対応版を追加する(今は不要)
+say "依存パッケージを導入(Capacitor 6 系 = Xcode 15.4 対応)"
 npm install
-npm i @capacitor/android @revenuecat/purchases-capacitor@latest
+npm i @capacitor/android@^6.0.0
 ok "依存 OK"
 
 # 4) www/ 生成(ホワイトリストで静的アセットのみコピー)------------------------

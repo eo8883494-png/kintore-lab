@@ -10,10 +10,10 @@
     "ios:open": "npm run build:www && cap sync ios && cap open ios"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.4.0"
+    "@capacitor/cli": "^6.0.0"
   },
   "dependencies": {
-    "@capacitor/core": "^8.4.0",
-    "@capacitor/ios": "^8.4.0"
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/ios": "^6.0.0"
   }
 }
