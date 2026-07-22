@@ -18,6 +18,19 @@ function rebuildDB(customList) {
 rebuildDB();
 const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: 'バーベル', machine: 'マシン', cable: 'ケーブル' };
 
+// みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
+const SNS_RE = /^https:\/\/(?:www\.|m\.|vm\.)?(?:instagram\.com|youtube\.com|youtu\.be|tiktok\.com|x\.com|twitter\.com|threads\.net)\/[^\s]*$/i;
+function detectPlatform(url) {
+  if (typeof url !== 'string' || !SNS_RE.test(url)) return null;
+  const h = url.toLowerCase();
+  if (h.includes('instagram.com')) return 'Instagram';
+  if (h.includes('youtube.com') || h.includes('youtu.be')) return 'YouTube';
+  if (h.includes('tiktok.com')) return 'TikTok';
+  if (h.includes('x.com') || h.includes('twitter.com')) return 'X';
+  if (h.includes('threads.net')) return 'Threads';
+  return 'SNS';
+}
+
 // ===== 状態 =====
 const LS_KEY = 'kintoreLab.v1';
 
@@ -162,7 +175,12 @@ function sanitizeState(s) {
       if (!Number.isInteger(id) || id <= 0) id = out.myMenus.length + 1;
       while (seenM.has(id)) id++;
       seenM.add(id);
-      out.myMenus.push({ id, name: m.name.slice(0, 20), items });
+      const entry = { id, name: m.name.slice(0, 20), items };
+      // みんなのメニュー公開状態(公開済みなら保持)
+      if (typeof m.pubId === 'string' && m.pubId) entry.pubId = m.pubId.slice(0, 80);
+      if (typeof m.pubLink === 'string' && m.pubLink) entry.pubLink = m.pubLink.slice(0, 300);
+      if (m.published) entry.published = true;
+      out.myMenus.push(entry);
     });
   }
   if (s.myToday && typeof s.myToday === 'object' && typeof s.myToday.date === 'string' && DATE_RE.test(s.myToday.date)) {
@@ -294,6 +312,9 @@ function mergeStates(local, remote) {
     const k = menuContentKey(m);
     if (menuMap.has(k)) return;
     const nm = { id: mid++, name: m.name, items: m.items.map(({ _src, ...it }) => it) };
+    if (m.pubId) nm.pubId = m.pubId;
+    if (m.pubLink) nm.pubLink = m.pubLink;
+    if (m.published) nm.published = true;
     menuMap.set(k, nm); menuIdMap.set(k, nm.id);
   });
   const myMenus = [...menuMap.values()];
@@ -1109,6 +1130,135 @@ function openPlanExercisePicker(di, replaceIi) {
   }));
 }
 
+// ===== みんなのメニュー(公開ギャラリー) =====
+function openMenuPublishModal(menu) {
+  const c = window.__klCloud;
+  if (!c || !c.available) { toast('この環境では公開を利用できません'); return; }
+  if (!c.myUid()) {
+    const bg = openModal(`<h2>公開にはログインが必要です</h2>
+      <p class="modal-sub">「みんなのメニュー」に公開するには、Googleログインが必要です(投稿者を識別してスパムを防ぐため)。</p>
+      <div style="display:flex;gap:10px;margin-top:14px"><button class="btn ghost" onclick="closeModal()">閉じる</button><button class="btn" id="pub-login">Googleでログイン</button></div>`);
+    $('#pub-login', bg).addEventListener('click', () => { closeModal(); c.signIn(); });
+    return;
+  }
+  const bg = openModal(`
+    <h2>「${esc(menu.name)}」を公開</h2>
+    <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。</p>
+    <div class="field"><label>SNSリンク(任意)</label>
+      <input type="text" id="pub-link" placeholder="https://www.instagram.com/..." maxlength="300" value="${esc(menu.pubLink || '')}"></div>
+    <div id="pub-link-note" class="card-note">Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。</div>
+    <p class="card-note">⚠️ 公開すると誰でも見られます。表示名はGoogleアカウント名になります。個人情報や非公開にしたい内容は入れないでください。</p>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn" id="pub-go">${menu.published ? '更新する' : '公開する'}</button>
+    </div>
+    ${menu.published && menu.pubId ? '<button class="btn ghost small" id="pub-remove" style="margin-top:10px;width:100%;color:var(--warn,#f87171)">公開を取り消す</button>' : ''}`);
+  const linkInput = $('#pub-link', bg), noteEl = $('#pub-link-note', bg);
+  const checkLink = () => {
+    const v = linkInput.value.trim();
+    if (!v) { noteEl.textContent = 'Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。'; noteEl.style.color = ''; return true; }
+    const pf = detectPlatform(v);
+    noteEl.textContent = pf ? '✓ ' + pf + ' のリンク' : '✕ Instagram/YouTube/TikTok/X/Threads のURLのみ使えます';
+    noteEl.style.color = pf ? 'var(--accent)' : 'var(--warn,#f87171)';
+    return !!pf;
+  };
+  linkInput.addEventListener('input', checkLink);
+  $('#pub-go', bg).addEventListener('click', async () => {
+    const link = linkInput.value.trim();
+    if (link && !detectPlatform(link)) { toast('SNSリンクはInstagram/YouTube/TikTok/X/Threadsのみ'); return; }
+    const platform = link ? detectPlatform(link) : '';
+    const items = menu.items.map(it => { const ex = DB.byId[it.exId]; return { exId: it.exId, name: ex ? ex.name : '種目', part: it.part, sets: it.sets, reps: it.reps, rest: it.rest }; });
+    const btn = $('#pub-go', bg); btn.disabled = true; btn.textContent = '送信中...';
+    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform);
+    if (res.ok) {
+      menu.pubId = res.id; menu.pubLink = link; menu.published = true;
+      saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
+    } else {
+      toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
+      btn.disabled = false; btn.textContent = menu.published ? '更新する' : '公開する';
+    }
+  });
+  const rm = $('#pub-remove', bg);
+  if (rm) rm.addEventListener('click', async () => {
+    const res = await c.unpublishMenu(menu.pubId);
+    if (res.ok) { menu.published = false; delete menu.pubId; saveState(); closeModal(); toast('公開を取り消しました'); renderLog(); }
+    else toast('取り消しに失敗しました');
+  });
+}
+
+function importPublicMenu(pm) {
+  if (S.myMenus.length >= 20) { toast('マイメニューは20件までです'); return; }
+  let maxN = 0;
+  S.customEx.forEach(e => { const n = Number((String(e.id).match(/\d+$/) || [0])[0]); if (n > maxN) maxN = n; });
+  const items = (pm.items || []).slice(0, 15).map(it => {
+    if (DB.byId[it.exId]) return { exId: it.exId, part: it.part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
+    // 相手のオリジナル種目 → こちらにも custom として作る
+    const part = SCIENCE.partMap[it.part] ? it.part : 'abs';
+    const id = 'custom-' + (++maxN);
+    S.customEx.push({
+      id, name: String(it.name || '種目').slice(0, 30), part, equipment: 'bodyweight',
+      sub: [SCIENCE.partMap[part].name], level: 1, mets: 4, compound: false,
+      form: ['取り込んだ種目: いつものフォームでOK', '効かせたい部位を意識する', '無理のない重量で丁寧に'],
+      mistake: '', repHyp: '10-15', repStr: '8-12', repEnd: '15-20', custom: true,
+    });
+    return { exId: id, part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
+  }).filter(Boolean);
+  if (!items.length) { toast('取り込める種目がありませんでした'); return; }
+  rebuildDB(S.customEx);
+  const mid = S.myMenus.reduce((a, m) => Math.max(a, m.id), 0) + 1;
+  const nm = String(pm.name || 'メニュー') + (pm.displayName ? '（' + String(pm.displayName).slice(0, 8) + '）' : '');
+  S.myMenus.push({ id: mid, name: nm.slice(0, 20), items });
+  saveState();
+  closeModal();
+  toast('マイメニューに取り込みました💪');
+  renderLog();
+}
+
+async function openPublicGalleryModal() {
+  const c = window.__klCloud;
+  const bg = openModal(`<h2>🌐 みんなのメニュー</h2>
+    <p class="modal-sub">みんなが公開したルーティン。気に入ったら取り込めます。</p>
+    <div id="gallery-list" style="max-height:58vh;overflow:auto"><p class="card-note">読み込み中...</p></div>
+    <div style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`);
+  const listEl = $('#gallery-list', bg);
+  if (!c || !c.available) { listEl.innerHTML = '<p class="card-note">この環境では利用できません。</p>'; return; }
+  const menus = await c.listPublicMenus(60);
+  if (menus === null) { listEl.innerHTML = '<p class="card-note">読み込みに失敗しました。時間をおいて再度お試しください。</p>'; return; }
+  if (!menus.length) { listEl.innerHTML = '<p class="card-note">まだ公開メニューがありません。<br>自分のマイメニューの 🌐 から最初の1人になりませんか?</p>'; return; }
+  const myUid = c.myUid ? c.myUid() : null;
+  listEl.innerHTML = menus.map((pm, i) => {
+    const pf = pm.link ? detectPlatform(pm.link) : null;
+    const mine = myUid && pm.uid === myUid;
+    const exList = (pm.items || []).slice(0, 8).map(it => esc(it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目')).join('、');
+    return `<div class="card" style="margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="flex:1;min-width:0"><div class="nm" style="font-weight:800">${esc(pm.name)}</div>
+        <div class="meta" style="font-size:11.5px;color:var(--ink-dim)">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目</div></div>
+        ${pf && SNS_RE.test(pm.link) ? `<a class="btn small ghost" href="${esc(pm.link)}" target="_blank" rel="noopener nofollow ugc">${pf} ▶</a>` : ''}
+      </div>
+      <p class="card-note" style="margin:6px 0">${exList}${(pm.items || []).length > 8 ? ' ほか' : ''}</p>
+      <div style="display:flex;gap:8px">
+        ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
+          : `<button class="btn small gal-import" data-i="${i}">取り込む</button><button class="btn ghost small gal-report" data-id="${esc(pm.id)}">通報</button>`}
+      </div></div>`;
+  }).join('');
+  $all('.gal-import', listEl).forEach(b => b.addEventListener('click', () => importPublicMenu(menus[Number(b.dataset.i)])));
+  $all('.gal-report', listEl).forEach(b => b.addEventListener('click', async () => {
+    if (!c.myUid()) { toast('通報にはログインが必要です'); return; }
+    if (!confirm('このメニューを通報しますか?')) return;
+    const res = await c.reportMenu(b.dataset.id);
+    toast(res.ok ? '通報しました。ご協力ありがとうございます' : '通報に失敗しました');
+  }));
+  $all('.gal-unpub', listEl).forEach(b => b.addEventListener('click', async () => {
+    const res = await c.unpublishMenu(b.dataset.id);
+    if (res.ok) {
+      const m = S.myMenus.find(x => x.pubId === b.dataset.id);
+      if (m) { m.published = false; delete m.pubId; saveState(); }
+      toast('公開を取り消しました'); closeModal(); renderLog();
+    } else toast('取り消しに失敗しました');
+  }));
+}
+
 // ===== SIM =====
 let simState = null;
 function renderSim() {
@@ -1265,12 +1415,18 @@ function renderLog() {
 
     <div class="card"><h2>📝 マイメニュー<span class="sub">自分のルーティンを保存</span></h2>
       <div id="mymenu-list">${S.myMenus.length ? S.myMenus.map(m => `
-        <div class="log-entry"><div><div class="nm">${esc(m.name)}</div>
+        <div class="log-entry"><div style="flex:1;min-width:0"><div class="nm">${esc(m.name)}${m.published ? '<span class="tag good" style="font-size:9px;margin-left:6px">公開中</span>' : ''}</div>
           <div class="sets">${m.items.length}種目 / 約${dayMinutes(m.items)}分</div></div>
-          <button class="btn small" data-mm-run="${m.id}" style="margin-left:auto">▶ 今日やる</button>
+          <button class="btn small ghost" data-mm-share="${m.id}" title="みんなのメニューに公開">🌐</button>
+          <button class="btn small" data-mm-run="${m.id}">▶ 今日やる</button>
           <button class="del" data-mm-del="${m.id}">🗑</button></div>`).join('')
         : '<p class="card-note">よくやる自分の組み合わせを保存すると、ホームでワンタップ実行&チェック記録できます。DBにない種目も「オリジナル種目」として追加OK。</p>'}</div>
       <button class="btn ghost" id="mymenu-new">+ 新しいマイメニュー</button>
+    </div>
+
+    <div class="card"><h2>🌐 みんなのメニュー<span class="sub">参考にする</span></h2>
+      <p class="card-note">他の人が公開したマイメニューを見て参考にできます。自分のメニューを公開すると、InstagramなどのSNSリンクも一緒に載せられます(トレ動画の宣伝に)。</p>
+      <button class="btn ghost" id="browse-public">みんなのメニューを見る</button>
     </div>
 
     <div class="card"><h2>⚖️ 体重記録</h2>
@@ -1361,11 +1517,21 @@ function renderLog() {
   $all('[data-mm-del]', root).forEach(btn => btn.addEventListener('click', () => {
     if (!confirm('このマイメニューを削除しますか?(記録は残ります)')) return;
     const id = Number(btn.dataset.mmDel);
+    const m = S.myMenus.find(x => x.id === id);
+    if (m && m.published && m.pubId && window.__klCloud && window.__klCloud.unpublishMenu) {
+      window.__klCloud.unpublishMenu(m.pubId); // 公開中なら公開も取り消す(片付け)
+    }
     S.myMenus = S.myMenus.filter(m => m.id !== id);
     if (S.myToday && S.myToday.id === id) S.myToday = null;
     saveState();
     renderLog();
   }));
+  $all('[data-mm-share]', root).forEach(btn => btn.addEventListener('click', () => {
+    const m = S.myMenus.find(x => x.id === Number(btn.dataset.mmShare));
+    if (m) openMenuPublishModal(m);
+  }));
+  const browseBtn = $('#browse-public', root);
+  if (browseBtn) browseBtn.addEventListener('click', openPublicGalleryModal);
 
   // 体重
   $('#bw-save', root).addEventListener('click', () => {

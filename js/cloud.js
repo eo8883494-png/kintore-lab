@@ -3,7 +3,7 @@
 // ルールは本人のみ読み書き可 (auth.uid === $uid)。
 // ログインは任意: 未ログインでもアプリは完全にローカルで動く。ここは「あれば同期する」追加層。
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
+import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
@@ -229,9 +229,66 @@ async function setReminderHour(hour) {
   refreshUI();
 }
 
+// ===== みんなのメニュー(公開ギャラリー) =====
+// 公開データは /kintoreLab/publicMenus/{id} に置く(誰でも読める・本人だけ書ける)。
+// リンクは主要SNSのみ(サーバー側=Firebaseルールでも検証)。
+function pubMenusRef() { return ref(db, 'kintoreLab/publicMenus'); }
+function pubMenuRef(id) { return ref(db, 'kintoreLab/publicMenus/' + id); }
+
+// menu: { pubId?, name, items:[{exId,name,part,sets,reps,rest}] }。link/platformは呼び出し側で検証済み前提
+async function publishMenu(menu, link, platform) {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  const id = menu.pubId || (currentUser.uid + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
+  const payload = {
+    uid: currentUser.uid,
+    displayName: (currentUser.displayName || 'ユーザー').slice(0, 30),
+    name: String(menu.name || '').slice(0, 40),
+    items: (menu.items || []).slice(0, 15).map(it => ({
+      exId: String(it.exId || '').slice(0, 60),
+      name: String(it.name || '').slice(0, 40),
+      part: String(it.part || '').slice(0, 20),
+      sets: Number(it.sets) || 3,
+      reps: String(it.reps || '').slice(0, 20),
+      rest: Number(it.rest) || 90,
+    })),
+    link: link ? String(link).slice(0, 300) : '',
+    platform: platform ? String(platform).slice(0, 20) : '',
+    createdAt: Date.now(),
+  };
+  try { await set(pubMenuRef(id), payload); return { ok: true, id }; }
+  catch (e) { console.warn('[cloud] publishMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
+}
+
+async function unpublishMenu(id) {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  try { await remove(pubMenuRef(id)); return { ok: true }; }
+  catch (e) { console.warn('[cloud] unpublishMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
+}
+
+// 最新の公開メニューを取得。戻り値: 配列 / null(取得失敗=ルール未適用など)
+async function listPublicMenus(max) {
+  if (!db) return null;
+  try {
+    const snap = await get(query(pubMenusRef(), orderByChild('createdAt'), limitToLast(max || 60)));
+    if (!snap.exists()) return [];
+    const arr = [];
+    snap.forEach(ch => { const v = ch.val(); if (v && Array.isArray(v.items)) arr.push({ id: ch.key, ...v }); });
+    arr.reverse(); // 新しい順
+    return arr;
+  } catch (e) { console.warn('[cloud] listPublicMenus failed', e); return null; }
+}
+
+async function reportMenu(id) {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  try { await set(ref(db, 'kintoreLab/menuReports/' + id + '/' + currentUser.uid), { at: Date.now() }); return { ok: true }; }
+  catch (e) { console.warn('[cloud] reportMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
+}
+
 // ===== 公開API (app.js から利用) =====
 window.__klCloud = {
   available: !!auth,
+  publishMenu, unpublishMenu, listPublicMenus, reportMenu,
+  myUid() { return currentUser ? currentUser.uid : null; },
   status() {
     return {
       user: currentUser ? { name: currentUser.displayName, email: currentUser.email, uid: currentUser.uid } : null,
