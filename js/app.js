@@ -1416,7 +1416,9 @@ function renderSimResults(container) {
       <span class="bar"><i style="width:${barPct}%"></i></span>
       <span class="val">${Math.round(x.sets * 10) / 10}<span class="tag ${x.verdict.cls}">${x.verdict.label}</span></span></div>`;
   });
-  html += `</div>`;
+  html += `<p class="card-note">${simState.usePlan
+    ? '今のメニューの実測セット数です(プランタブと同じ)。上の時間・日数を変えると、その分だけ増減した見込みを表示します。'
+    : '標準的な配分での試算値です。「現在のメニューの部位配分を使う」をONにすると、プランタブと同じ実測値になります。'}</p></div>`;
 
   const advice = [];
   if (r.plusDay > 0.03) advice.push(`週をもう1日増やすと効率 <b style="color:var(--accent)">+${Math.round(r.plusDay * 100)}%</b>。時間を増やすより効果的。`);

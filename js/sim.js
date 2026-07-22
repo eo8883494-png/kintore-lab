@@ -16,19 +16,24 @@ function simulate(minutes, days, profile, plan) {
   // 「やらない部位」= 効率計算からも除外し、時間は残りの部位へ集中(実行時グローバル状態)
   const excluded = (typeof S !== 'undefined' && S && S.exclude) ? S.exclude : {};
 
-  // 週あたり総セット数
-  const setsPerDay = Math.max(0, Math.floor(((minutes - SCIENCE.warmupMin) * 60) / cycle));
-  const totalSets = setsPerDay * days;
+  // 週あたり総セット数(時間ベースの推定。プラン未使用時の配分に使う)
+  let setsPerDay = Math.max(0, Math.floor(((minutes - SCIENCE.warmupMin) * 60) / cycle));
+  let totalSets = setsPerDay * days;
 
-  // 部位別に配分: プランがあればその比率、なければ分割テンプレートから均等配分
+  // 部位別に配分: プランがあれば実測セット数、なければ分割テンプレートから均等配分
   const perPart = {};
   SCIENCE.parts.forEach(p => { perPart[p.key] = 0; });
 
   if (plan && plan.weeklySets && Object.values(plan.weeklySets).some(v => v > 0)) {
-    const planTotal = Object.values(plan.weeklySets).reduce((a, b) => a + b, 0);
+    // 現在のメニューの「実測セット数」をそのまま使う。時間スライダーを動かしたら比例スケール。
+    // → 既定状態(スライダー=プロフィール値)でプランタブの週セット数と完全一致する
+    const baseTime = (profile.minutes || minutes) * (profile.days || days);
+    const scale = baseTime > 0 ? (minutes * days) / baseTime : 1;
     SCIENCE.parts.forEach(p => {
-      perPart[p.key] = Math.round((plan.weeklySets[p.key] / planTotal) * totalSets * 10) / 10;
+      perPart[p.key] = excluded[p.key] ? 0 : Math.round((plan.weeklySets[p.key] || 0) * scale * 10) / 10;
     });
+    totalSets = Math.round(SCIENCE.parts.reduce((s, p) => s + perPart[p.key], 0));
+    setsPerDay = Math.round(totalSets / Math.max(1, days));
   } else {
     // ゴールに応じた分割で配分 (姿勢改善は背中・肩・腹・尻に寄せる)
     const table = profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS;
