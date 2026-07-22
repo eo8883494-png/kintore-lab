@@ -13,6 +13,8 @@ function avgSetCycleSec(goal) {
 function simulate(minutes, days, profile, plan) {
   const goal = profile.goal || 'hyp';
   const cycle = avgSetCycleSec(goal);
+  // 「やらない部位」= 効率計算からも除外し、時間は残りの部位へ集中(実行時グローバル状態)
+  const excluded = (typeof S !== 'undefined' && S && S.exclude) ? S.exclude : {};
 
   // 週あたり総セット数
   const setsPerDay = Math.max(0, Math.floor(((minutes - SCIENCE.warmupMin) * 60) / cycle));
@@ -32,8 +34,10 @@ function simulate(minutes, days, profile, plan) {
     const table = profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS;
     const template = table[Math.min(Math.max(days, 1), 7)];
     template.forEach(day => {
-      const share = setsPerDay / day.parts.length;
-      day.parts.forEach(spec => {
+      const active = day.parts.filter(spec => !excluded[parsePartSpec(spec).part]);
+      if (!active.length) return; // 全部除外の日は休養日
+      const share = setsPerDay / active.length; // 除外分の時間は残りの部位へ再配分=集中
+      active.forEach(spec => {
         const { part } = parsePartSpec(spec);
         perPart[part] += share;
       });
@@ -52,8 +56,11 @@ function simulate(minutes, days, profile, plan) {
     };
   });
   const trained = partResults.filter(r => r.sets > 0);
+  // 分母の下限=対象部位数(最大5)。除外時は下限を下げ、少数部位への集中を正当に評価する
+  const numTarget = SCIENCE.parts.filter(p => !excluded[p.key]).length;
+  const floor = Math.max(1, Math.min(5, numTarget));
   const overallEffect = trained.length
-    ? trained.reduce((s, r) => s + r.effect, 0) / Math.max(trained.length, 5) // 5部位未満は全身をカバーできていない分減点
+    ? trained.reduce((s, r) => s + r.effect, 0) / Math.max(trained.length, floor)
     : 0;
 
   // 筋肉増加見積もり (kg/月)。減量中はカロリー不足で合成が制限される(初心者のリコンプ分のみ)

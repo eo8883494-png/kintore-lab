@@ -181,10 +181,12 @@ function generatePlan(db, profile, focus, seed) {
   const weekdays = WEEKDAY_ASSIGN[days];
   const rng = mulberry32(seed);
   const budget = profile.minutes;
+  // 「やらない部位」= メニューから完全に除外(実行時のグローバル状態を参照)
+  const excluded = (typeof S !== 'undefined' && S && S.exclude) ? S.exclude : {};
 
   const planDays = template.map((dayT, di) => {
-    // 優先部位を先頭に並べ替え
-    const specs = [...dayT.parts].sort((a, b) => {
+    // 除外部位を外し、優先部位を先頭に並べ替え
+    const specs = [...dayT.parts].filter(a => !excluded[parsePartSpec(a).part]).sort((a, b) => {
       const pa = focus[parsePartSpec(a).part] ? -1 : 0;
       const pb = focus[parsePartSpec(b).part] ? -1 : 0;
       return pa - pb;
@@ -262,14 +264,17 @@ function generatePlan(db, profile, focus, seed) {
     };
   });
 
+  // 全部位を除外したトレ日は空になる → その日はメニューから外す(休養日扱い)
+  const activeDays = planDays.filter(d => d.items.length > 0);
+
   // 優先部位が選ばれている場合: 優先部位が1つも無いトレ日を無くす
   // (狙っている部位に触れない日があると「今日は関係ない日」になってモチベが切れるため)
   const focusParts = Object.keys(focus).filter(k => SCIENCE.partMap[k]);
   if (focusParts.length) {
-    planDays.forEach((day, di) => {
+    activeDays.forEach((day, di) => {
       if (day.items.some(it => focus[it.part])) return;
       // 隣接する曜日で同じ部位をやっていない優先部位を選ぶ (回復を確保)
-      const adjacent = planDays.filter(d2 => {
+      const adjacent = activeDays.filter(d2 => {
         const diff = Math.abs(d2.weekday - day.weekday);
         return diff === 1 || diff === 6;
       });
@@ -301,7 +306,7 @@ function generatePlan(db, profile, focus, seed) {
   const weeklySets = {};
   const tally = () => {
     SCIENCE.parts.forEach(p => { weeklySets[p.key] = 0; });
-    planDays.forEach(d => d.items.forEach(it => { weeklySets[it.part] += it.sets; }));
+    activeDays.forEach(d => d.items.forEach(it => { weeklySets[it.part] += it.sets; }));
   };
   tally();
 
@@ -309,14 +314,14 @@ function generatePlan(db, profile, focus, seed) {
   SCIENCE.parts.forEach(p => {
     let guard = 0;
     while (weeklySets[p.key] > p.mrv && guard++ < 30) {
-      const candidates = planDays.flatMap(d => d.items).filter(it => it.part === p.key && it.sets > 2);
+      const candidates = activeDays.flatMap(d => d.items).filter(it => it.part === p.key && it.sets > 2);
       if (!candidates.length) break;
       candidates.sort((a, b) => b.sets - a.sets);
       candidates[0].sets--;
       tally();
     }
   });
-  planDays.forEach(d => { d.minutes = dayMinutes(d.items); });
+  activeDays.forEach(d => { d.minutes = dayMinutes(d.items); });
 
-  return { days: planDays, weeklySets, seed, createdAt: todayStr() }; // ローカル日付 (UTCだと午前9時前の生成で1日ズレる)
+  return { days: activeDays, weeklySets, seed, createdAt: todayStr() }; // ローカル日付 (UTCだと午前9時前の生成で1日ズレる)
 }

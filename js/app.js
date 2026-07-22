@@ -22,7 +22,7 @@ const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: '
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -56,6 +56,13 @@ function sanitizeState(s) {
   if (s.focus && typeof s.focus === 'object') {
     Object.keys(s.focus).forEach(k => {
       if (SCIENCE.partMap[k] && (s.focus[k] === 'grow' || s.focus[k] === 'tone')) out.focus[k] = s.focus[k];
+    });
+  }
+
+  // やらない部位(除外)。focusとは排他: 除外なら優先は付けない
+  if (s.exclude && typeof s.exclude === 'object') {
+    Object.keys(s.exclude).forEach(k => {
+      if (SCIENCE.partMap[k] && s.exclude[k]) { out.exclude[k] = true; delete out.focus[k]; }
     });
   }
 
@@ -304,7 +311,7 @@ function mergeStates(local, remote) {
 
   const out = defaultState();
   Object.assign(out, {
-    profile: primary.profile, focus: primary.focus, plan: primary.plan,
+    profile: primary.profile, focus: primary.focus, exclude: primary.exclude, plan: primary.plan,
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
     logs, weights, lastW, customEx: merged, myMenus, myToday, dayDone,
     nextId: nid,
@@ -487,18 +494,23 @@ function bodymapSvg(side) {
 
 function applyFocusToMaps(root) {
   $all('.bm-part', root).forEach(g => {
-    const st = S.focus[g.dataset.part];
+    const part = g.dataset.part;
+    const st = S.focus[part];
+    const ex = !!S.exclude[part];
     $all('.bm-region', g).forEach(r => {
       r.classList.toggle('grow', st === 'grow');
       r.classList.toggle('tone', st === 'tone');
+      r.classList.toggle('exclude', ex);
     });
   });
   const chips = $('#focus-chips', root);
   if (chips) {
-    const keys = Object.keys(S.focus);
-    chips.innerHTML = keys.length
-      ? keys.map(k => `<span class="chip ${S.focus[k]}">${esc(SCIENCE.partMap[k].name)} ${S.focus[k] === 'grow' ? 'でかく' : '引き締め'}</span>`).join('')
-      : '<span class="chip">未選択(全体バランスで生成)</span>';
+    const fKeys = Object.keys(S.focus);
+    const xKeys = Object.keys(S.exclude);
+    const parts = [];
+    fKeys.forEach(k => parts.push(`<span class="chip ${S.focus[k]}">${esc(SCIENCE.partMap[k].name)} ${S.focus[k] === 'grow' ? 'でかく' : '引き締め'}</span>`));
+    xKeys.forEach(k => parts.push(`<span class="chip exclude">${esc(SCIENCE.partMap[k].name)} やらない</span>`));
+    chips.innerHTML = parts.length ? parts.join('') : '<span class="chip">未選択(全体バランスで生成)</span>';
   }
 }
 
@@ -912,9 +924,10 @@ function renderPlan() {
     <div class="bm-legend">
       <span><span class="dot" style="background:var(--accent)"></span>でかくする</span>
       <span><span class="dot" style="background:var(--accent2)"></span>引き締める</span>
+      <span><span class="dot" style="background:#3a414c"></span>やらない</span>
     </div>
     <div class="focus-chips" id="focus-chips"></div>
-    <p class="card-note">タップで 強化 → 引き締め → 解除 の順に切替。選んだ部位は種目数+1・セット数+1で優先され、どのトレ日にも必ず入ります。※「引き締め」も軽い高回数ではなくしっかり効かせるのが最短(絞りは食事タブで)。</p>
+    <p class="card-note">タップで でかく → 引き締め → <b>やらない</b> → 解除 の順に切替。「やらない」にした部位はメニューから外れ、効率シミュレーターも残りの部位に集中した計算になります。優先部位は種目数+1・セット数+1でどのトレ日にも必ず入ります。※「引き締め」も軽い高回数でなくしっかり効かせるのが最短(絞りは食事タブで)。</p>
   </div>`;
 
   html += `<div style="display:flex;gap:10px;margin-bottom:14px">
@@ -944,6 +957,12 @@ function renderPlan() {
     // 週間ボリュームと判定
     html += `<div class="card"><h2>📊 部位別 週セット数</h2>`;
     SCIENCE.parts.forEach(pt => {
+      if (S.exclude[pt.key]) {
+        html += `<div class="vol-row" style="opacity:.45"><span class="nm">${esc(pt.name)}</span>
+          <span class="bar"><i style="width:0%"></i></span>
+          <span class="val"><span class="tag" style="opacity:.8">やらない</span></span></div>`;
+        return;
+      }
       const sets = S.plan.weeklySets[pt.key] || 0;
       const verdict = volumeVerdict(pt.key, sets, S.profile.goal);
       const pct = Math.min(100, (sets / pt.mrv) * 100);
@@ -951,7 +970,7 @@ function renderPlan() {
         <span class="bar"><i style="width:${pct}%"></i></span>
         <span class="val">${sets}<span class="tag ${verdict.cls}">${verdict.label}</span></span></div>`;
     });
-    const hasLow = SCIENCE.parts.some(pt => volumeVerdict(pt.key, S.plan.weeklySets[pt.key] || 0, S.profile.goal).cls === 'low');
+    const hasLow = SCIENCE.parts.some(pt => !S.exclude[pt.key] && volumeVerdict(pt.key, S.plan.weeklySets[pt.key] || 0, S.profile.goal).cls === 'low');
     html += `<p class="card-note">${S.profile.goal === 'posture'
       ? '姿勢改善は背中・肩・体幹・尻が主役。前面(胸・脚など)は「維持OK」なら十分です。'
       : `筋肥大の最適は部位あたり週10〜20セット。${hasLow ? '<b>「やや不足」は今の時間×日数で入る上限</b>です。1日+15分か週+1日で最適圏に届きます(効率タブで試算可)。' : ''}`}シミュレーターで効率を確認できます。</p></div>`;
@@ -964,10 +983,11 @@ function renderPlan() {
   $all('.bm-part', root).forEach(g => {
     g.addEventListener('click', () => {
       const part = g.dataset.part;
-      const cur = S.focus[part];
-      if (!cur) S.focus[part] = 'grow';
-      else if (cur === 'grow') S.focus[part] = 'tone';
-      else delete S.focus[part];
+      // なし → でかく → 引き締め → やらない(除外) → なし
+      if (S.exclude[part]) { delete S.exclude[part]; }
+      else if (!S.focus[part]) { S.focus[part] = 'grow'; }
+      else if (S.focus[part] === 'grow') { S.focus[part] = 'tone'; }
+      else { delete S.focus[part]; S.exclude[part] = true; }
       saveState();
       applyFocusToMaps(root);
     });
