@@ -475,6 +475,7 @@ function route() {
     $(`#tab-${name}`).classList.toggle('active', name === v);
   });
   renderView(v);
+  updateRestFab(); // タブ切替で浮遊タイマーの表示/非表示を追従
 }
 window.addEventListener('hashchange', route);
 
@@ -625,10 +626,11 @@ function exSearchName(ex) {
 }
 
 // ===== 種目詳細モーダル =====
-function openExerciseModal(exId) {
+// restSec を渡すと「この種目の休憩タイマー」ボタンを表示する
+function openExerciseModal(exId, restSec) {
   const ex = DB.byId[exId];
   if (!ex) return;
-  openModal(`
+  const bg = openModal(`
     <h2>${esc(ex.name)}</h2>
     <p class="modal-sub">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]} / ${'★'.repeat(ex.level)}${'☆'.repeat(3 - ex.level)} ${ex.compound ? '/ 多関節(コンパウンド)' : '/ 単関節(アイソレーション)'}</p>
     <div class="field"><label>効く部位</label><div>${ex.sub.map(s => `<span class="chip">${esc(s)}</span>`).join(' ')}</div></div>
@@ -639,9 +641,16 @@ function openExerciseModal(exId) {
       <tr><td>${esc(ex.repHyp)}</td><td>${esc(ex.repStr)}</td><td>${esc(ex.repEnd)}</td></tr></table>
     </div>
     ${ex.equipment !== 'bodyweight' ? '<div class="field"><label>重量の決め方</label><p style="font-size:12.5px;color:var(--ink-dim)">指定回数の下限がフォームを保ってギリギリできる重さが適正。迷ったら軽めで始めて、毎回2.5%(または最小プレート1枚)ずつ足す。</p></div>' : ''}
-    <a class="btn" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
+    ${restSec ? `<button class="btn" id="ex-timer" style="margin-bottom:10px">⏱ 休憩タイマー ${Math.round(restSec)}秒 スタート</button>` : ''}
+    <a class="btn ${restSec ? 'ghost' : ''}" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
        href="https://www.youtube.com/results?search_query=${encodeURIComponent(exSearchName(ex) + ' フォーム やり方')}">🎬 フォーム動画を見る (YouTube)</a>
     <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  const tb = $('#ex-timer', bg);
+  if (tb) tb.addEventListener('click', () => {
+    startRestTimer(restSec, ex.name + ' の休憩');
+    closeModal();
+    toast(`⏱ 休憩${Math.round(restSec)}秒スタート`);
+  });
 }
 
 // reps文字列 "8-12" → 中央値
@@ -794,11 +803,12 @@ function renderHome() {
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
-          <div class="info" data-open-ex="${it.exId}">
+          <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}">
             <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
             <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it.sets}セット × ${esc(it.reps)}${unit} / 休憩${it.rest}秒</div>
           </div>
           ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${lastW != null ? lastW : ''}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
+          <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱</button>
         </div>`;
     };
 
@@ -871,7 +881,15 @@ function renderHome() {
     chk.addEventListener('change', () => toggleDone(chk.dataset.ex, chk.checked));
   });
   $all('[data-open-ex]', root).forEach(el => {
-    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx));
+    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0));
+  });
+  $all('.ex-tmr', root).forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const ex = DB.byId[btn.dataset.tmrEx];
+      startRestTimer(Number(btn.dataset.tmrRest) || 90, (ex ? ex.name : '') + ' の休憩');
+      toast(`⏱ 休憩${Math.round(Number(btn.dataset.tmrRest) || 90)}秒スタート`);
+    });
   });
   $all('input.winp', root).forEach(inp => {
     inp.addEventListener('change', () => {
@@ -966,7 +984,7 @@ function renderPlan() {
       day.items.forEach((it, ii) => {
         const ex = DB.byId[it.exId];
         if (!ex) return;
-        html += `<div class="plan-ex" data-open-ex="${it.exId}">
+        html += `<div class="plan-ex" data-open-ex="${it.exId}" data-rest="${it.rest}">
           <div><div class="nm">${esc(ex.name)}${it.priority ? '<span class="pri">◆優先</span>' : ''}</div>
           <div class="meta">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]}</div></div>
           <div class="setrep">${it.sets}×${esc(it.reps)}${ex.isometric ? '秒' : ''}<small>休${it.rest}秒</small></div>
@@ -1039,7 +1057,7 @@ function renderPlan() {
   }));
   $all('.add-ex', root).forEach(b => b.addEventListener('click', () => openPlanExercisePicker(Number(b.dataset.di), null)));
   $all('[data-open-ex]', root).forEach(el => {
-    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx));
+    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0));
   });
 }
 
@@ -1716,8 +1734,29 @@ function openMyMenuModal() {
 }
 
 // ===== TOOLS =====
-let timer = { sec: 0, total: 0, iv: null, endAt: 0 };
+let timer = { sec: 0, total: 0, iv: null, endAt: 0, label: '' };
 let audioCtx = null;
+
+// 種目の休憩秒数でレストタイマーを開始し、浮遊ウィジェットに表示する
+function startRestTimer(seconds, label) {
+  stopTimer();
+  timer.total = timer.sec = Math.max(1, Math.round(Number(seconds)) || 60);
+  timer.label = label || '休憩';
+  ensureAudio();
+  startTimer();
+  updateTimerDisp();
+}
+// 浮遊タイマーの表示更新 (ツールタブでは大きい表示があるので隠す)
+function updateRestFab() {
+  const fab = document.getElementById('rest-fab');
+  if (!fab) return;
+  const show = !!timer.iv && currentView() !== 'tools';
+  fab.hidden = !show;
+  if (show) {
+    const t = document.getElementById('rt-time'); if (t) t.textContent = fmtTimer(timer.sec);
+    const l = document.getElementById('rt-label'); if (l) l.textContent = timer.label || '休憩';
+  }
+}
 // iOS Safari対策: AudioContextはユーザー操作(スタート押下)の中で生成・resumeしておく
 function ensureAudio() {
   try {
@@ -1982,6 +2021,7 @@ function fmtTimer(sec) {
 function updateTimerDisp() {
   const d = $('#timer-disp');
   if (d) { d.textContent = fmtTimer(timer.sec); d.classList.toggle('running', !!timer.iv); }
+  updateRestFab();
 }
 function tickTimer() {
   // 実時刻ベースで残りを再計算 (バックグラウンドでintervalが止まっても復帰時に正しい残量になる)
@@ -2260,4 +2300,9 @@ document.addEventListener('visibilitychange', () => {
 document.addEventListener('DOMContentLoaded', () => {
   route();
   if (!S.profile) openProfileWizard(true);
+  // 浮遊レストタイマーのボタン (静的要素なので一度だけ束縛)
+  const fabStop = document.getElementById('rt-stop');
+  if (fabStop) fabStop.addEventListener('click', () => { stopTimer(); updateRestFab(); });
+  const fabAdd = document.getElementById('rt-add');
+  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; tickTimer(); } });
 });
