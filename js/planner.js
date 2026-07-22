@@ -183,8 +183,39 @@ function generatePlan(db, profile, focus, seed) {
   const budget = profile.minutes;
   // 「やらない部位」= メニューから完全に除外(実行時のグローバル状態を参照)
   const excluded = (typeof S !== 'undefined' && S && S.exclude) ? S.exclude : {};
+  const fillDays = !!(typeof S !== 'undefined' && S && S.fillDays);
 
-  const planDays = template.map((dayT, di) => {
+  // 通常: テンプレの各日に曜日を割当(除外で空の日は後段で休養日化=A)。
+  // fillDays(オプトイン=B): 除外で日が空くなら、中身の残る日だけを指定日数ぶんの曜日枠に巡回配置し、
+  //   指定日数を維持する(残り部位の頻度を上げる)。
+  const survivors = template.filter(dt => dt.parts.some(a => !excluded[parsePartSpec(a).part]));
+  let recipes;
+  if (fillDays && survivors.length > 0 && survivors.length < template.length) {
+    // 残る日を指定日数ぶんの曜日枠へ巡回配置。ただし主要部位を隣接日に置かない
+    // (=同一部位が連日にならず、除外が多く1部位しか残らない時は自然に安全な頻度で打ち止め)。
+    const primaryOf = rec => rec.parts.map(a => parsePartSpec(a).part).find(pt => !excluded[pt]) || null;
+    const isAdj = (a, b) => { const d = Math.abs(a - b); return d === 1 || d === 6; };
+    const lastDay = {};
+    const chosen = [];
+    let si = 0;
+    for (const wd of weekdays) {
+      for (let t = 0; t < survivors.length; t++) {
+        const rec = survivors[(si + t) % survivors.length];
+        const pri = primaryOf(rec);
+        if (pri && lastDay[pri] != null && isAdj(lastDay[pri], wd)) continue; // 主要部位が隣接日と重複→この枠には置かない
+        chosen.push({ ...rec, weekday: wd });
+        if (pri) lastDay[pri] = wd;
+        si = (si + t + 1) % survivors.length;
+        break;
+      }
+      // 全候補が隣接衝突ならこの曜日は休養日(スキップ)
+    }
+    recipes = chosen.length ? chosen : survivors.map((s, i) => ({ ...s, weekday: weekdays[i % weekdays.length] }));
+  } else {
+    recipes = template.map((dt, i) => ({ ...dt, weekday: weekdays[i] }));
+  }
+
+  const planDays = recipes.map((dayT) => {
     // 除外部位を外し、優先部位を先頭に並べ替え
     const specs = [...dayT.parts].filter(a => !excluded[parsePartSpec(a).part]).sort((a, b) => {
       const pa = focus[parsePartSpec(a).part] ? -1 : 0;
@@ -258,7 +289,7 @@ function generatePlan(db, profile, focus, seed) {
 
     return {
       name: dayT.name,
-      weekday: weekdays[di],
+      weekday: dayT.weekday,
       items,
       minutes: dayMinutes(items),
     };

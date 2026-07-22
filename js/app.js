@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -242,6 +242,8 @@ function sanitizeState(s) {
   if (typeof s.publicAppeal === 'string') out.publicAppeal = s.publicAppeal.slice(0, 120);
   if (typeof s.publicLink === 'string') out.publicLink = s.publicLink.slice(0, 300);
   if (isValidAvatar(s.publicAvatar)) out.publicAvatar = s.publicAvatar;
+  out.fillDays = !!s.fillDays;     // 除外しても指定日数で組む(オプトイン)
+  out.activeRest = !!s.activeRest; // 休養日にアクティブレストを提案(オプトイン)
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -380,6 +382,8 @@ function mergeStates(local, remote) {
   out.publicAvatar = primary.publicAvatar || secondary.publicAvatar || '';
   out.publicAppeal = primary.publicAppeal || secondary.publicAppeal || '';
   out.publicLink = primary.publicLink || secondary.publicLink || '';
+  out.fillDays = primary.fillDays;      // オプトイン設定はprimary優先
+  out.activeRest = primary.activeRest;
   return out;
 }
 
@@ -782,6 +786,19 @@ function todayPlanContext() {
   return { day, idx, swapped, carry };
 }
 
+// C: 休養日のアクティブレスト提案カード(オプトイン)。OFF/未ロード時は空文字
+function activeRestCardHtml() {
+  if (!S.activeRest || typeof buildRecoveryRoutine !== 'function') return '';
+  const goal = S.profile ? S.profile.goal : 'hyp';
+  const routine = buildRecoveryRoutine(todayStr(), goal);
+  if (!routine.length) return '';
+  const rows = routine.map(m => `<details class="acc"><summary><span class="tag low" style="font-size:10px">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.name)} <span style="color:var(--ink-dim,#9aa3ad);font-weight:600;font-size:12px">${esc(m.amount)}</span></summary><div class="acc-body">${esc(m.cue)}</div></details>`).join('');
+  return `<div class="card"><h2>🧘 アクティブレスト<span class="sub">休養日メニュー</span></h2>
+    <p style="font-size:13px;margin-bottom:8px">休むだけより、低強度で姿勢・柔軟・可動性を整えると回復が進みます。各項目をタップでやり方。<b>痛みが出たら中止</b>。</p>
+    ${rows}
+    <p class="card-note">日替わりで内容が変わります。全部で5〜10分ほど。ツール…ではなくプラン画面の⚙️オプションでON/OFFできます。</p></div>`;
+}
+
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
 let homeCarry = [];   // renderHome時点の積み残しスナップショット (表示とチェック処理の一致保証)
 function renderHome() {
@@ -860,6 +877,7 @@ function renderHome() {
         <p style="font-size:14px">筋肉が育つのは今。次は<b style="color:var(--accent)">${WEEKDAY_NAMES[nx.weekday]}曜「${esc(nx.name)}」</b>です。</p>
         <p class="card-note">タンパク質(体重×${SCIENCE.proteinPerKg[S.profile.goal] || 1.8}g)と睡眠を忘れずに。</p>
         <button class="btn ghost" id="rest-start" data-idx="${nx.idx}">💪 待てない?「${esc(nx.name)}」を今日やる</button></div>`;
+      html += activeRestCardHtml();
     }
 
     // 回復マップ
@@ -969,6 +987,24 @@ function toggleDone(exId, checked) {
 }
 
 // ===== PLAN =====
+// 除外により実トレ日が要求日数より減ったか(A: 説明用)。減っていなければ null。
+// 現在の除外×日数から計算した休養日が「実際のプラン日数」と一致する時だけ返す
+// (生成後に日数や除外を変えた=staleな時は誤った説明を出さないよう null)。
+function planDayReduction() {
+  if (!S.plan || !S.profile || S.fillDays) return null;
+  const requested = S.profile.days;
+  const actual = S.plan.days.length;
+  if (actual >= requested) return null;
+  const template = (S.profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS)[requested] || [];
+  const excluded = S.exclude || {};
+  const dropped = template
+    .filter(dt => !dt.parts.some(a => !excluded[parsePartSpec(a).part]))
+    .map(dt => dt.name);
+  // 除外で1日も減らない、または計算上の残日数が実プランと食い違う(=stale)なら説明を出さない
+  if (!dropped.length || (requested - dropped.length) !== actual) return null;
+  return { requested, actual, dropped };
+}
+
 function renderPlan() {
   const root = $('#view-plan');
   let html = '';
@@ -1010,6 +1046,34 @@ function renderPlan() {
     <button class="btn" id="gen-plan">${S.plan ? 'メニューを作り直す' : 'メニュー生成'}</button>
     ${S.plan ? '<button class="btn ghost" id="shuffle-plan" style="width:auto">🔀</button>' : ''}
   </div>`;
+
+  // オプション(オプトイン): B=指定日数で組む / C=休養日アクティブレスト
+  html += `<div class="card"><h2>⚙️ メニューのオプション</h2>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px">🔁 除外しても指定日数で組む</div>
+        <div class="card-note" style="margin:2px 0 0">「やらない部位」で日が空いても、残りの部位で<b>週${p.days}日を維持</b>(頻度アップ)。OFFなら空いた日は休養日。</div>
+      </div>
+      <button class="btn small ${S.fillDays ? '' : 'ghost'}" id="opt-fill" style="width:auto;flex:none;min-width:56px">${S.fillDays ? 'ON' : 'OFF'}</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:700;font-size:14px">🧘 休養日にアクティブレスト</div>
+        <div class="card-note" style="margin:2px 0 0">休養日のホームに、<b>姿勢改善・柔軟・可動性</b>の軽メニューを提案。超回復を妨げない低強度。どの目標でもOK。</div>
+      </div>
+      <button class="btn small ${S.activeRest ? '' : 'ghost'}" id="opt-rest" style="width:auto;flex:none;min-width:56px">${S.activeRest ? 'ON' : 'OFF'}</button>
+    </div>
+  </div>`;
+
+  if (S.plan) {
+    // A: 除外で実トレ日が減った時の説明
+    const red = planDayReduction();
+    if (red) {
+      html += `<div class="card" style="border-color:var(--accent2,#4ed9f1)"><h2>ℹ️ 実際のトレは週${red.actual}日</h2>
+        <p style="font-size:13.5px;margin-bottom:6px">「やらない部位」の設定により、週${red.requested}日のうち<b>${red.requested - red.actual}日</b>は鍛える部位が無いため休養日にしました${red.dropped.length ? `(${esc(red.dropped.join('・'))})` : ''}。残りの部位は週${red.actual}日でしっかり回せています。</p>
+        <p class="card-note">同じ日数で回したい場合は、上の <b>🔁 除外しても指定日数で組む</b> をONに。効率タブの数字はこの実メニュー基準です。</p></div>`;
+    }
+  }
 
   if (S.plan) {
     html += `<div class="card"><h2>📋 週間メニュー<span class="sub">${S.plan.createdAt} 生成</span></h2>`;
@@ -1083,6 +1147,26 @@ function renderPlan() {
     S.swap = null;
     saveState();
     toast('シャッフルしました');
+    renderPlan();
+  });
+  // B: 指定日数で組む(トグル)。生成に影響するのでプランがあれば作り直す(種目は同seedで極力維持)
+  const optFill = $('#opt-fill', root);
+  if (optFill) optFill.addEventListener('click', () => {
+    S.fillDays = !S.fillDays;
+    if (S.plan) {
+      S.plan = generatePlan(DB, S.profile, S.focus, S.plan.seed || Math.floor(Math.random() * 1e9));
+      S.swap = null;
+    }
+    saveState();
+    toast(S.fillDays ? '指定日数で組みます' : '空いた日は休養日にします');
+    renderPlan();
+  });
+  // C: 休養日アクティブレスト(トグル)。ホーム表示に影響
+  const optRest = $('#opt-rest', root);
+  if (optRest) optRest.addEventListener('click', () => {
+    S.activeRest = !S.activeRest;
+    saveState();
+    toast(S.activeRest ? '休養日にアクティブレストを出します' : 'アクティブレストをOFFにしました');
     renderPlan();
   });
   $all('.plan-ex-edit', root).forEach(b => b.addEventListener('click', (e) => {
