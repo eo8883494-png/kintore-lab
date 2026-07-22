@@ -35,7 +35,7 @@ function detectPlatform(url) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -211,6 +211,8 @@ function sanitizeState(s) {
       c: Math.round(numIn(s.mealTargets.c, 0, 1000, 250)),
     };
   }
+  // みんなのメニューの表示名(未設定ならGoogleアカウント名を使う)
+  if (typeof s.publicName === 'string') out.publicName = s.publicName.slice(0, 30);
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -343,6 +345,7 @@ function mergeStates(local, remote) {
   [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
   out.timerPresets = [...tpMap.values()].slice(0, 30);
   out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
+  out.publicName = primary.publicName || secondary.publicName || ''; // 表示名はprimary優先
   return out;
 }
 
@@ -1144,10 +1147,12 @@ function openMenuPublishModal(menu) {
   const bg = openModal(`
     <h2>「${esc(menu.name)}」を公開</h2>
     <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。</p>
+    <div class="field"><label>表示名(好きな名前でOK)</label>
+      <input type="text" id="pub-name" placeholder="例: きんとれ太郎" maxlength="30" value="${esc(S.publicName || (c.status && c.status().user ? c.status().user.name : '') || '')}"></div>
     <div class="field"><label>SNSリンク(任意)</label>
       <input type="text" id="pub-link" placeholder="https://www.instagram.com/..." maxlength="300" value="${esc(menu.pubLink || '')}"></div>
     <div id="pub-link-note" class="card-note">Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。</div>
-    <p class="card-note">⚠️ 公開すると誰でも見られます。表示名はGoogleアカウント名になります。個人情報や非公開にしたい内容は入れないでください。</p>
+    <p class="card-note">⚠️ 公開すると誰でも見られます。個人情報や非公開にしたい内容は入れないでください。</p>
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn ghost" onclick="closeModal()">キャンセル</button>
       <button class="btn" id="pub-go">${menu.published ? '更新する' : '公開する'}</button>
@@ -1167,11 +1172,13 @@ function openMenuPublishModal(menu) {
     const link = linkInput.value.trim();
     if (link && !detectPlatform(link)) { toast('SNSリンクはInstagram/YouTube/TikTok/X/Threadsのみ'); return; }
     const platform = link ? detectPlatform(link) : '';
+    const dispName = ($('#pub-name', bg).value || '').trim().slice(0, 30);
     const items = menu.items.map(it => { const ex = DB.byId[it.exId]; return { exId: it.exId, name: ex ? ex.name : '種目', part: it.part, sets: it.sets, reps: it.reps, rest: it.rest }; });
     const btn = $('#pub-go', bg); btn.disabled = true; btn.textContent = '送信中...';
-    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform);
+    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName);
     if (res.ok) {
       menu.pubId = res.id; menu.pubLink = link; menu.published = true;
+      if (dispName) S.publicName = dispName; // 次回以降の既定表示名として保存
       saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
     } else {
       toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
@@ -1191,8 +1198,9 @@ function importPublicMenu(pm) {
   let maxN = 0;
   S.customEx.forEach(e => { const n = Number((String(e.id).match(/\d+$/) || [0])[0]); if (n > maxN) maxN = n; });
   const items = (pm.items || []).slice(0, 15).map(it => {
-    if (DB.byId[it.exId]) return { exId: it.exId, part: it.part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
-    // 相手のオリジナル種目 → こちらにも custom として作る
+    // 標準DBの種目はそのまま。相手のオリジナル種目(custom-*)はid衝突を避けて必ず新規作成する
+    const isCustomId = /^custom-/.test(String(it.exId || ''));
+    if (DB.byId[it.exId] && !isCustomId) return { exId: it.exId, part: it.part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
     const part = SCIENCE.partMap[it.part] ? it.part : 'abs';
     const id = 'custom-' + (++maxN);
     S.customEx.push({
@@ -1324,6 +1332,7 @@ function renderSimResults(container) {
       <canvas class="chart" id="sim-curve"></canvas>
       <p class="card-note">緑の帯が最適ゾーン(部位あたり週10〜20セット)。曲線が寝てきたら時間を増やすより回復と食事に投資。</p>
     </div>
+    <button class="btn" id="sim-to-plan" style="width:100%;margin-bottom:14px">🎯 この設定(週${simState.days}日 × ${simState.minutes}分)でメニューを作る</button>
     ${r.dietMode ? `
     <div class="stat-row">
       <div class="stat-tile"><div class="k">脂肪減少ペース</div><div class="v"><em>−${g(r.monthlyFatLoss)}</em><small>kg/月</small></div></div>
@@ -1378,6 +1387,17 @@ function renderSimResults(container) {
   container.innerHTML = html;
   const canvas = $('#sim-curve', container);
   if (canvas) drawEffectCurve(canvas, avgSets);
+  // 効率で出した設定をプロフィール(日数・時間)へ反映し、メニューを作り直す
+  const toPlan = $('#sim-to-plan', container);
+  if (toPlan) toPlan.addEventListener('click', () => {
+    S.profile.days = simState.days;
+    S.profile.minutes = simState.minutes;
+    S.plan = generatePlan(DB, S.profile, S.focus, Math.floor(Math.random() * 1e9));
+    S.swap = null; // 旧プランの振替は無効化
+    saveState();
+    toast(`週${simState.days}日×${simState.minutes}分でメニューを作りました💪`);
+    location.hash = 'plan';
+  });
 }
 
 // ===== LOG =====

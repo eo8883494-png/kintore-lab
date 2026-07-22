@@ -236,12 +236,12 @@ function pubMenusRef() { return ref(db, 'kintoreLab/publicMenus'); }
 function pubMenuRef(id) { return ref(db, 'kintoreLab/publicMenus/' + id); }
 
 // menu: { pubId?, name, items:[{exId,name,part,sets,reps,rest}] }。link/platformは呼び出し側で検証済み前提
-async function publishMenu(menu, link, platform) {
+async function publishMenu(menu, link, platform, displayName) {
   if (!currentUser || !db) return { ok: false, reason: 'login' };
   const id = menu.pubId || (currentUser.uid + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6));
   const payload = {
     uid: currentUser.uid,
-    displayName: (currentUser.displayName || 'ユーザー').slice(0, 30),
+    displayName: (displayName || currentUser.displayName || 'ユーザー').slice(0, 30),
     name: String(menu.name || '').slice(0, 40),
     items: (menu.items || []).slice(0, 15).map(it => ({
       exId: String(it.exId || '').slice(0, 60),
