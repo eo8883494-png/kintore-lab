@@ -31,6 +31,9 @@ function detectPlatform(url) {
   return 'SNS';
 }
 
+// みんなのメニューで選べるアイコン(絵文字プリセット。自由入力は不可でモデレーション簡略化)
+const PUB_ICONS = ['💪', '🔥', '⚡', '🏋️', '🦍', '🐺', '🐉', '🦁', '🐻', '🦏', '🥇', '👑', '🎯', '🚀', '😤', '💯', '🧊', '🥶', '🦵', '🍚', '🥩', '🌱', '⭐', '😎'];
+
 // ===== 状態 =====
 const LS_KEY = 'kintoreLab.v1';
 
@@ -211,8 +214,10 @@ function sanitizeState(s) {
       c: Math.round(numIn(s.mealTargets.c, 0, 1000, 250)),
     };
   }
-  // みんなのメニューの表示名(未設定ならGoogleアカウント名を使う)
+  // みんなのメニューの表示名・アイコン・アピール(次回公開時の既定として保持)
   if (typeof s.publicName === 'string') out.publicName = s.publicName.slice(0, 30);
+  if (typeof s.publicIcon === 'string') out.publicIcon = s.publicIcon.slice(0, 8);
+  if (typeof s.publicAppeal === 'string') out.publicAppeal = s.publicAppeal.slice(0, 120);
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -1162,11 +1167,17 @@ function openMenuPublishModal(menu) {
     $('#pub-login', bg).addEventListener('click', () => { closeModal(); c.signIn(); });
     return;
   }
+  const curIcon = S.publicIcon || PUB_ICONS[0];
+  const iconGrid = PUB_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === curIcon ? 'on' : ''}" data-ic="${ic}">${ic}</button>`).join('');
   const bg = openModal(`
     <h2>「${esc(menu.name)}」を公開</h2>
-    <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。</p>
+    <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。アイコンとひとことで自分をアピール💪</p>
+    <div class="field"><label>アイコンを選ぶ</label>
+      <div class="icon-picker" id="pub-icons">${iconGrid}</div></div>
     <div class="field"><label>表示名(好きな名前でOK)</label>
       <input type="text" id="pub-name" placeholder="例: きんとれ太郎" maxlength="30" value="${esc(S.publicName || (c.status && c.status().user ? c.status().user.name : '') || '')}"></div>
+    <div class="field"><label>ひとことアピール(任意)<span style="float:right;color:var(--ink-dim);font-size:11px" id="appeal-count">0/80</span></label>
+      <textarea id="pub-appeal" rows="2" maxlength="80" placeholder="例: ベンチ100kg目標!週4で頑張ってます。筋肉自慢したい人フォローして💪">${esc(S.publicAppeal || '')}</textarea></div>
     <div class="field"><label>SNSリンク(任意)</label>
       <input type="text" id="pub-link" placeholder="https://www.instagram.com/..." maxlength="300" value="${esc(menu.pubLink || '')}"></div>
     <div id="pub-link-note" class="card-note">Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。</div>
@@ -1176,6 +1187,15 @@ function openMenuPublishModal(menu) {
       <button class="btn" id="pub-go">${menu.published ? '更新する' : '公開する'}</button>
     </div>
     ${menu.published && menu.pubId ? '<button class="btn ghost small" id="pub-remove" style="margin-top:10px;width:100%;color:var(--warn,#f87171)">公開を取り消す</button>' : ''}`);
+  // アイコン選択
+  let pickedIcon = curIcon;
+  $all('.icon-pick', bg).forEach(b => b.addEventListener('click', () => {
+    $all('.icon-pick', bg).forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); pickedIcon = b.dataset.ic;
+  }));
+  const appealBox = $('#pub-appeal', bg), appealCount = $('#appeal-count', bg);
+  const updCount = () => { if (appealCount) appealCount.textContent = (appealBox.value.length) + '/80'; };
+  if (appealBox) { appealBox.addEventListener('input', updCount); updCount(); }
   const linkInput = $('#pub-link', bg), noteEl = $('#pub-link-note', bg);
   const checkLink = () => {
     const v = linkInput.value.trim();
@@ -1191,12 +1211,14 @@ function openMenuPublishModal(menu) {
     if (link && !detectPlatform(link)) { toast('SNSリンクはInstagram/YouTube/TikTok/X/Threadsのみ'); return; }
     const platform = link ? detectPlatform(link) : '';
     const dispName = ($('#pub-name', bg).value || '').trim().slice(0, 30);
+    const appeal = (appealBox ? appealBox.value : '').trim().slice(0, 80);
     const items = menu.items.map(it => { const ex = DB.byId[it.exId]; return { exId: it.exId, name: ex ? ex.name : '種目', part: it.part, sets: it.sets, reps: it.reps, rest: it.rest }; });
     const btn = $('#pub-go', bg); btn.disabled = true; btn.textContent = '送信中...';
-    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName);
+    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName, { icon: pickedIcon, appeal });
     if (res.ok) {
       menu.pubId = res.id; menu.pubLink = link; menu.published = true;
-      if (dispName) S.publicName = dispName; // 次回以降の既定表示名として保存
+      if (dispName) S.publicName = dispName; // 次回以降の既定として保存
+      S.publicIcon = pickedIcon; S.publicAppeal = appeal;
       saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
     } else {
       toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
@@ -1256,12 +1278,16 @@ async function openPublicGalleryModal() {
     const pf = pm.link ? detectPlatform(pm.link) : null;
     const mine = myUid && pm.uid === myUid;
     const exList = (pm.items || []).slice(0, 8).map(it => esc(it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目')).join('、');
+    const icon = (typeof pm.icon === 'string' && pm.icon) ? pm.icon : '💪';
+    const appeal = (typeof pm.appeal === 'string' && pm.appeal.trim()) ? pm.appeal.trim() : '';
     return `<div class="card" style="margin-bottom:10px">
-      <div style="display:flex;align-items:center;gap:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div class="gal-avatar">${esc(icon)}</div>
         <div style="flex:1;min-width:0"><div class="nm" style="font-weight:800">${esc(pm.name)}</div>
         <div class="meta" style="font-size:11.5px;color:var(--ink-dim)">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目</div></div>
         ${pf && SNS_RE.test(pm.link) ? `<a class="btn small ghost" href="${esc(pm.link)}" target="_blank" rel="noopener nofollow ugc">${pf} ▶</a>` : ''}
       </div>
+      ${appeal ? `<p style="margin:8px 0 4px;font-size:13px">${esc(appeal)}</p>` : ''}
       <p class="card-note" style="margin:6px 0">${exList}${(pm.items || []).length > 8 ? ' ほか' : ''}</p>
       <div style="display:flex;gap:8px">
         ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
