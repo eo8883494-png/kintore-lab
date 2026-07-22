@@ -1230,7 +1230,9 @@ function openMenuPublishModal(menu) {
     const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, name, { icon, appeal, avatar });
     if (res.ok) {
       menu.pubId = res.id; menu.pubLink = link; menu.published = true;
-      saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
+      saveState(); closeModal();
+      toast(res.avatarDropped ? '🌐 公開しました(画像アイコンは今回反映できず絵文字で表示)' : '🌐 公開しました!');
+      renderLog();
     } else {
       toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
       btn.disabled = false; btn.textContent = menu.published ? '更新する' : '公開する';

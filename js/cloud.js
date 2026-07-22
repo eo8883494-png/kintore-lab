@@ -247,7 +247,6 @@ async function publishMenu(menu, link, platform, displayName, extra) {
     name: String(menu.name || '').slice(0, 40),
     icon: String(extra.icon || '').slice(0, 8),
     appeal: String(extra.appeal || '').slice(0, 120),
-    avatar: String(extra.avatar || '').slice(0, 24000), // 縮小済みJPEGのdataURL(任意)
     items: (menu.items || []).slice(0, 15).map(it => ({
       exId: String(it.exId || '').slice(0, 60),
       name: String(it.name || '').slice(0, 40),
@@ -260,8 +259,20 @@ async function publishMenu(menu, link, platform, displayName, extra) {
     platform: platform ? String(platform).slice(0, 20) : '',
     createdAt: Date.now(),
   };
+  // 画像アバターは値がある時だけ含める(ルールにavatar検証が無くても公開が通るように)
+  const avatar = String(extra.avatar || '').slice(0, 24000);
+  if (avatar) payload.avatar = avatar;
   try { await set(pubMenuRef(id), payload); return { ok: true, id }; }
-  catch (e) { console.warn('[cloud] publishMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
+  catch (e) {
+    // avatar付きで弾かれたら avatar 無しで再試行(ルール未反映でも必ず公開できるよう保険)
+    if (payload.avatar) {
+      const p2 = { ...payload }; delete p2.avatar;
+      try { await set(pubMenuRef(id), p2); return { ok: true, id, avatarDropped: true }; }
+      catch (e2) { console.warn('[cloud] publishMenu retry failed', e2); return { ok: false, reason: 'write', message: e2.message }; }
+    }
+    console.warn('[cloud] publishMenu failed', e);
+    return { ok: false, reason: 'write', message: e.message };
+  }
 }
 
 async function unpublishMenu(id) {
