@@ -3,7 +3,7 @@
 // ルールは本人のみ読み書き可 (auth.uid === $uid)。
 // ログインは任意: 未ログインでもアプリは完全にローカルで動く。ここは「あれば同期する」追加層。
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
-import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
+import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast, equalTo, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
@@ -283,6 +283,29 @@ async function listPublicMenus(max) {
   } catch (e) { console.warn('[cloud] listPublicMenus failed', e); return null; }
 }
 
+// プロフィール(表示名/アイコン/画像/アピール/リンク)を自分の公開済みメニュー全部に反映
+async function updateMyMenusProfile(profile) {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  try {
+    const snap = await get(query(pubMenusRef(), orderByChild('uid'), equalTo(currentUser.uid)));
+    if (!snap.exists()) return { ok: true, updated: 0 };
+    const updates = {};
+    let n = 0;
+    snap.forEach(ch => {
+      const b = 'kintoreLab/publicMenus/' + ch.key + '/';
+      updates[b + 'displayName'] = String(profile.displayName || 'ユーザー').slice(0, 30);
+      updates[b + 'icon'] = String(profile.icon || '').slice(0, 8);
+      updates[b + 'avatar'] = String(profile.avatar || '').slice(0, 24000);
+      updates[b + 'appeal'] = String(profile.appeal || '').slice(0, 120);
+      updates[b + 'link'] = String(profile.link || '').slice(0, 300);
+      updates[b + 'platform'] = String(profile.platform || '').slice(0, 20);
+      n++;
+    });
+    await update(ref(db), updates);
+    return { ok: true, updated: n };
+  } catch (e) { console.warn('[cloud] updateMyMenusProfile failed', e); return { ok: false, reason: 'write', message: e.message }; }
+}
+
 async function reportMenu(id) {
   if (!currentUser || !db) return { ok: false, reason: 'login' };
   try { await set(ref(db, 'kintoreLab/menuReports/' + id + '/' + currentUser.uid), { at: Date.now() }); return { ok: true }; }
@@ -292,7 +315,7 @@ async function reportMenu(id) {
 // ===== 公開API (app.js から利用) =====
 window.__klCloud = {
   available: !!auth,
-  publishMenu, unpublishMenu, listPublicMenus, reportMenu,
+  publishMenu, unpublishMenu, listPublicMenus, reportMenu, updateMyMenusProfile,
   myUid() { return currentUser ? currentUser.uid : null; },
   status() {
     return {

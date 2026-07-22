@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -240,6 +240,7 @@ function sanitizeState(s) {
   if (typeof s.publicName === 'string') out.publicName = s.publicName.slice(0, 30);
   if (typeof s.publicIcon === 'string') out.publicIcon = s.publicIcon.slice(0, 8);
   if (typeof s.publicAppeal === 'string') out.publicAppeal = s.publicAppeal.slice(0, 120);
+  if (typeof s.publicLink === 'string') out.publicLink = s.publicLink.slice(0, 300);
   if (isValidAvatar(s.publicAvatar)) out.publicAvatar = s.publicAvatar;
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
@@ -373,7 +374,12 @@ function mergeStates(local, remote) {
   [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
   out.timerPresets = [...tpMap.values()].slice(0, 30);
   out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
-  out.publicName = primary.publicName || secondary.publicName || ''; // 表示名はprimary優先
+  // 公開プロフィール(表示名・アイコン・画像・アピール・リンク)を引き継ぐ(mergeで消さない)
+  out.publicName = primary.publicName || secondary.publicName || '';
+  out.publicIcon = primary.publicIcon || secondary.publicIcon || '';
+  out.publicAvatar = primary.publicAvatar || secondary.publicAvatar || '';
+  out.publicAppeal = primary.publicAppeal || secondary.publicAppeal || '';
+  out.publicLink = primary.publicLink || secondary.publicLink || '';
   return out;
 }
 
@@ -1190,84 +1196,40 @@ function openMenuPublishModal(menu) {
     $('#pub-login', bg).addEventListener('click', () => { closeModal(); c.signIn(); });
     return;
   }
-  const curIcon = S.publicIcon || PUB_ICONS[0];
-  const curAvatar = isValidAvatar(S.publicAvatar) ? S.publicAvatar : '';
-  const iconGrid = PUB_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === curIcon ? 'on' : ''}" data-ic="${ic}">${ic}</button>`).join('');
+  // プロフィール未設定なら先に設定してもらう(初回のみ)
+  if (!S.publicName) { openPublicProfileModal(() => openMenuPublishModal(menu)); return; }
+  const icon = S.publicIcon || PUB_ICONS[0];
+  const avatar = isValidAvatar(S.publicAvatar) ? S.publicAvatar : '';
+  const name = S.publicName;
+  const appeal = S.publicAppeal || '';
+  // 不正なリンク(インポート等で混入)はルールに弾かれ公開失敗するので空扱いにする
+  const link = (S.publicLink && detectPlatform(S.publicLink)) ? S.publicLink : '';
+  const platform = link ? detectPlatform(link) : '';
+  const avatarHtml = avatar ? `<img src="${avatar}" alt="">` : esc(icon);
   const bg = openModal(`
     <h2>「${esc(menu.name)}」を公開</h2>
-    <p class="modal-sub">誰でも閲覧・参考にできる「みんなのメニュー」に公開します。アイコンとひとことで自分をアピール💪</p>
-    <div class="field"><label>アイコン(絵文字 or 画像)</label>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-        <div class="gal-avatar" id="pub-avatar-prev">${curAvatar ? `<img src="${curAvatar}" alt="">` : curIcon}</div>
-        <label class="btn ghost small" style="width:auto">📷 画像を使う<input type="file" accept="image/*" id="pub-avatar-file" hidden></label>
-        <button type="button" class="btn ghost small" id="pub-avatar-clear" style="width:auto;${curAvatar ? '' : 'display:none'}">絵文字に戻す</button>
+    <p class="modal-sub">このプロフィールで「みんなのメニュー」に公開されます。</p>
+    <div class="pub-identity">
+      <div class="gal-avatar">${avatarHtml}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:800">${esc(name)}${platform ? ` <span class="chip" style="font-size:10px">${platform}</span>` : ''}</div>
+        ${appeal ? `<div style="font-size:12px;color:var(--ink-dim)">${esc(appeal)}</div>` : ''}
       </div>
-      <div class="icon-picker" id="pub-icons">${iconGrid}</div>
-      <p class="card-note">画像は正方形に切り抜いて小さく保存します。⚠️ 公序良俗に反する画像・他人の写真の無断使用は禁止(通報対象)。</p>
     </div>
-    <div class="field"><label>表示名(好きな名前でOK)</label>
-      <input type="text" id="pub-name" placeholder="例: きんとれ太郎" maxlength="30" value="${esc(S.publicName || (c.status && c.status().user ? c.status().user.name : '') || '')}"></div>
-    <div class="field"><label>ひとことアピール(任意)<span style="float:right;color:var(--ink-dim);font-size:11px" id="appeal-count">0/80</span></label>
-      <textarea id="pub-appeal" rows="2" maxlength="80" placeholder="例: ベンチ100kg目標!週4で頑張ってます。筋肉自慢したい人フォローして💪">${esc(S.publicAppeal || '')}</textarea></div>
-    <div class="field"><label>SNSリンク(任意)</label>
-      <input type="text" id="pub-link" placeholder="https://www.instagram.com/..." maxlength="300" value="${esc(menu.pubLink || '')}"></div>
-    <div id="pub-link-note" class="card-note">Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。</div>
+    <button class="btn ghost small" id="pub-editprofile" style="width:100%;margin:8px 0 12px">🪪 プロフィール(アイコン・名前)を編集</button>
     <p class="card-note">⚠️ 公開すると誰でも見られます。個人情報や非公開にしたい内容は入れないでください。</p>
     <div style="display:flex;gap:10px;margin-top:12px">
       <button class="btn ghost" onclick="closeModal()">キャンセル</button>
       <button class="btn" id="pub-go">${menu.published ? '更新する' : '公開する'}</button>
     </div>
     ${menu.published && menu.pubId ? '<button class="btn ghost small" id="pub-remove" style="margin-top:10px;width:100%;color:var(--warn,#f87171)">公開を取り消す</button>' : ''}`);
-  // アイコン選択(絵文字 or 画像。画像があれば優先)
-  let pickedIcon = curIcon;
-  let pickedAvatar = curAvatar;
-  const prevEl = $('#pub-avatar-prev', bg), clearBtn = $('#pub-avatar-clear', bg), fileInput = $('#pub-avatar-file', bg);
-  const refreshPrev = () => {
-    if (pickedAvatar) { prevEl.innerHTML = `<img src="${pickedAvatar}" alt="">`; clearBtn.style.display = ''; }
-    else { prevEl.textContent = pickedIcon; clearBtn.style.display = 'none'; }
-  };
-  $all('.icon-pick', bg).forEach(b => b.addEventListener('click', () => {
-    $all('.icon-pick', bg).forEach(x => x.classList.remove('on'));
-    b.classList.add('on'); pickedIcon = b.dataset.ic; pickedAvatar = ''; // 絵文字を選んだら画像は外す
-    refreshPrev();
-  }));
-  if (fileInput) fileInput.addEventListener('change', () => {
-    const f = fileInput.files && fileInput.files[0];
-    fileInput.value = '';
-    if (!f) return;
-    if (f.size > 12 * 1024 * 1024) { toast('画像が大きすぎます(12MBまで)'); return; }
-    avatarFromFile(f, url => {
-      if (!url) { toast('画像を読み込めませんでした'); return; }
-      pickedAvatar = url; refreshPrev();
-    });
-  });
-  if (clearBtn) clearBtn.addEventListener('click', () => { pickedAvatar = ''; refreshPrev(); });
-  const appealBox = $('#pub-appeal', bg), appealCount = $('#appeal-count', bg);
-  const updCount = () => { if (appealCount) appealCount.textContent = (appealBox.value.length) + '/80'; };
-  if (appealBox) { appealBox.addEventListener('input', updCount); updCount(); }
-  const linkInput = $('#pub-link', bg), noteEl = $('#pub-link-note', bg);
-  const checkLink = () => {
-    const v = linkInput.value.trim();
-    if (!v) { noteEl.textContent = 'Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。'; noteEl.style.color = ''; return true; }
-    const pf = detectPlatform(v);
-    noteEl.textContent = pf ? '✓ ' + pf + ' のリンク' : '✕ Instagram/YouTube/TikTok/X/Threads のURLのみ使えます';
-    noteEl.style.color = pf ? 'var(--accent)' : 'var(--warn,#f87171)';
-    return !!pf;
-  };
-  linkInput.addEventListener('input', checkLink);
+  $('#pub-editprofile', bg).addEventListener('click', () => openPublicProfileModal(() => openMenuPublishModal(menu)));
   $('#pub-go', bg).addEventListener('click', async () => {
-    const link = linkInput.value.trim();
-    if (link && !detectPlatform(link)) { toast('SNSリンクはInstagram/YouTube/TikTok/X/Threadsのみ'); return; }
-    const platform = link ? detectPlatform(link) : '';
-    const dispName = ($('#pub-name', bg).value || '').trim().slice(0, 30);
-    const appeal = (appealBox ? appealBox.value : '').trim().slice(0, 80);
     const items = menu.items.map(it => { const ex = DB.byId[it.exId]; return { exId: it.exId, name: ex ? ex.name : '種目', part: it.part, sets: it.sets, reps: it.reps, rest: it.rest }; });
     const btn = $('#pub-go', bg); btn.disabled = true; btn.textContent = '送信中...';
-    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, dispName, { icon: pickedIcon, appeal, avatar: pickedAvatar });
+    const res = await c.publishMenu({ pubId: menu.pubId, name: menu.name, items }, link, platform, name, { icon, appeal, avatar });
     if (res.ok) {
       menu.pubId = res.id; menu.pubLink = link; menu.published = true;
-      if (dispName) S.publicName = dispName; // 次回以降の既定として保存
-      S.publicIcon = pickedIcon; S.publicAppeal = appeal; S.publicAvatar = pickedAvatar || '';
       saveState(); closeModal(); toast('🌐 公開しました!'); renderLog();
     } else {
       toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
@@ -1279,6 +1241,88 @@ function openMenuPublishModal(menu) {
     const res = await c.unpublishMenu(menu.pubId);
     if (res.ok) { menu.published = false; delete menu.pubId; saveState(); closeModal(); toast('公開を取り消しました'); renderLog(); }
     else toast('取り消しに失敗しました');
+  });
+}
+
+// 公開プロフィール編集(アイコン/名前/アピール/リンクを一度設定→公開時に自動使用)
+function openPublicProfileModal(afterSave) {
+  const c = window.__klCloud;
+  const curIcon = S.publicIcon || PUB_ICONS[0];
+  const curAvatar = isValidAvatar(S.publicAvatar) ? S.publicAvatar : '';
+  const curName = S.publicName || (c && c.status && c.status().user ? c.status().user.name : '') || '';
+  const iconGrid = PUB_ICONS.map(ic => `<button type="button" class="icon-pick ${ic === curIcon ? 'on' : ''}" data-ic="${ic}">${ic}</button>`).join('');
+  const bg = openModal(`
+    <h2>🪪 公開プロフィール</h2>
+    <p class="modal-sub">「みんなのメニュー」で表示されるアイコン・名前・アピール。一度設定すれば、公開のたびに自動で使われます。</p>
+    <div class="field"><label>アイコン(絵文字 or 画像)</label>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div class="gal-avatar" id="pf-avatar-prev">${curAvatar ? `<img src="${curAvatar}" alt="">` : curIcon}</div>
+        <label class="btn ghost small" style="width:auto">📷 画像を使う<input type="file" accept="image/*" id="pf-avatar-file" hidden></label>
+        <button type="button" class="btn ghost small" id="pf-avatar-clear" style="width:auto;${curAvatar ? '' : 'display:none'}">絵文字に戻す</button>
+      </div>
+      <div class="icon-picker" id="pf-icons">${iconGrid}</div>
+      <p class="card-note">画像は正方形に切り抜いて小さく保存します。⚠️ 公序良俗に反する画像・他人の写真の無断使用は禁止(通報対象)。</p>
+    </div>
+    <div class="field"><label>表示名</label>
+      <input type="text" id="pf-name" placeholder="例: きんとれ太郎" maxlength="30" value="${esc(curName)}"></div>
+    <div class="field"><label>ひとことアピール(任意)<span style="float:right;color:var(--ink-dim);font-size:11px" id="pf-appeal-count">0/80</span></label>
+      <textarea id="pf-appeal" rows="2" maxlength="80" placeholder="例: ベンチ100kg目標!週4で頑張ってます💪">${esc(S.publicAppeal || '')}</textarea></div>
+    <div class="field"><label>SNSリンク(任意)</label>
+      <input type="text" id="pf-link" placeholder="https://www.instagram.com/..." maxlength="300" value="${esc(S.publicLink || '')}"></div>
+    <div id="pf-link-note" class="card-note">Instagram / YouTube / TikTok / X / Threads のURLのみ。トレ動画等の宣伝に。</div>
+    <div style="display:flex;gap:10px;margin-top:12px">
+      <button class="btn ghost" id="pf-cancel">キャンセル</button>
+      <button class="btn" id="pf-save">保存</button>
+    </div>`);
+  // 公開モーダルから開いた場合、キャンセルでも公開フローに戻す
+  $('#pf-cancel', bg).addEventListener('click', () => { closeModal(); if (afterSave) afterSave(); });
+  let pickedIcon = curIcon, pickedAvatar = curAvatar;
+  const prevEl = $('#pf-avatar-prev', bg), clearBtn = $('#pf-avatar-clear', bg), fileInput = $('#pf-avatar-file', bg);
+  const refreshPrev = () => {
+    if (pickedAvatar) { prevEl.innerHTML = `<img src="${pickedAvatar}" alt="">`; clearBtn.style.display = ''; }
+    else { prevEl.textContent = pickedIcon; clearBtn.style.display = 'none'; }
+  };
+  $all('.icon-pick', bg).forEach(b => b.addEventListener('click', () => {
+    $all('.icon-pick', bg).forEach(x => x.classList.remove('on'));
+    b.classList.add('on'); pickedIcon = b.dataset.ic; pickedAvatar = ''; refreshPrev();
+  }));
+  if (fileInput) fileInput.addEventListener('change', () => {
+    const f = fileInput.files && fileInput.files[0]; fileInput.value = '';
+    if (!f) return;
+    if (f.size > 12 * 1024 * 1024) { toast('画像が大きすぎます(12MBまで)'); return; }
+    avatarFromFile(f, url => { if (!url) { toast('画像を読み込めませんでした'); return; } pickedAvatar = url; refreshPrev(); });
+  });
+  if (clearBtn) clearBtn.addEventListener('click', () => { pickedAvatar = ''; refreshPrev(); });
+  const appealBox = $('#pf-appeal', bg), appealCount = $('#pf-appeal-count', bg);
+  const updCount = () => { if (appealCount) appealCount.textContent = appealBox.value.length + '/80'; };
+  if (appealBox) { appealBox.addEventListener('input', updCount); updCount(); }
+  const linkInput = $('#pf-link', bg), noteEl = $('#pf-link-note', bg);
+  linkInput.addEventListener('input', () => {
+    const v = linkInput.value.trim();
+    if (!v) { noteEl.textContent = 'Instagram / YouTube / TikTok / X / Threads のURLのみ。'; noteEl.style.color = ''; return; }
+    const pf = detectPlatform(v);
+    noteEl.textContent = pf ? '✓ ' + pf + ' のリンク' : '✕ Instagram/YouTube/TikTok/X/Threads のURLのみ使えます';
+    noteEl.style.color = pf ? 'var(--accent)' : 'var(--warn,#f87171)';
+  });
+  $('#pf-save', bg).addEventListener('click', async () => {
+    const name = ($('#pf-name', bg).value || '').trim().slice(0, 30);
+    if (!name) { toast('表示名を入れてください'); return; }
+    const link = linkInput.value.trim();
+    if (link && !detectPlatform(link)) { toast('SNSリンクはInstagram/YouTube/TikTok/X/Threadsのみ'); return; }
+    const appeal = (appealBox ? appealBox.value : '').trim().slice(0, 80);
+    S.publicName = name; S.publicIcon = pickedIcon; S.publicAvatar = pickedAvatar || ''; S.publicAppeal = appeal; S.publicLink = link;
+    saveState();
+    const btn = $('#pf-save', bg); btn.disabled = true; btn.textContent = '保存中...';
+    // 既に公開済みのメニューがあれば、その表示も一括更新
+    let updRes = { ok: true };
+    if (c && c.myUid && c.myUid() && c.updateMyMenusProfile) {
+      updRes = await c.updateMyMenusProfile({ displayName: name, icon: pickedIcon, avatar: pickedAvatar || '', appeal, link, platform: link ? detectPlatform(link) : '' });
+    }
+    closeModal();
+    toast(updRes && updRes.ok === false && updRes.updated !== 0
+      ? 'プロフィールは保存しました(公開中メニューへの反映は失敗。時間をおいて再保存を)'
+      : 'プロフィールを保存しました');
+    if (afterSave) afterSave(); else if (currentView() === 'tools') renderTools();
   });
 }
 
@@ -1876,7 +1920,30 @@ function cloudCardHtml() {
   </div>`;
 }
 
+// 公開プロフィールカード(みんなのメニューで使うアイコン・名前・アピール)
+function publicProfileCardHtml() {
+  const icon = S.publicIcon || '💪';
+  const avatar = isValidAvatar(S.publicAvatar) ? S.publicAvatar : '';
+  const set = !!S.publicName;
+  const avatarHtml = avatar ? `<img src="${avatar}" alt="">` : esc(icon);
+  return `<div class="card"><h2>🪪 公開プロフィール<span class="sub">みんなのメニュー用</span></h2>
+    ${set ? `<div class="pub-identity">
+      <div class="gal-avatar">${avatarHtml}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:800">${esc(S.publicName)}</div>
+        ${S.publicAppeal ? `<div style="font-size:12px;color:var(--ink-dim)">${esc(S.publicAppeal)}</div>` : '<div style="font-size:12px;color:var(--ink-dim)">アピール未設定</div>'}
+      </div>
+    </div>
+    <button class="btn ghost" id="edit-profile" style="margin-top:10px">プロフィールを編集</button>`
+    : `<p style="font-size:13.5px;margin-bottom:10px">アイコンと名前を一度設定すれば、メニュー公開のたびに自動で使われます(毎回設定しなくてOK)。</p>
+    <button class="btn" id="edit-profile">プロフィールを設定</button>`}
+    <p class="card-note">ここで設定した内容は「みんなのメニュー」の公開時に使われます。編集すると公開中のメニューにも反映されます。</p>
+  </div>`;
+}
+
 function bindCloudCard(root) {
+  const editPf = $('#edit-profile', root);
+  if (editPf) editPf.addEventListener('click', () => openPublicProfileModal());
   const inBtn = $('#cloud-signin', root);
   if (inBtn) inBtn.addEventListener('click', () => { if (window.__klCloud) window.__klCloud.signIn(); });
   const outBtn = $('#cloud-signout', root);
@@ -1914,6 +1981,7 @@ function renderTools() {
 
   root.innerHTML = `
     ${cloudCardHtml()}
+    ${publicProfileCardHtml()}
     <div class="card"><h2>⏱️ 休憩タイマー</h2>
       <div class="timer-display" id="timer-disp">${fmtTimer(timer.sec)}</div>
       <div class="timer-btns">
