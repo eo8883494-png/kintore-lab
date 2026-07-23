@@ -2089,15 +2089,6 @@ function renderLog() {
   const hasLogs = S.logs.length > 0;
 
   let html = `
-    <div class="card"><h2>✍️ クイック記録</h2>
-      <div class="grid2">
-        <div class="field"><label>日付</label><input type="date" id="log-date" value="${logUiState.logDate || todayStr()}"></div>
-        <div class="field"><label>種目</label>${exerciseSelectHtml('log-ex', logUiState.logEx)}</div>
-      </div>
-      <div class="field"><label>セット (重量kg × 回数)</label><div id="set-rows"></div>
-        <button class="btn small ghost" id="add-set">+ セット追加</button></div>
-      <button class="btn" id="save-log">記録する</button>
-    </div>
 
     <div class="card"><h2>📝 マイメニュー<span class="sub">自分のルーティンを保存</span></h2>
       <div id="mymenu-list">${S.myMenus.length ? S.myMenus.map(m => `
@@ -2142,55 +2133,6 @@ function renderLog() {
   html += `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームのチェック or 上のフォームから記録できます。</div>'}</div></div>`;
 
   root.innerHTML = html;
-
-  // セット行
-  const setRows = $('#set-rows', root);
-  function addSetRow(w, r) {
-    const div = document.createElement('div');
-    div.className = 'set-row';
-    const no = setRows.children.length + 1;
-    div.innerHTML = `<span class="no">${no}</span>
-      <input type="number" class="sw" placeholder="kg" step="0.5" value="${w != null ? w : ''}">
-      <span class="x">kg ×</span>
-      <input type="number" class="sr" placeholder="回" value="${r != null ? r : ''}">
-      <span class="x">回</span><button type="button" class="rm-set">✕</button>`;
-    div.querySelector('.rm-set').addEventListener('click', () => {
-      div.remove();
-      $all('.set-row .no', setRows).forEach((n, i) => { n.textContent = i + 1; });
-    });
-    setRows.appendChild(div);
-  }
-  addSetRow(); addSetRow(); addSetRow();
-  $('#add-set', root).addEventListener('click', () => addSetRow());
-
-  const logEx = $('#log-ex', root);
-  logEx.addEventListener('change', () => {
-    logUiState.logEx = logEx.value;
-    const lw = S.lastW[logEx.value];
-    if (lw != null) $all('.sw', setRows).forEach(i => { if (!i.value) i.value = lw; });
-  });
-  $('#log-date', root).addEventListener('change', () => { logUiState.logDate = $('#log-date', root).value; });
-
-  $('#save-log', root).addEventListener('click', () => {
-    const btn = $('#save-log', root);
-    const date = $('#log-date', root).value || todayStr();
-    const exId = logEx.value;
-    const sets = $all('.set-row', setRows).map(row => ({
-      w: Number($('.sw', row).value) || 0,
-      r: Number($('.sr', row).value) || 0,
-    })).filter(s => s.r > 0);
-    if (!sets.length) { toast('回数を入れてください'); return; }
-    btn.disabled = true;
-    setTimeout(() => { btn.disabled = false; }, 600);
-    S.logs.push({ id: newId(), date, exId, sets });
-    const topW = Math.max(...sets.map(s => s.w));
-    if (topW > 0) S.lastW[exId] = topW;
-    logUiState.logDate = date; // 再描画後も入力日付・種目を維持 (過去日まとめ入力用)
-    logUiState.logEx = exId;
-    saveState();
-    toast('記録しました💪');
-    renderLog();
-  });
 
   // マイメニュー
   $('#mymenu-new', root).addEventListener('click', () => openMyMenuModal());
@@ -2543,12 +2485,10 @@ function renderTools() {
       </div>` : '<p class="card-note">プロフィール設定で自動計算されます。</p>'}
     </div>
 
-    <div class="card"><h2>💪 FFMI (筋肉量指数)</h2>
-      <div class="grid2">
-        <div class="field"><label>体脂肪率 %</label><input type="number" id="ffmi-bf" placeholder="18"></div>
-        <div class="field"><label>&nbsp;</label><button class="btn small" id="ffmi-calc" style="width:100%">計算</button></div>
-      </div>
+    <div class="card"><h2>💪 FFMI（筋肉の発達度）</h2>
+      <p class="card-note" style="margin-top:-2px">身長あたりの筋肉量の指数。体脂肪の影響を除くのでBMIより「鍛えてる度」を表します。ナチュラルの上限目安は男性25・女性21。</p>
       <div id="ffmi-out"></div>
+      <div class="field" style="margin-top:8px"><label>体脂肪率 %（測定値があれば入力・空欄なら自動推定）</label><input type="number" id="ffmi-bf" placeholder="自動推定で計算中" step="0.1"></div>
     </div>
 
     <div class="tool-sec">学ぶ</div>
@@ -2564,21 +2504,9 @@ function renderTools() {
     </div>
 
     <div class="tool-sec">その他</div>
-    <div class="card"><h2>💬 フィードバック</h2>
-      <p style="font-size:13px;margin-bottom:10px">「ここが使いにくい」「この種目を入れろ」大歓迎。ガチ勢のツッコミほど改善に効きます。</p>
-      <div style="display:flex;gap:8px">
-        <a class="btn ghost" style="text-decoration:none" target="_blank" rel="noopener" href="https://x.com/intent/post?text=${encodeURIComponent('#筋トレLAB 使ってみた: ')}">𝕏 で感想を送る</a>
-        <a class="btn ghost" style="text-decoration:none" target="_blank" rel="noopener" href="https://x.com/hataraku_ai_">開発者X</a>
-      </div>
-    </div>
-
     <div class="card"><h2>💾 データ管理</h2>
-      <div style="display:flex;gap:8px;margin-bottom:10px">
-        <button class="btn ghost" id="export-data">エクスポート</button>
-        <button class="btn ghost" id="import-data">インポート</button>
-      </div>
       <button class="btn danger" id="reset-data">全データ削除</button>
-      <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。機種変更前にエクスポートを。</p>
+      <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。${isNativeApp() ? 'Googleログインで別端末と同期できます。' : ''}</p>
     </div>
 
     <p class="card-note" style="text-align:center;padding:0 8px 8px">
@@ -2619,16 +2547,19 @@ function renderTools() {
   $('#rm-r', root).addEventListener('input', rmCalc);
 
   // FFMI
-  $('#ffmi-calc', root).addEventListener('click', () => {
+  // FFMI: 体脂肪率を自動推定して即算出(測定値の入力があれば優先)
+  const drawFFMI = () => {
     const out = $('#ffmi-out', root);
-    if (!p) { out.innerHTML = '<p class="card-note">プロフィール設定が必要です。</p>'; return; }
-    const bf = Number($('#ffmi-bf', root).value);
-    if (!bf || bf <= 0 || bf >= 60) { toast('体脂肪率を入力してください'); return; }
+    if (!out) return;
+    if (!p) { out.innerHTML = '<p class="card-note">プロフィール設定で自動計算されます。</p>'; return; }
+    const bfIn = Number($('#ffmi-bf', root).value);
     const hM = p.h / 100;
+    const bmi = p.w / (hM * hM);
+    // 入力があればそれを、なければDeurenberg式で体脂肪率を推定
+    const useIn = bfIn > 0 && bfIn < 60;
+    const bf = useIn ? bfIn : Math.max(4, Math.min(50, Math.round((1.20 * bmi + 0.23 * p.age - 10.8 * (p.sex === 'f' ? 0 : 1) - 5.4) * 10) / 10));
     const ffm = p.w * (1 - bf / 100);
-    const ffmi = ffm / (hM * hM) + 6.1 * (1.8 - hM);
-    const v = Math.round(ffmi * 10) / 10;
-    // 判定基準は性別で別 (女性は除脂肪量の生理的上限が低い)
+    const v = Math.round((ffm / (hM * hM) + 6.1 * (1.8 - hM)) * 10) / 10;
     const isF = p.sex === 'f';
     const th = isF ? [14, 15.5, 17, 19] : [18, 20, 22, 25];
     const cap = isF ? 21 : 25;
@@ -2638,39 +2569,14 @@ function renderTools() {
     else if (v < th[2]) judge = '明らかに鍛えてる体。素晴らしい';
     else if (v < th[3]) judge = 'かなりの上級者。周りにバレるレベル';
     else judge = 'ナチュラルの限界域。すごすぎる';
-    out.innerHTML = `<div class="tool-result">FFMI <span class="big">${v}</span><p class="card-note">除脂肪体重${Math.round(ffm * 10) / 10}kg。${judge}(${isF ? '女性' : '男性'}のナチュラル上限目安は${cap})。</p></div>`;
-  });
+    out.innerHTML = `<div class="tool-result">FFMI <span class="big">${v}</span>
+      <p class="card-note">除脂肪体重${Math.round(ffm * 10) / 10}kg / 体脂肪率${bf}%${useIn ? '' : '(推定)'}。${judge}(${isF ? '女性' : '男性'}のナチュラル上限目安${cap})。${useIn ? '' : '体脂肪率を入れるとより正確になります。'}</p></div>`;
+  };
+  const ffmiInp = $('#ffmi-bf', root);
+  if (ffmiInp) ffmiInp.addEventListener('input', drawFFMI);
+  drawFFMI(); // 初期表示=自動算出
 
   // データ管理
-  $('#export-data', root).addEventListener('click', () => {
-    const data = JSON.stringify(S);
-    const blob = new Blob([data], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `kintore-lab-backup-${todayStr()}.json`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast('バックアップをダウンロードしました');
-  });
-  $('#import-data', root).addEventListener('click', () => {
-    const bg = openModal(`<h2>データインポート</h2><p class="modal-sub">エクスポートしたJSONを貼り付けてください。現在のデータは上書きされます。</p>
-      <div class="field"><textarea id="import-text" rows="6" placeholder='{"profile":...}'></textarea></div>
-      <div style="display:flex;gap:10px"><button class="btn ghost" onclick="closeModal()">キャンセル</button><button class="btn" id="import-go">インポート</button></div>`);
-    $('#import-go', bg).addEventListener('click', () => {
-      try {
-        const parsed = JSON.parse($('#import-text', bg).value);
-        if (!parsed || typeof parsed !== 'object' || !('logs' in parsed)) throw new Error('形式が違います');
-        S = sanitizeState(parsed);
-        rebuildDB(S.customEx);
-        saveState();
-        closeModal();
-        toast('インポートしました');
-        route();
-      } catch (e) {
-        toast('読み込めませんでした: ' + e.message);
-      }
-    });
-  });
   $('#reset-data', root).addEventListener('click', () => {
     if (!confirm('全データを削除します。本当によろしいですか?')) return;
     if (!confirm('記録・プロフィール・メニュー・体型フォトが全て消えます。元に戻せません。実行しますか?')) return;
