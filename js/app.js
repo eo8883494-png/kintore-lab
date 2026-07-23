@@ -111,7 +111,11 @@ function sanitizeState(s) {
       if (typeof l.date !== 'string' || !DATE_RE.test(l.date)) return;
       if (typeof l.exId !== 'string' || !Array.isArray(l.sets)) return;
       const sets = l.sets
-        .map(x => ({ w: numIn(x && x.w, 0, 2000, 0), r: Math.round(numIn(x && x.r, 0, 1000, 0)) }))
+        .map(x => {
+          const o = { w: numIn(x && x.w, 0, 2000, 0), r: Math.round(numIn(x && x.r, 0, 1000, 0)) };
+          if (x && x.rir != null) { const rr = Math.round(numIn(x.rir, 0, 10, -1)); if (rr >= 0) o.rir = rr; } // RIR(残り何回=主観的キツさ)
+          return o;
+        })
         .filter(x => x.r > 0);
       if (!sets.length) return;
       const id = Number(l.id);
@@ -771,13 +775,38 @@ function progressiveTarget(exId, item, ex) {
   if (!(lastW > 0)) return null;
   const topReps = last.sets.filter(s => (s.w || 0) >= lastW).map(s => s.r || 0);
   if (hi && topReps.length && topReps.every(r => r >= hi)) {
-    const inc = ex.equipment === 'barbell' ? 2.5 : (ex.compound ? 2 : 1);
+    let inc = ex.equipment === 'barbell' ? 2.5 : (ex.compound ? 2 : 1);
+    const rir = minRir(last); // 前回のキツさ(残り何回)
+    let note = '';
+    if (rir >= 2) { inc *= 2; note = '(余裕あり=大きめに)'; }        // 楽だった→大きく上げる
+    else if (rir === 0) { note = '(限界だった=無理なら据え置き)'; }   // 限界→通常の刻み
     const nw = Math.round((lastW + inc) * 2) / 2;
-    return { prefill: nw, up: true, hint: `前回 ${lastW}kg で${hi}回クリア→ 今回 ${nw}kg に上げどき💪` };
+    return { prefill: nw, up: true, hint: `前回 ${lastW}kg で${hi}回クリア${note}→ 今回 ${nw}kg に上げどき💪` };
   }
   const minR = topReps.length ? Math.min(...topReps) : 0;
   if (lo && minR < lo) return { prefill: lastW, hint: `前回 ${lastW}kg×${minR}回→ まず${lo}回を安定させる` };
   return { prefill: lastW, hint: `前回 ${lastW}kg→ 同じ重さで${hi ? hi + '回' : '+1回'}を狙う` };
+}
+// RIR: セット中の最小(=最もキツい)残り回数。無ければ99
+function minRir(log) {
+  let m = 99;
+  (log.sets || []).forEach(s => { if (s.rir != null && s.rir < m) m = s.rir; });
+  return m;
+}
+function rirLabel(rir) {
+  return rir >= 2 ? '楽（余裕あり）' : rir === 1 ? 'ちょうど' : '限界（追い込んだ）';
+}
+// 完了した種目に「キツさ(RIR)」を記録
+function setExerciseRir(exId, rir) {
+  const today = todayStr();
+  const ctx = todayPlanContext();
+  const de = ddGet(S.dayDone[today], exId);
+  if (!de || de.src !== ctxKeyOf(ctx)) return;
+  const lg = S.logs.find(l => l.id === de.id);
+  if (!lg) return;
+  lg.sets.forEach(s => { s.rir = Math.max(0, Math.min(5, Math.round(rir))); });
+  saveState();
+  renderHome();
 }
 
 // ===== HOME =====
@@ -1009,6 +1038,8 @@ function renderHome() {
       const dots = Array.from({ length: it.sets }, (_, i) => `<span class="sd ${i < cnt ? 'on' : ''}" data-i="${i}"></span>`).join('');
       const po = progressiveTarget(it.exId, it, ex); // 漸進性過負荷: 前回実績→今回の狙い
       const wVal = po && po.prefill != null ? po.prefill : (lastW != null ? lastW : '');
+      let rir; // 完了後のキツさ(RIR)
+      if (done && de) { const lg = S.logs.find(l => l.id === de.id); rir = lg && lg.sets[0] ? lg.sets[0].rir : undefined; }
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
@@ -1017,6 +1048,9 @@ function renderHome() {
             <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
             <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
             ${po && po.hint && !done ? `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>` : ''}
+            ${done ? (rir == null
+              ? `<div class="rir-pick" data-ex="${it.exId}">今日のキツさ: <button class="rirb" data-rir="3">楽</button><button class="rirb" data-rir="1">普通</button><button class="rirb" data-rir="0">限界</button></div>`
+              : `<div class="rir-label">キツさ: ${rirLabel(rir)}</div>`) : ''}
           </div>
           ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${wVal}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
           <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1"><span class="unit">${rUnit}</span>
@@ -1135,6 +1169,11 @@ function renderHome() {
       setExerciseProgress(exId, cur === i + 1 ? i : i + 1);
     });
   });
+  $all('.rirb', root).forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const exId = b.closest('.rir-pick').dataset.ex;
+    setExerciseRir(exId, Number(b.dataset.rir));
+  }));
 }
 
 // ホーム: 種目のセット進捗を更新。満了で自動チェック(記録)、以降は休憩タイマーも出す
