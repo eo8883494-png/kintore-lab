@@ -748,6 +748,33 @@ const TIPS = [
   '記録をつける人はつけない人より伸びる。前回の自分がライバル。',
 ];
 
+// 目的別のタイミング豆知識(時間帯・食前/食後)。研究の合意ベースで断定しすぎない
+const TIMING_GUIDE = {
+  hyp:  { time: '力が出やすい夕方〜夜が理想(体温・筋力が高くなる時間帯)。ただし一番効くのは「毎回続けられる時間」。', meal: '大きい食事の2〜3時間後がベスト。トレ前後に炭水化物を入れると力が出て回復も早い。1日+200〜300kcalで。' },
+  str:  { time: '神経系がフレッシュな時に。時間帯より「疲労が抜けている」ことが最優先=睡眠と休養を確保して臨む。', meal: 'トレ30〜60分前に炭水化物(+好みでカフェイン)で神経系を起こすと挙上が数%伸びる。空腹すぎ・満腹すぎは避ける。' },
+  diet: { time: '時間帯は自由。朝の空腹有酸素は任意(脂肪の動員はやや上がるが、結局は1日の総消費カロリーが支配的)。', meal: '筋肉を守るためタンパク質は死守(体重×2g目安)。フラフラの空腹で高強度はNG、軽い糖質を入れてから。' },
+  fit:  { time: '続けやすい時間帯でOK。朝でも夜でも、習慣化そのものが一番の効果。', meal: '大きな食事の直後は避け、軽くお腹に入れてから。水分補給を忘れずに。' },
+  posture: { time: '低強度なので毎日・スキマ時間でOK。朝の目覚めやデスクワークの合間に取り入れやすい。', meal: '食事タイミングの制約はほぼ無し。長時間座ったら「こまめに動く」こと自体が効く。' },
+};
+const TIMING_COMMON = [
+  '満腹での運動は避ける — 大きい食事の2〜3時間後がベスト。空腹すぎるなら軽い炭水化物(バナナ・おにぎり)を30〜60分前に。',
+  'トレ後はタンパク質+炭水化物を数時間以内に。ただし「30分以内のゴールデンタイム」は近年の研究では神経質にならなくてOK=1日の総タンパク質を数回に分ける方が大事。',
+  'カフェインはトレ前30分が効く。夕方以降に摂るなら睡眠に響かない量で。',
+  '筋肉が育つのは休んでいる間。時間帯を気にするより、7時間以上の睡眠と継続を優先。',
+];
+function timingCardHtml() {
+  if (!S.profile) return '';
+  const goal = S.profile.goal || 'hyp';
+  const g = TIMING_GUIDE[goal] || TIMING_GUIDE.hyp;
+  const goalName = SCIENCE.goals[goal] ? SCIENCE.goals[goal].name : '';
+  return `<div class="card"><h2>⏰ いつやる?タイミングの豆知識<span class="sub">${esc(goalName)}向け</span></h2>
+    <div class="field"><label>おすすめ時間帯</label><p style="font-size:13.5px;line-height:1.7">${esc(g.time)}</p></div>
+    <div class="field"><label>食前?食後?</label><p style="font-size:13.5px;line-height:1.7">${esc(g.meal)}</p></div>
+    <details class="acc"><summary>目的が違っても共通の基本</summary><div class="acc-body"><ul style="padding-left:16px;font-size:13px">${TIMING_COMMON.map(t => `<li style="margin-bottom:6px">${esc(t)}</li>`).join('')}</ul></div></details>
+    <p class="card-note">「${esc(goalName)}」向けの内容です。目的を変えるとここも変わります(プロフィール編集)。</p>
+  </div>`;
+}
+
 // dayDoneエントリの正規化: 旧形式(数値)は plan コンテキスト扱い
 function ddGet(dayMap, exId) {
   const v = dayMap && dayMap[exId];
@@ -974,6 +1001,7 @@ function renderHome() {
   const tipList = S.profile && S.profile.age < 18 ? TIPS.filter(t => t.indexOf('カフェイン') < 0) : TIPS;
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
   html += `<div class="card tip-card"><h2>💡 今日の筋知識</h2><p style="font-size:13.5px">${esc(tipList[tipIdx])}</p></div>`;
+  html += timingCardHtml();
 
   root.innerHTML = html;
 
