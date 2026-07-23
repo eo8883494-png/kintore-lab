@@ -329,6 +329,28 @@ async function reportMenu(id) {
   catch (e) { console.warn('[cloud] reportMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
 }
 
+// ===== いいね・取り込み数(/kintoreLab/menuLikes|menuImports/{menuId}/{uid}=true) =====
+// 誰でも読める・本人のみ自分のマークを書ける(要Firebaseルール追加)。ルール未適用でも読み書き失敗は無害に返す
+async function listMenuMarks() {
+  if (!db) return { likes: {}, imports: {} };
+  const out = { likes: {}, imports: {} };
+  try { const s = await get(ref(db, 'kintoreLab/menuLikes')); if (s.exists()) out.likes = s.val() || {}; } catch (e) { /* ルール未適用 */ }
+  try { const s = await get(ref(db, 'kintoreLab/menuImports')); if (s.exists()) out.imports = s.val() || {}; } catch (e) { /* ルール未適用 */ }
+  return out;
+}
+async function likeMenu(id, on) {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  try {
+    await set(ref(db, 'kintoreLab/menuLikes/' + id + '/' + currentUser.uid), on ? true : null);
+    return { ok: true };
+  } catch (e) { console.warn('[cloud] likeMenu failed', e); return { ok: false, reason: 'write' }; }
+}
+// 取り込みマーク(fire-and-forget・失敗しても取り込み自体は成功扱い)
+function markImport(id) {
+  if (!currentUser || !db || !id) return;
+  set(ref(db, 'kintoreLab/menuImports/' + id + '/' + currentUser.uid), true).catch(() => {});
+}
+
 // ===== ネイティブサインイン (Capacitor / iOS・Android) =====
 // Google はセキュリティ上 WebView 内の OAuth をブロックするため、ネイティブ層で資格情報を取得し
 // それを Firebase JS SDK に渡す(signInWithCredential)。これで onAuthStateChanged 以降の既存処理をそのまま使える。
@@ -372,6 +394,7 @@ async function nativeAppleSignIn() {
 window.__klCloud = {
   available: !!auth,
   publishMenu, unpublishMenu, listPublicMenus, reportMenu, updateMyMenusProfile,
+  listMenuMarks, likeMenu, markImport,
   myUid() { return currentUser ? currentUser.uid : null; },
   status() {
     return {

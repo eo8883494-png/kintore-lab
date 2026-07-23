@@ -2639,60 +2639,168 @@ function importPublicMenu(pm) {
   clearMenuTombstone(newMenu); // 同内容の削除マーカーがあれば解除(再取り込みを削除扱いにしない)
   S.myMenus.push(newMenu);
   saveState();
+  // 取り込みマーク(「◯人が取り込み」表示用・fire-and-forget)
+  if (pm.id && window.__klCloud && window.__klCloud.markImport) window.__klCloud.markImport(pm.id);
   closeModal();
   toast('マイメニューに取り込みました💪');
   renderLog();
 }
 
+// 公開メニューの推定所要時間(分)。種目DBに無い相手のオリジナル種目でも計算できる簡易式
+function pubMenuMinutes(pm) {
+  const items = pm.items || [];
+  let sec = 5 * 60; // ウォームアップ
+  items.forEach(it => { const sets2 = Number(it.sets) || 3; sec += sets2 * 40 + sets2 * (Number(it.rest) || 90); });
+  return Math.round(sec / 60);
+}
+// メニューが含む部位一覧(重複なし・出現順)
+function pubMenuParts(pm) {
+  const seen = [];
+  (pm.items || []).forEach(it => {
+    const part = SCIENCE.partMap[it.part] ? it.part : null;
+    if (part && !seen.includes(part)) seen.push(part);
+  });
+  return seen;
+}
+// 公開メニューの詳細プレビュー(全種目・セット/レップ/休憩・所要時間)
+function openPubMenuDetail(pm, extra) {
+  extra = extra || {};
+  const rows = (pm.items || []).map(it => {
+    const nm = it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目';
+    const pt = SCIENCE.partMap[it.part] ? SCIENCE.partMap[it.part].name : '';
+    return `<tr><td style="text-align:left">${esc(nm)}</td><td>${esc(pt)}</td><td>${Number(it.sets) || 3}×${esc(String(it.reps || ''))}</td><td>${Number(it.rest) || 90}秒</td></tr>`;
+  }).join('');
+  const parts = pubMenuParts(pm).map(p2 => `<span class="chip">${esc(SCIENCE.partMap[p2].name)}</span>`).join(' ');
+  const bg = openModal(`<h2>${esc(pm.name)}</h2>
+    <p class="modal-sub">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目 ・ 約${pubMenuMinutes(pm)}分</p>
+    ${parts ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${parts}</div>` : ''}
+    <div style="max-height:40vh;overflow:auto;margin-bottom:12px">
+      <table class="rm-table"><tr><th style="text-align:left">種目</th><th>部位</th><th>セット</th><th>休憩</th></tr>${rows}</table>
+    </div>
+    ${extra.mine ? '' : '<button class="btn" id="pd-import">このメニューを取り込む</button>'}
+    <button class="btn ghost" onclick="closeModal()" style="margin-top:8px">閉じる</button>`);
+  const imp = $('#pd-import', bg);
+  if (imp) imp.addEventListener('click', () => importPublicMenu(pm));
+}
 async function openPublicGalleryModal() {
   const c = window.__klCloud;
   const bg = openModal(`<h2>🌐 みんなのメニュー</h2>
-    <p class="modal-sub">みんなが公開したルーティン。気に入ったら取り込めます。</p>
-    <div id="gallery-list" style="max-height:58vh;overflow:auto"><p class="card-note">読み込み中...</p></div>
+    <div style="display:flex;gap:8px;margin:10px 0 8px">
+      <input type="search" id="gal-q" placeholder="メニュー名・種目・投稿者で検索" style="flex:1">
+      <select id="gal-sort" style="width:auto"><option value="new">新着</option><option value="likes">人気</option><option value="imports">取込数</option><option value="short">短時間</option></select>
+    </div>
+    <div id="gal-parts" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px"></div>
+    <div id="gallery-list" style="max-height:52vh;overflow:auto"><p class="card-note">読み込み中...</p></div>
     <div style="margin-top:12px"><button class="btn ghost" onclick="closeModal()">閉じる</button></div>`);
   const listEl = $('#gallery-list', bg);
   if (!c || !c.available) { listEl.innerHTML = '<p class="card-note">この環境では利用できません。</p>'; return; }
-  const menus = await c.listPublicMenus(60);
+  const [menus, marks] = await Promise.all([c.listPublicMenus(60), c.listMenuMarks ? c.listMenuMarks() : { likes: {}, imports: {} }]);
   if (menus === null) { listEl.innerHTML = '<p class="card-note">読み込みに失敗しました。時間をおいて再度お試しください。</p>'; return; }
   if (!menus.length) { listEl.innerHTML = '<p class="card-note">まだ公開メニューがありません。<br>自分のマイメニューの 🌐 から最初の1人になりませんか?</p>'; return; }
   const myUid = c.myUid ? c.myUid() : null;
-  listEl.innerHTML = menus.map((pm, i) => {
-    const pf = pm.link ? detectPlatform(pm.link) : null;
-    const mine = myUid && pm.uid === myUid;
-    const exList = (pm.items || []).slice(0, 8).map(it => esc(it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目')).join('、');
-    const icon = (typeof pm.icon === 'string' && pm.icon) ? pm.icon : '💪';
-    const appeal = (typeof pm.appeal === 'string' && pm.appeal.trim()) ? pm.appeal.trim() : '';
-    // 画像アバターは厳格チェックを通ったものだけ img で表示(XSS防止)。それ以外は絵文字
-    const avatarImg = isValidAvatar(pm.avatar) ? `<img src="${pm.avatar}" alt="">` : esc(icon);
-    return `<div class="card" style="margin-bottom:10px">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div class="gal-avatar">${avatarImg}</div>
-        <div style="flex:1;min-width:0"><div class="nm" style="font-weight:800">${esc(pm.name)}</div>
-        <div class="meta" style="font-size:11.5px;color:var(--ink-dim)">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目</div></div>
-        ${pf && SNS_RE.test(pm.link) ? `<a class="btn small ghost" href="${esc(pm.link)}" target="_blank" rel="noopener nofollow ugc">${pf} ▶</a>` : ''}
-      </div>
-      ${appeal ? `<p style="margin:8px 0 4px;font-size:13px">${esc(appeal)}</p>` : ''}
-      <p class="card-note" style="margin:6px 0">${exList}${(pm.items || []).length > 8 ? ' ほか' : ''}</p>
-      <div style="display:flex;gap:8px">
-        ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
-          : `<button class="btn small gal-import" data-i="${i}">取り込む</button><button class="btn ghost small gal-report" data-id="${esc(pm.id)}">通報</button>`}
-      </div></div>`;
-  }).join('');
-  $all('.gal-import', listEl).forEach(b => b.addEventListener('click', () => importPublicMenu(menus[Number(b.dataset.i)])));
-  $all('.gal-report', listEl).forEach(b => b.addEventListener('click', async () => {
-    if (!c.myUid()) { toast('通報にはログインが必要です'); return; }
-    if (!confirm('このメニューを通報しますか?')) return;
-    const res = await c.reportMenu(b.dataset.id);
-    toast(res.ok ? '通報しました。ご協力ありがとうございます' : '通報に失敗しました');
-  }));
-  $all('.gal-unpub', listEl).forEach(b => b.addEventListener('click', async () => {
-    const res = await c.unpublishMenu(b.dataset.id);
-    if (res.ok) {
-      const m = S.myMenus.find(x => x.pubId === b.dataset.id);
-      if (m) { m.published = false; delete m.pubId; saveState(); }
-      toast('公開を取り消しました'); closeModal(); renderLog();
-    } else toast('取り消しに失敗しました');
-  }));
+  const likeCount = id => Object.keys((marks.likes || {})[id] || {}).length;
+  const importCount = id => Object.keys((marks.imports || {})[id] || {}).length;
+  const iLiked = id => !!(myUid && (marks.likes || {})[id] && (marks.likes || {})[id][myUid]);
+
+  // 部位フィルタチップ(存在する部位だけ)
+  const allParts = [];
+  menus.forEach(pm => pubMenuParts(pm).forEach(p2 => { if (!allParts.includes(p2)) allParts.push(p2); }));
+  const state = { q: '', part: '', sort: 'new' };
+  const partsEl = $('#gal-parts', bg);
+  const renderPartChips = () => {
+    partsEl.innerHTML = [`<button type="button" class="chip ${state.part === '' ? 'grow' : ''}" data-part="">すべて</button>`]
+      .concat(allParts.map(p2 => `<button type="button" class="chip ${state.part === p2 ? 'grow' : ''}" data-part="${p2}">${esc(SCIENCE.partMap[p2].name)}</button>`)).join(' ');
+    $all('[data-part]', partsEl).forEach(b => b.addEventListener('click', () => { state.part = b.dataset.part; renderPartChips(); renderList(); }));
+  };
+
+  const renderList = () => {
+    let list = menus.slice();
+    if (state.part) list = list.filter(pm => pubMenuParts(pm).includes(state.part));
+    if (state.q) {
+      const q = state.q.toLowerCase();
+      list = list.filter(pm => {
+        const names = (pm.items || []).map(it => it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '').join(' ');
+        return (String(pm.name) + ' ' + String(pm.displayName || '') + ' ' + String(pm.appeal || '') + ' ' + names).toLowerCase().includes(q);
+      });
+    }
+    if (state.sort === 'likes') list.sort((a, b2) => likeCount(b2.id) - likeCount(a.id));
+    else if (state.sort === 'imports') list.sort((a, b2) => importCount(b2.id) - importCount(a.id));
+    else if (state.sort === 'short') list.sort((a, b2) => pubMenuMinutes(a) - pubMenuMinutes(b2));
+    // 'new' は取得順(新しい順)のまま
+    if (!list.length) { listEl.innerHTML = '<p class="card-note">条件に合うメニューがありません。</p>'; return; }
+    listEl.innerHTML = list.map(pm => {
+      const i = menus.indexOf(pm);
+      const pf = pm.link ? detectPlatform(pm.link) : null;
+      const mine = myUid && pm.uid === myUid;
+      const exList = (pm.items || []).slice(0, 6).map(it => esc(it.name || (DB.byId[it.exId] && DB.byId[it.exId].name) || '種目')).join('、');
+      const icon = (typeof pm.icon === 'string' && pm.icon) ? pm.icon : '💪';
+      const appeal = (typeof pm.appeal === 'string' && pm.appeal.trim()) ? pm.appeal.trim() : '';
+      // 画像アバターは厳格チェックを通ったものだけ img で表示(XSS防止)。それ以外は絵文字
+      const avatarImg = isValidAvatar(pm.avatar) ? `<img src="${pm.avatar}" alt="">` : esc(icon);
+      const lk = likeCount(pm.id), im = importCount(pm.id);
+      const partChips = pubMenuParts(pm).slice(0, 4).map(p2 => `<span class="chip" style="font-size:10.5px;padding:3px 8px">${esc(SCIENCE.partMap[p2].name)}</span>`).join(' ');
+      return `<div class="card" style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div class="gal-avatar">${avatarImg}</div>
+          <div style="flex:1;min-width:0"><div class="nm" style="font-weight:800">${esc(pm.name)}${mine ? ' <span class="tag low" style="font-size:9px">自分</span>' : ''}</div>
+          <div class="meta" style="font-size:11.5px;color:var(--ink-dim)">by ${esc(pm.displayName || 'ユーザー')} ・ ${(pm.items || []).length}種目 ・ 約${pubMenuMinutes(pm)}分</div></div>
+          ${pf && SNS_RE.test(pm.link) ? `<a class="btn small ghost" href="${esc(pm.link)}" target="_blank" rel="noopener nofollow ugc">${pf} ▶</a>` : ''}
+        </div>
+        ${appeal ? `<p style="margin:8px 0 4px;font-size:13px">${esc(appeal)}</p>` : ''}
+        ${partChips ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 2px">${partChips}</div>` : ''}
+        <p class="card-note" style="margin:6px 0">${exList}${(pm.items || []).length > 6 ? ' ほか' : ''}</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button type="button" class="chip gal-like ${iLiked(pm.id) ? 'grow' : ''}" data-id="${esc(pm.id)}">❤️ ${lk}</button>
+          ${im > 0 ? `<span style="font-size:11.5px;color:var(--ink-dim)">📥 ${im}人が取り込み</span>` : ''}
+          <span style="flex:1"></span>
+          ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
+            : `<button class="btn small gal-detail" data-i="${i}">見る</button><button class="btn small ghost gal-import" data-i="${i}">取り込む</button>`}
+          ${mine ? `<button class="btn small gal-detail" data-i="${i}">見る</button>` : `<button class="btn ghost small gal-report" data-id="${esc(pm.id)}" style="padding:8px 10px">⚠</button>`}
+        </div></div>`;
+    }).join('');
+    bindList();
+  };
+
+  const bindList = () => {
+    $all('.gal-detail', listEl).forEach(b => b.addEventListener('click', () => {
+      const pm = menus[Number(b.dataset.i)];
+      openPubMenuDetail(pm, { mine: myUid && pm.uid === myUid });
+    }));
+    $all('.gal-import', listEl).forEach(b => b.addEventListener('click', () => importPublicMenu(menus[Number(b.dataset.i)])));
+    $all('.gal-like', listEl).forEach(b => b.addEventListener('click', async () => {
+      if (!myUid) { toast('いいねにはログインが必要です'); return; }
+      const id = b.dataset.id;
+      const on = !iLiked(id);
+      // 楽観更新
+      marks.likes[id] = marks.likes[id] || {};
+      if (on) marks.likes[id][myUid] = true; else delete marks.likes[id][myUid];
+      b.classList.toggle('grow', on);
+      b.textContent = `❤️ ${likeCount(id)}`;
+      const res = await c.likeMenu(id, on);
+      if (!res.ok) { toast('いいねを保存できませんでした'); }
+      else haptic('light');
+    }));
+    $all('.gal-report', listEl).forEach(b => b.addEventListener('click', async () => {
+      if (!c.myUid()) { toast('通報にはログインが必要です'); return; }
+      if (!confirm('このメニューを通報しますか?')) return;
+      const res = await c.reportMenu(b.dataset.id);
+      toast(res.ok ? '通報しました。ご協力ありがとうございます' : '通報に失敗しました');
+    }));
+    $all('.gal-unpub', listEl).forEach(b => b.addEventListener('click', async () => {
+      const res = await c.unpublishMenu(b.dataset.id);
+      if (res.ok) {
+        const m = S.myMenus.find(x => x.pubId === b.dataset.id);
+        if (m) { m.published = false; delete m.pubId; saveState(); }
+        toast('公開を取り消しました'); closeModal(); renderLog();
+      } else toast('取り消しに失敗しました');
+    }));
+  };
+
+  const qEl = $('#gal-q', bg), sortEl = $('#gal-sort', bg);
+  if (qEl) qEl.addEventListener('input', () => { state.q = qEl.value.trim(); renderList(); });
+  if (sortEl) sortEl.addEventListener('change', () => { state.sort = sortEl.value; renderList(); });
+  renderPartChips();
+  renderList();
 }
 
 // ===== SIM =====
