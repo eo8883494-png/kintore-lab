@@ -102,7 +102,7 @@ async function importHealthWeight() {
   const H = healthPlugin();
   if (!H) { toast('この端末ではApple Healthを使えません'); return; }
   try {
-    try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
+    try { await H.requestAuthorization({ read: ['steps', 'weight', 'sleep'], write: ['weight'] }); }
     catch (e) { console.warn('[health] auth denied', e); toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
@@ -131,9 +131,10 @@ async function importHealthWeight() {
     haptic('success');
     // 先に体重反映で再描画 → その後に歩数を表示欄へ(再描画でDOMが作り直されるため順序が重要)
     if (typeof renderLog === 'function' && (added || updated)) renderLog();
-    const steps = await queryTodaySteps(H);
+    const [steps, sleep] = await Promise.all([queryTodaySteps(H), queryLastSleep(H)]);
     hkTodaySteps = { date: todayStr(), steps };
-    const hp = loadHealthPref(); hp.autoSteps = true; saveHealthPref(hp); // 以後ホームに歩数を表示
+    hkLastSleep = { date: todayStr(), minutes: sleep };
+    const hp = loadHealthPref(); hp.autoSteps = true; saveHealthPref(hp); // 以後ホームに歩数・睡眠を表示
     const stepEl = document.getElementById('hk-steps');
     if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
     if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
@@ -154,21 +155,42 @@ async function writeHealthWeight(kg, dateStr) {
   } catch (e) { console.warn('[health] write weight failed', e); }
 }
 
-// 歩数のホーム表示/カロリー反映の設定(端末内)。一度でも同期したら autoSteps=true
+// 歩数・睡眠のホーム表示設定(端末内)。一度でも同期したら autoSteps=true
 function loadHealthPref() { try { return { autoSteps: false, ...JSON.parse(localStorage.getItem('kintoreLab.health') || '{}') }; } catch (e) { return { autoSteps: false }; } }
 function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSON.stringify(p)); } catch (e) {} }
 let hkTodaySteps = { date: '', steps: null };
-// 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
-async function refreshTodaySteps() {
+let hkLastSleep = { date: '', minutes: null };
+// 昨夜の睡眠(分)を取得。段階データがあれば段階(rem/deep/light)を、無ければasleepを合算(inBed/awakeは除外)
+async function queryLastSleep(H) {
+  const end = new Date();
+  const start = new Date(end.getTime() - 24 * 3600 * 1000);
+  try {
+    const r = await H.readSamples({ dataType: 'sleep', startDate: start.toISOString(), endDate: end.toISOString() });
+    const rows = (r && r.samples) || [];
+    const stageStates = ['rem', 'deep', 'light', 'core'];
+    const hasStages = rows.some(s => stageStates.includes(String(s.sleepState || '').toLowerCase()));
+    let mins = 0;
+    rows.forEach(s => {
+      const st = String(s.sleepState || '').toLowerCase();
+      if (hasStages) { if (stageStates.includes(st)) mins += Number(s.value) || 0; }
+      else if (st === 'asleep') mins += Number(s.value) || 0;
+    });
+    mins = Math.round(mins);
+    return mins > 0 ? mins : null;
+  } catch (e) { console.warn('[health] read sleep failed', e); return null; }
+}
+// 今日の歩数・昨夜の睡眠を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
+async function refreshHealthToday() {
   if (!isNativeApp()) return;
   if (!loadHealthPref().autoSteps) return;
   const H = healthPlugin();
   if (!H) return;
-  const steps = await queryTodaySteps(H);
+  const [steps, sleep] = await Promise.all([queryTodaySteps(H), queryLastSleep(H)]);
   hkTodaySteps = { date: todayStr(), steps };
-  updateStepDisplays();
+  hkLastSleep = { date: todayStr(), minutes: sleep };
+  updateHealthDisplays();
 }
-function updateStepDisplays() {
+function updateHealthDisplays() {
   const steps = (hkTodaySteps.date === todayStr()) ? hkTodaySteps.steps : null;
   const w = S.profile ? S.profile.w : 0;
   const kcal = steps != null ? stepKcal(steps, w) : 0;
@@ -176,19 +198,29 @@ function updateStepDisplays() {
   document.querySelectorAll('[data-step-kcal]').forEach(el => { el.textContent = String(kcal); });
   const hk = document.getElementById('hk-steps');
   if (hk && steps != null) hk.textContent = `🚶 今日の歩数: ${steps.toLocaleString()}歩`;
+  // 睡眠
+  const sMin = (hkLastSleep.date === todayStr()) ? hkLastSleep.minutes : null;
+  document.querySelectorAll('[data-sleep-line]').forEach(el => {
+    if (sMin != null) {
+      const h = Math.floor(sMin / 60), m = sMin % 60;
+      const q = sMin < 360 ? '⚠️ 睡眠不足ぎみ(筋合成が落ちやすい)' : sMin >= 420 ? '✅ 十分に取れています' : 'もう少し欲しいところ';
+      el.textContent = `😴 昨夜の睡眠 ${h}時間${m}分 ・ ${q}`;
+    } else el.textContent = '😴 昨夜の睡眠 データなし';
+  });
 }
-// ホームの歩数カード(ネイティブ+同期オプトイン済み+プロフィールありのみ)
-function stepsCardHtml() {
+// ホームの「今日のカラダ」カード(歩数+睡眠)。ネイティブ+同期オプトイン済み+プロフィールありのみ
+function healthTodayCardHtml() {
   if (!(isNativeApp() && S.profile && loadHealthPref().autoSteps)) return '';
   const goal = S.profile.goal;
   const note = goal === 'diet' ? '歩いた分は減量の"貯金"。無理な食事制限より歩数を積むのが続けやすい脂肪減です。'
     : (goal === 'hyp' || goal === 'str') ? '増量中はこの活動分の補給も忘れずに(不足だと増えにくい)。'
     : '日々の活動量の目安。よく歩いた日は消費も増えています。';
-  return `<div class="card"><h2>🚶 今日の歩数<span class="sub">Apple Health</span></h2>
-    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
-      <div><span class="big" data-step-steps>—</span><small> 歩</small></div>
+  return `<div class="card"><h2>📲 今日のカラダ<span class="sub">Apple Health</span></h2>
+    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px">
+      <div>🚶 <span class="big" data-step-steps>—</span><small> 歩</small></div>
       <div style="color:var(--ink-dim)">活動 約<b style="color:var(--accent)" data-step-kcal>0</b> kcal</div>
     </div>
+    <div style="color:var(--ink-dim);font-size:13.5px" data-sleep-line>😴 昨夜の睡眠 —</div>
     <p class="card-note">${note}</p>
   </div>`;
 }
@@ -1414,7 +1446,7 @@ function renderHome() {
       <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
     </div>`;
 
-  html += stepsCardHtml(); // 歩数カード(ネイティブ+同期済みのみ・空文字なら非表示)
+  html += healthTodayCardHtml(); // 歩数+睡眠カード(ネイティブ+同期済みのみ・空文字なら非表示)
 
   const ctx0 = todayPlanContext();
   if (!S.profile && !ctx0.myMenu) {
@@ -1524,8 +1556,8 @@ function renderHome() {
 
   root.innerHTML = html;
 
-  // 歩数カードがあれば、描画後に最新の歩数を非同期取得して埋める
-  if (isNativeApp()) { updateStepDisplays(); refreshTodaySteps(); }
+  // カードがあれば、描画後に最新の歩数・睡眠を非同期取得して埋める
+  if (isNativeApp()) { updateHealthDisplays(); refreshHealthToday(); }
 
   const setup = $('#home-setup', root);
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
