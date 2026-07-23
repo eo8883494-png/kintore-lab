@@ -1495,7 +1495,7 @@ function renderPlan() {
           <div><div class="nm">${esc(ex.name)}${it.priority ? '<span class="pri">◆優先</span>' : ''}</div>
           <div class="meta">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]}</div></div>
           <div class="setrep">${it.sets}×${esc(it.reps)}${ex.isometric ? '秒' : ''}<small>休${it.rest}秒</small></div>
-          <button class="plan-ex-edit" data-di="${di}" data-ii="${ii}" aria-label="編集" style="flex:none;background:none;border:none;color:inherit;opacity:.55;font-size:16px;padding:4px 2px 4px 6px;cursor:pointer">✎</button>
+          <button class="plan-ex-edit icon-btn-sm" data-di="${di}" data-ii="${ii}" aria-label="編集">✎</button>
         </div>`;
       });
       html += `<div style="padding:8px 14px"><button class="btn ghost small add-ex" data-di="${di}" style="width:100%">＋ 種目を追加</button></div>`;
