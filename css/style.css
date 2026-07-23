@@ -130,8 +130,18 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .pw-amount { font-size: 20px; font-weight: 900; margin-top: 4px; }
 .pw-amount small { display: block; font-size: 11.5px; color: var(--ink-dim); font-weight: 500; margin-top: 3px; }
 .pw-cta { font-size: 16px; padding: 15px; box-shadow: 0 6px 18px rgba(200, 241, 78, 0.22); }
-.pw-legal { font-size: 11px; color: var(--ink-dim); margin-top: 12px; line-height: 1.5; }
+.pw-legal { font-size: 11px; color: var(--ink-dim); margin: 12px 0; line-height: 1.5; }
 .pw-legal a { color: var(--accent2); }
+/* プラン選択(月/年) */
+.pw-plans { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 14px; }
+.pw-plan { position: relative; text-align: left; background: var(--surface2); border: 2px solid var(--line); border-radius: 14px; padding: 13px 14px; width: 100%; }
+.pw-plan.sel { border-color: var(--accent); background: rgba(200, 241, 78, 0.08); }
+.pw-plan-badge { position: absolute; top: -9px; right: 12px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 800; padding: 2px 9px; border-radius: 999px; }
+.pw-plan-main { display: flex; align-items: baseline; justify-content: space-between; }
+.pw-plan-main b { font-size: 15px; }
+.pw-plan-price { font-size: 18px; font-weight: 900; }
+.pw-plan-price small { font-size: 12px; font-weight: 600; color: var(--ink-dim); }
+.pw-plan-per { font-size: 12px; color: var(--accent); font-weight: 700; margin-top: 3px; }
 
 /* segmented control */
 .seg { display: flex; background: var(--surface2); border: 1px solid var(--line); border-radius: 11px; padding: 3px; gap: 3px; }

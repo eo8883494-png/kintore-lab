@@ -939,44 +939,57 @@ function openModal(html) {
 }
 function closeModal() { const m = $('#modal-bg'); if (m) m.remove(); }
 
-// ===== ペイウォール(サブスク課金画面のUI・RevenueCat接続は有料Apple Developer登録後) =====
-const PRO_PRICE_TEXT = '月額 ¥680';        // 仮価格。App Store Connectの商品確定後に差し替え
-const PRO_TRIAL_TEXT = '最初の1週間は無料';
-function openPaywall() {
-  const benefits = [
-    ['📊', '詳細分析の全解放', '効率シミュレーターの部位別・期間別の深掘り'],
-    ['♾️', 'マイメニュー無制限', 'ルーティンを好きなだけ保存・公開'],
-    ['📈', '高度なトラッキング', '体組成の詳細推定・停滞検知・自動カロリー調整'],
-    ['🍽️', 'フル食事プラン', 'PFC最適化・食事ログ・献立の細かい調整'],
-    ['🚫', '広告なし', '集中を邪魔しない'],
-    ['☁️', '全端末クラウド同期', '機種変更でもデータ引き継ぎ'],
+// ===== ペイウォール(全機能サブスク・1週間無料→自動継続・月/年プラン。RevenueCat接続は有料Apple Developer登録後) =====
+// 価格は仮。App Store Connectの商品確定後に差し替え(product idもここへ)
+const PRO_PLANS = [
+  { id: 'annual', label: '年間プラン', price: '¥5,800', sub: '/年', per: '月あたり約¥483 ・ 2ヶ月分おトク', best: true },
+  { id: 'monthly', label: '月額プラン', price: '¥680', sub: '/月', per: '', best: false },
+];
+let pwPlan = 'annual'; // 既定は年間(おすすめ)
+function paywallHtml() {
+  const feats = [
+    ['🧪', '効率シミュレーター', '時間×頻度で"どれだけ変わるか"を予測'],
+    ['📋', '自動メニュー生成', '目標・部位・時間からあなた専用に'],
+    ['🍽️', '食事プラン', 'PFC最適化・食事ログ・体重ナビ'],
+    ['📈', '記録と分析', '成長グラフ・体組成推定・停滞検知'],
+    ['📲', 'Apple Health連携', '体重・歩数・睡眠を自動で'],
+    ['🚫', '広告なし・全機能', 'すべての機能をフルに'],
   ];
-  const bg = openModal(`<div class="paywall">
+  const plans = PRO_PLANS.map(p => `<button type="button" class="pw-plan ${p.id === pwPlan ? 'sel' : ''}" data-plan="${p.id}">
+    ${p.best ? '<span class="pw-plan-badge">おすすめ</span>' : ''}
+    <div class="pw-plan-main"><b>${p.label}</b><span class="pw-plan-price">${p.price}<small>${p.sub}</small></span></div>
+    ${p.per ? `<div class="pw-plan-per">${p.per}</div>` : ''}
+  </button>`).join('');
+  return `<div class="paywall">
     <button class="pw-close" onclick="closeModal()" aria-label="閉じる">×</button>
     <div class="pw-hero">
-      <div class="pw-badge">PRO</div>
-      <h2 class="pw-title">筋トレLAB <span>Pro</span></h2>
-      <p class="pw-sub">科学的に、もっと効率よく。全機能を解放。</p>
+      <div class="pw-badge">全機能</div>
+      <h2 class="pw-title">筋トレLABを<br><span>1週間無料</span>で全部使う</h2>
+      <p class="pw-sub">科学的トレ設計・食事・記録・Health連携。すべて込み。</p>
     </div>
     <ul class="pw-benefits">
-      ${benefits.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
+      ${feats.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
     </ul>
-    <div class="pw-price">
-      <div class="pw-trial">🎁 ${PRO_TRIAL_TEXT}</div>
-      <div class="pw-amount">${PRO_PRICE_TEXT}<small>トライアル終了後・いつでも解約可能</small></div>
-    </div>
+    <div class="pw-plans">${plans}</div>
     <button class="btn pw-cta" id="pw-start">1週間無料で始める</button>
-    <button class="btn ghost small" id="pw-restore" style="margin-top:8px;width:100%">購入を復元</button>
-    <p class="pw-legal">トライアル終了の24時間前までに解約すれば料金はかかりません。お支払いはApp Store経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
-  </div>`);
-  $('#pw-start', bg).addEventListener('click', () => {
-    // TODO: RevenueCat Purchases.purchasePackage → entitlement 'pro' → S.pro=true(既存isPro機構)
+    <p class="pw-legal">🎁 最初の7日間は無料。トライアル終了後は選択したプランで<b>自動的に継続課金</b>されます。解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
+    <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
+  </div>`;
+}
+function bindPaywall(bg) {
+  bg.querySelectorAll('[data-plan]').forEach(b => b.addEventListener('click', () => {
+    pwPlan = b.dataset.plan;
+    bg.querySelectorAll('[data-plan]').forEach(x => x.classList.toggle('sel', x.dataset.plan === pwPlan));
+  }));
+  const start = $('#pw-start', bg);
+  if (start) start.addEventListener('click', () => {
+    // TODO: RevenueCat Purchases.purchasePackage(pwPlan) → entitlement 'pro' → S.pro=true(既存isPro機構)
     toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)');
   });
-  $('#pw-restore', bg).addEventListener('click', () => {
-    toast('購入の復元はApp Store対応後に有効化されます(準備中)');
-  });
+  const restore = $('#pw-restore', bg);
+  if (restore) restore.addEventListener('click', () => toast('購入の復元はApp Store対応後に有効化されます(準備中)'));
 }
+function openPaywall() { bindPaywall(openModal(paywallHtml())); }
 
 // セグメントボタン生成
 function segHtml(name, options, current, extraCls) {
