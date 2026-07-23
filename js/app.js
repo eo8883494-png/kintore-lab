@@ -367,6 +367,46 @@ function updateHomeWidget() {
   } catch (e) {}
 }
 
+// ===== Apple Watch連携(KLWatchカスタムプラグイン・未組み込みはno-op) =====
+// Watchに今日のメニュー+進捗を送る(renderHome時)。Watch側のセット完了タップはwatchSetDoneイベントで受けて記録
+function updateWatchData() {
+  const W = capPlugin('KLWatch');
+  if (!W || !W.updateWatchData) return;
+  try {
+    const ctx = todayPlanContext();
+    const today = todayStr();
+    let payload = { title: '今日は休息日 😴', items: [] };
+    if (ctx.day) {
+      const ck = ctxKeyOf(ctx);
+      const dd = S.dayDone[today] || {};
+      payload = {
+        title: ctx.day.name,
+        items: [...ctx.day.items, ...(ctx.carry || [])].filter(i => DB.byId[i.exId]).map(i => {
+          const e = ddGet(dd, i.exId);
+          const done = !!(e && e.src === ck);
+          const cnt = done ? i.sets : ((S.setCount[today] || {})[ck + '|' + i.exId] || 0);
+          return { exId: i.exId, name: DB.byId[i.exId].name, sets: i.sets, done: cnt, reps: String(i.reps), rest: Math.round(Number(i.rest) || 90) };
+        }),
+      };
+    }
+    const p = W.updateWatchData({ json: JSON.stringify(payload) });
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) {}
+}
+function initWatchBridge() {
+  const W = capPlugin('KLWatch');
+  if (!W || !W.addListener) return;
+  try {
+    W.addListener('watchSetDone', d => {
+      try {
+        if (!d || !d.exId) return;
+        setExerciseProgress(String(d.exId), Number(d.count) || 0); // 既存ロジック(満了で自動記録・途中で休憩タイマー)
+        updateWatchData(); // 記録後の正をWatchへ返す
+      } catch (e) {}
+    });
+  } catch (e) {}
+}
+
 // ===== 外部リンク(ネイティブ=OSに委譲しYouTube等のアプリで開く/Web=新規タブ) =====
 async function openExternal(url) {
   const AL = capPlugin('AppLauncher');
@@ -1911,11 +1951,12 @@ function renderHome() {
 
   root.innerHTML = html;
 
-  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正 + ホームウィジェット更新
+  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正 + ウィジェット/Watch更新
   if (isNativeApp()) {
     updateHealthDisplays();
     refreshHealthToday();
     updateHomeWidget();
+    updateWatchData();
     const sleepRow = $('#sleep-row', root);
     if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
   }
@@ -3726,6 +3767,7 @@ document.addEventListener('click', e => {
 document.addEventListener('DOMContentLoaded', () => {
   detectSleepFromGap();               // 起動時: 前回操作からの無操作ギャップを睡眠推定(朝の起床時)
   setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
+  initWatchBridge();                  // Apple Watchからのセット完了を受ける(未組み込みはno-op)
   route();
   if (!S.profile) openProfileWizard(true);
   // 浮遊レストタイマーのボタン (静的要素なので一度だけ束縛)
