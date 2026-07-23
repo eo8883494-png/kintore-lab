@@ -32,15 +32,25 @@ function appleSignInAvailable() { return isNativeApp() && APPLE_SIGNIN_READY; }
 
 // ===== ネイティブ機能ヘルパー(プラグイン未導入/Webでは安全にno-op) =====
 function capPlugin(name) { return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[name]) || null; }
-// 触覚フィードバック: kind = 'light' | 'medium' | 'heavy' | 'success'
+// 触覚フィードバック: kind = 'light' | 'medium' | 'heavy' | 'success' | 'alarm'
+// iOSの impact は控えめなので、強く感じさせたい所は vibrate(システム振動)を使う
 function haptic(kind) {
   if (!isNativeApp()) return;
   const H = capPlugin('Haptics'); if (!H) return;
   try {
-    if (kind === 'success' && H.notification) H.notification({ type: 'SUCCESS' });
-    else if (kind === 'light' && H.impact) H.impact({ style: 'LIGHT' });
-    else if (kind === 'heavy' && H.impact) H.impact({ style: 'HEAVY' });
-    else if (H.impact) H.impact({ style: 'MEDIUM' });
+    if (kind === 'alarm') {
+      // タイマー終了などの強いアラーム: システム振動を3連
+      if (H.vibrate) { H.vibrate({ duration: 400 }); setTimeout(() => { try { H.vibrate({ duration: 400 }); } catch (e) {} }, 520); setTimeout(() => { try { H.vibrate({ duration: 600 }); } catch (e) {} }, 1080); }
+      else if (H.notification) H.notification({ type: 'SUCCESS' });
+    } else if (kind === 'heavy') {
+      if (H.vibrate) H.vibrate({ duration: 400 }); else if (H.impact) H.impact({ style: 'HEAVY' });
+    } else if (kind === 'success') {
+      if (H.notification) H.notification({ type: 'SUCCESS' }); else if (H.vibrate) H.vibrate({ duration: 200 });
+    } else if (kind === 'light') {
+      if (H.impact) H.impact({ style: 'LIGHT' });
+    } else {
+      if (H.impact) H.impact({ style: 'MEDIUM' });
+    }
   } catch (e) {}
 }
 // 画面スリープ防止: トレ中(いずれかのタイマー稼働中)は画面を消さない
@@ -57,6 +67,66 @@ function keepAwake(on) {
 function refreshKeepAwake() {
   const active = !!((typeof timer !== 'undefined' && timer && timer.iv) || (typeof iTimer !== 'undefined' && iTimer && iTimer.iv));
   keepAwake(active);
+}
+
+// ===== ローカル通知(トレ通知・端末内で完結・ログイン/サーバー不要) =====
+const LOCAL_REMINDER_ID = 4201;
+function loadLocalReminder() {
+  try { return { enabled: false, hour: 19, ...JSON.parse(localStorage.getItem('kintoreLab.localReminder') || '{}') }; }
+  catch (e) { return { enabled: false, hour: 19 }; }
+}
+function saveLocalReminder(r) { try { localStorage.setItem('kintoreLab.localReminder', JSON.stringify(r)); } catch (e) {} }
+async function enableLocalReminder(hour) {
+  const LN = capPlugin('LocalNotifications');
+  if (!LN) { toast('この端末では通知を使えません'); return { ok: false, reason: 'unsupported' }; }
+  try {
+    const perm = await LN.requestPermissions();
+    if (perm && perm.display !== 'granted') { toast('通知が許可されませんでした。設定→筋トレLAB→通知 で許可してください'); return { ok: false, reason: 'denied' }; }
+    await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] });
+    await LN.schedule({ notifications: [{
+      id: LOCAL_REMINDER_ID,
+      title: '筋トレLAB 💪',
+      body: '今日のトレ、いきましょう。記録もお忘れなく。',
+      schedule: { on: { hour: Number(hour), minute: 0 }, repeats: true, allowWhileIdle: true },
+    }] });
+    saveLocalReminder({ enabled: true, hour: Number(hour) });
+    return { ok: true };
+  } catch (e) { console.warn('[local-notif] enable failed', e); toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
+}
+async function disableLocalReminder() {
+  const LN = capPlugin('LocalNotifications');
+  if (LN) { try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] }); } catch (e) {} }
+  const r = loadLocalReminder(); r.enabled = false; saveLocalReminder(r);
+  return { ok: true };
+}
+async function setLocalReminderHour(hour) {
+  const r = loadLocalReminder();
+  r.hour = Number(hour); saveLocalReminder(r);
+  if (r.enabled) await enableLocalReminder(r.hour); // 有効中なら再スケジュール
+}
+function localReminderCardHtml() {
+  if (!isNativeApp()) return '';
+  const r = loadLocalReminder();
+  const hourOpts = Array.from({ length: 18 }, (_, i) => i + 5)
+    .map(h => `<option value="${h}" ${h === r.hour ? 'selected' : ''}>${h}:00</option>`).join('');
+  return `<div class="card"><h2>🔔 トレ通知<span class="tag ${r.enabled ? 'good' : 'none'}" style="font-size:10px">${r.enabled ? 'ON' : 'OFF'}</span></h2>
+    <p style="font-size:13.5px;margin-bottom:10px">毎日 設定した時刻に「今日のトレ、いきましょう」と通知します。アプリを閉じていても届きます(この端末内で完結・ログイン不要)。</p>
+    <div class="field"><label>通知する時刻</label><select id="lrm-hour">${hourOpts}</select></div>
+    ${r.enabled ? `<button class="btn ghost" id="lrm-off">通知をOFFにする</button>` : `<button class="btn" id="lrm-on">この端末で通知をONにする</button>`}
+  </div>`;
+}
+function bindLocalReminder(root) {
+  const hourSel = $('#lrm-hour', root);
+  if (hourSel) hourSel.addEventListener('change', () => { setLocalReminderHour(Number(hourSel.value)); });
+  const on = $('#lrm-on', root);
+  if (on) on.addEventListener('click', async () => {
+    const sel = $('#lrm-hour', root);
+    const h = Number(sel ? sel.value : loadLocalReminder().hour);
+    const res = await enableLocalReminder(h);
+    if (res.ok) { toast('通知をONにしました🔔'); renderTools(); }
+  });
+  const off = $('#lrm-off', root);
+  if (off) off.addEventListener('click', async () => { await disableLocalReminder(); toast('通知をOFFにしました'); renderTools(); });
 }
 
 // みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
@@ -2455,16 +2525,16 @@ function cloudCardHtml() {
       <p class="card-note">${st.syncing ? '同期中...' : (st.lastSync ? '最終同期: ' + st.lastSync : 'まもなく同期します')}</p>
       <button class="btn ghost" id="cloud-signout">ログアウト(同期を止める)</button>
       <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。</p>
-    </div>
+    </div>` + (isNativeApp() ? '' : `
     <div class="card"><h2>🔔 トレ通知<span class="tag ${rm.enabled ? 'good' : 'none'}" style="font-size:10px">${rm.enabled ? 'ON' : 'OFF'}</span></h2>
-      ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。${isNativeApp() ? 'スマホの設定→通知' : 'ブラウザ(またはスマホの設定アプリ)'}で通知を許可してください。</p>` : ''}
+      ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。ブラウザ(またはスマホの設定アプリ)で通知を許可してください。</p>` : ''}
       <p style="font-size:13.5px;margin-bottom:10px">トレの日の設定時刻に「今日は○○の日💪」を通知します。アプリを閉じていても届きます。</p>
       <div class="field"><label>通知する時刻</label><select id="rm-hour" ${denied ? 'disabled' : ''}>${hourOpts}</select></div>
       ${rm.enabled
         ? `<button class="btn ghost" id="rm-off">通知をOFFにする</button>`
         : `<button class="btn" id="rm-on" ${denied ? 'disabled' : ''}>この端末で通知をONにする</button>`}
-      ${isNativeApp() ? '' : '<p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのままでも届きます。</p>'}
-    </div>`;
+      <p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのままでも届きます。</p>
+    </div>`);
   }
   return `<div class="card"><h2>☁️ 端末間同期</h2>
     <p style="font-size:13.5px;margin-bottom:10px">ログインすると、記録・メニュー・体重が<b>スマホとPCなど複数の端末で同期</b>されます。機種変更してもデータが引き継がれます。</p>
@@ -2541,6 +2611,7 @@ function renderTools() {
     <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
+    ${isNativeApp() ? '<div class="tool-sec">通知</div>' + localReminderCardHtml() : ''}
     <div class="tool-sec">タイマー</div>
     <div class="card"><h2>⏱️ 休憩タイマー</h2>
       <div class="timer-display" id="timer-disp">${fmtTimer(timer.sec)}</div>
@@ -2607,6 +2678,7 @@ function renderTools() {
     </p>`;
 
   bindCloudCard(root);
+  bindLocalReminder(root);
 
   // タイマー
   $all('[data-t]', root).forEach(b => b.addEventListener('click', () => {
@@ -2725,22 +2797,29 @@ function stopTimer() {
   updateTimerDisp();
 }
 function timerAlarm() {
+  // アラームらしい二音の連続ビープ(大きめ・矩形波で耳に付く)
+  alarmBeeps([[0, 988], [0.2, 988], [0.46, 1319], [0.66, 1319], [0.92, 988], [1.12, 1319]]);
+  if (navigator.vibrate) navigator.vibrate([300, 120, 300, 120, 400]);
+  haptic('alarm');
+  toast('⏱️ 休憩終了!次のセット!');
+}
+// 大きめの矩形波ビープ列を鳴らす(タイマー終了アラーム用)。beeps=[[開始秒, 周波数], ...]
+function alarmBeeps(beeps) {
   try {
     ensureAudio();
     const ac = audioCtx;
-    if (!ac) throw new Error('no audio');
-    [0, 0.3, 0.6].forEach(t => {
+    if (!ac) return;
+    beeps.forEach(([t, f]) => {
       const o = ac.createOscillator(), g = ac.createGain();
+      o.type = 'square';
       o.connect(g); g.connect(ac.destination);
-      o.frequency.value = 880;
-      g.gain.setValueAtTime(0.3, ac.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.25);
-      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.3);
+      o.frequency.value = f;
+      g.gain.setValueAtTime(0.0001, ac.currentTime + t);
+      g.gain.exponentialRampToValueAtTime(0.6, ac.currentTime + t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + t + 0.17);
+      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.19);
     });
   } catch (e) { /* 音が出せない環境は無視 */ }
-  if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
-  haptic('heavy');
-  toast('⏱️ 休憩終了!次のセット!');
 }
 
 // ===== インターバルタイマー(自由設定・プリセット保存) =====
@@ -2892,24 +2971,16 @@ function itBeep(freq, dur) {
     ensureAudio(); const ac = audioCtx; if (!ac) return;
     const o = ac.createOscillator(), g = ac.createGain();
     o.connect(g); g.connect(ac.destination);
+    o.type = 'square';
     o.frequency.value = freq;
-    g.gain.setValueAtTime(0.25, ac.currentTime);
+    g.gain.setValueAtTime(0.45, ac.currentTime);
     g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
     o.start(); o.stop(ac.currentTime + dur + 0.02);
   } catch (e) { /* 音が出せない環境は無視 */ }
 }
 function itFinishAlarm() {
-  try {
-    ensureAudio(); const ac = audioCtx; if (!ac) throw new Error('no audio');
-    [0, 0.22, 0.44, 0.7].forEach((t, i) => {
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.connect(g); g.connect(ac.destination);
-      o.frequency.value = i < 3 ? 784 : 1046;
-      g.gain.setValueAtTime(0.3, ac.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + t + 0.2);
-      o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.24);
-    });
-  } catch (e) { /* 無視 */ }
+  alarmBeeps([[0, 784], [0.2, 784], [0.4, 784], [0.66, 1046], [0.86, 1046], [1.12, 1319]]);
+  haptic('alarm');
   toast('🎉 メニュー完了!お疲れさま!');
 }
 function bindITimer(root) {
