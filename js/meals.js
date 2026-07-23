@@ -199,16 +199,17 @@ function weightNav(profile, weights) {
     if (days >= 5) nav.trend = Math.round(((last.kg - first.kg) / days) * 7 * 100) / 100;
   }
 
-  // 実績ペースへの助言
+  // 実績ペースへの助言 + 自動調整のkcal増減(suggestKcal: マイナス=減らす)
+  nav.suggestKcal = 0; nav.stalled = false;
   if (nav.mode === 'cut') {
     if (nav.trend == null) nav.advice = '体重を5日以上あけて2回以上記録すると、ペースが合っているか自動判定します。';
-    else if (nav.trend > -nav.pace * 0.4) nav.advice = `今のペースは${nav.trend >= 0 ? '横ばい〜増加' : '緩やか'}(${nav.trend}kg/週)。1日あと150kcal(ご飯100g分)減らすと目標ペースに乗ります。`;
-    else if (nav.trend < -nav.pace * 1.8) nav.advice = `減りが速すぎ(${nav.trend}kg/週)。筋肉まで落ちるリスクがあるので1日+150kcal戻しましょう。`;
+    else if (nav.trend > -nav.pace * 0.4) { nav.advice = `今のペースは${nav.trend >= 0 ? '横ばい〜増加' : '緩やか'}(${nav.trend}kg/週)。1日あと150kcal(ご飯100g分)減らすと目標ペースに乗ります。`; nav.suggestKcal = -150; nav.stalled = nav.trend >= -0.05; }
+    else if (nav.trend < -nav.pace * 1.8) { nav.advice = `減りが速すぎ(${nav.trend}kg/週)。筋肉まで落ちるリスクがあるので1日+150kcal戻しましょう。`; nav.suggestKcal = 150; }
     else nav.advice = `いいペース(${nav.trend}kg/週)。このまま続ければ計算通りに到達します。`;
   } else if (nav.mode === 'bulk') {
     if (nav.trend == null) nav.advice = '体重を5日以上あけて2回以上記録すると、増量ペースが合っているか自動判定します。';
-    else if (nav.trend < nav.pace * 0.4) nav.advice = `増え方が足りない(${nav.trend}kg/週)。1日+200kcal(ご飯120g or プロテイン+バナナ)追加を。`;
-    else if (nav.trend > nav.pace * 2) nav.advice = `増えすぎ(${nav.trend}kg/週)。脂肪が主に増えるゾーンなので1日−150kcal調整を。`;
+    else if (nav.trend < nav.pace * 0.4) { nav.advice = `増え方が足りない(${nav.trend}kg/週)。1日+200kcal(ご飯120g or プロテイン+バナナ)追加を。`; nav.suggestKcal = 200; nav.stalled = nav.trend <= 0.05; }
+    else if (nav.trend > nav.pace * 2) { nav.advice = `増えすぎ(${nav.trend}kg/週)。脂肪が主に増えるゾーンなので1日−150kcal調整を。`; nav.suggestKcal = -150; }
     else nav.advice = `理想的な増量ペース(${nav.trend}kg/週)。筋肉主体で増えています。`;
   }
   return nav;
@@ -271,6 +272,14 @@ function renderMeals() {
     html += `<p style="font-size:13.5px">${esc(nav.msg)}</p>`;
   }
   if (nav.advice) html += `<p class="card-note">📈 ${esc(nav.advice)}</p>`;
+  if (nav.suggestKcal) {
+    const dir = nav.suggestKcal < 0 ? '下げる' : '上げる';
+    const abs = Math.abs(nav.suggestKcal);
+    html += `<div style="margin-top:8px;padding:10px;border:1px solid var(--accent);border-radius:10px">
+      <p style="font-size:12.5px;margin-bottom:8px">${nav.stalled ? '⚠️ <b>停滞ぎみ</b>です(代謝が慣れたサイン)。' : ''}目標カロリーを<b>${abs}kcal ${dir}</b>と、実績ペースが目標に合います。</p>
+      <button class="btn small" id="meals-autoadjust">目標カロリーを ${abs}kcal ${dir}(自動調整)</button>
+    </div>`;
+  }
   html += `</div>`;
 
   plan.meals.forEach(m => {
@@ -334,6 +343,18 @@ function renderMeals() {
   const autoBtn = $('#meals-auto', root);
   if (autoBtn) autoBtn.addEventListener('click', () => {
     S.mealTargets = null; saveState(); toast('自動計算に戻しました'); renderMeals();
+  });
+  const adjBtn = $('#meals-autoadjust', root);
+  if (adjBtn) adjBtn.addEventListener('click', () => {
+    const newKcal = Math.max(1000, t.kcal + nav.suggestKcal); // 過度な低カロリーは避ける
+    const p = t.p; // タンパク質は維持
+    const fatRatio = S.profile.goal === 'diet' ? 0.22 : 0.25;
+    const f = Math.round((newKcal * fatRatio) / 9);
+    const c = Math.max(0, Math.round((newKcal - p * 4 - f * 9) / 4));
+    S.mealTargets = { custom: true, p, f, c };
+    saveState();
+    toast(`目標を約${Math.abs(nav.suggestKcal)}kcal${nav.suggestKcal < 0 ? '下げ' : '上げ'}ました`);
+    renderMeals();
   });
 }
 
