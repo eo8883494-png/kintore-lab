@@ -85,14 +85,32 @@ function hkToKg(value, unit) {
   return v; // kilogram / kg / 不明 → kg扱い
 }
 // 今日の歩数(取れなければ null)
+// iPhone+Apple Watch併用では生サンプルの単純合算だと二重計上になるため、集計API(HKStatisticsQuery相当)を優先。
+// 使えない場合はソース別に合計し最大の1ソースのみ採用する。
 async function queryTodaySteps(H) {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const opts = { dataType: 'steps', startDate: startOfDay.toISOString(), endDate: now.toISOString() };
+  // 1) 集計API(ソース重複はHealthKit側で排除される)
   try {
-    const r = await H.readSamples({ dataType: 'steps', startDate: startOfDay.toISOString(), endDate: now.toISOString() });
+    if (H.queryAggregated) {
+      const r = await H.queryAggregated({ ...opts, bucket: 'day' });
+      const rows = (r && (r.aggregatedData || r.samples || r.aggregations)) || [];
+      const total = rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+      if (total > 0) return Math.round(total);
+    }
+  } catch (e) { /* 集計API非対応 → フォールバック */ }
+  // 2) フォールバック: ソース(iPhone/Watch)ごとに合計し、最大の1ソースを採用
+  try {
+    const r = await H.readSamples(opts);
     const rows = (r && r.samples) || [];
     if (rows.length) {
-      const total = rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+      const bySource = new Map();
+      rows.forEach(x => {
+        const src = x.sourceId || x.sourceName || 'unknown';
+        bySource.set(src, (bySource.get(src) || 0) + (Number(x.value) || 0));
+      });
+      const total = Math.max(...bySource.values());
       if (total > 0) return Math.round(total);
     }
   } catch (e) { console.warn('[health] read steps failed', e); }
@@ -183,25 +201,28 @@ function setSleepManual(dateStr, minutes) {
   saveSleepLog(l);
 }
 // 推定/修正した睡眠を Apple Health / Health Connect にも書き込む(best-effort・失敗しても無害)
+// ⚠️ プラグインに削除APIが無いため「1日1回だけ」書き込む(値が変わっても再書き込みしない=Health側の二重計上を防ぐ)
 async function writeHealthSleep(dateStr) {
   const H = healthPlugin();
   if (!H) return;
   const l = loadSleepLog();
   const rec = l[dateStr];
   if (!rec || !(Number(rec.min) > 0)) return;
-  if (rec.written === rec.min) return; // 同内容の重複書き込みを避ける
+  if (rec.written != null) return; // その日はもう書き込み済み(重複サンプル防止)
   let end;
   if (rec.end) end = new Date(rec.end);
-  else { end = new Date(); end.setHours(7, 0, 0, 0); } // 起床時刻の既定=当日7:00
+  else { end = new Date(dateStr + 'T07:00:00'); } // 起床時刻の既定=その日の7:00
   const start = new Date(end.getTime() - rec.min * 60000);
   try {
     await H.requestAuthorization({ read: [], write: ['sleep'] });
     await H.saveSample({ dataType: 'sleep', value: Math.round(rec.min), unit: 'minute', startDate: start.toISOString(), endDate: end.toISOString() });
-    l[dateStr] = { ...rec, written: rec.min };
-    saveSleepLog(l);
+    const l2 = loadSleepLog(); // 書き込み中に変更されていても written だけ確実に付ける
+    l2[dateStr] = { ...(l2[dateStr] || rec), written: rec.min };
+    saveSleepLog(l2);
   } catch (e) { console.warn('[health] write sleep failed', e); }
 }
 // アプリ復帰/起動時: 前回操作からの無操作ギャップを睡眠として推定(朝=3〜11時の起床のみ・手修正日は上書きしない)
+// 同日に既に自動推定がある場合は「長い方」を採用(トイレ起床→二度寝や、朝の再オープンの短いギャップで本睡眠を潰さない)
 function detectSleepFromGap() {
   let last = 0;
   try { last = Number(localStorage.getItem('kintoreLab.lastActive')) || 0; } catch (e) {}
@@ -212,16 +233,23 @@ function detectSleepFromGap() {
     if (gap >= SLEEP_MIN_GAP && gap <= SLEEP_MAX && wakeHour >= 3 && wakeHour <= 11) {
       const d = todayStr();
       const l = loadSleepLog();
-      if (!(l[d] && l[d].edited)) { l[d] = { min: gap, start: last, end: now, edited: false }; saveSleepLog(l); writeHealthSleep(d); }
+      const prev = l[d];
+      if (!(prev && prev.edited) && !(prev && Number(prev.min) >= gap)) {
+        l[d] = { ...(prev || {}), min: gap, start: last, end: now, edited: false }; // writtenは温存(二重書込防止)
+        saveSleepLog(l);
+        writeHealthSleep(d);
+      }
     }
   }
   markActive();
 }
-// 睡眠時間の手修正モーダル
+// 睡眠時間の手修正モーダル(対象日は開いた時点で固定=日付跨ぎ保存の誤記録防止)
 function openSleepEdit() {
-  const cur = sleepMinutesFor(todayStr());
-  const ch = cur != null ? Math.floor(cur / 60) : 7;
-  const cm = cur != null ? Math.round((cur % 60) / 15) * 15 % 60 : 0;
+  const date = todayStr();
+  const cur = sleepMinutesFor(date);
+  const r15 = cur != null ? Math.round(cur / 15) * 15 : 7 * 60; // 総分数を15分丸めしてから時/分に分解(繰り上がり対応)
+  const ch = Math.min(14, Math.floor(r15 / 60));
+  const cm = r15 % 60;
   const hOpts = Array.from({ length: 15 }, (_, i) => i).map(h => `<option value="${h}" ${h === ch ? 'selected' : ''}>${h}</option>`).join('');
   const mOpts = [0, 15, 30, 45].map(m => `<option value="${m}" ${m === cm ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`).join('');
   const bg = openModal(`<h2>😴 昨夜の睡眠</h2>
@@ -236,8 +264,8 @@ function openSleepEdit() {
     </div>`);
   $('#sl-save', bg).addEventListener('click', () => {
     const h = Number($('#sl-h', bg).value), m = Number($('#sl-m', bg).value);
-    setSleepManual(todayStr(), h * 60 + m);
-    writeHealthSleep(todayStr()); // Apple Healthにも反映
+    setSleepManual(date, h * 60 + m);
+    writeHealthSleep(date); // その日まだ未書込ならApple Healthにも反映
     closeModal();
     updateHealthDisplays();
     toast('睡眠時間を更新しました');
@@ -258,9 +286,9 @@ function updateHealthDisplays() {
     if (sMin != null) {
       const h = Math.floor(sMin / 60), m = sMin % 60;
       const q = sMin < 360 ? '⚠️ 睡眠不足ぎみ' : sMin >= 420 ? '✅ 十分' : 'もう少し欲しい';
-      el.innerHTML = `😴 昨夜の睡眠 <b style="color:var(--ink)">${h}時間${m}分</b> ・ ${q} <span style="color:var(--accent2)">${edited ? '✎ 修正済' : '(推定・タップで修正)'}</span>`;
+      el.innerHTML = `😴 昨夜の睡眠 <b style="color:var(--ink)">${h}時間${m}分</b> ・ ${q}${edited ? ' <span style="color:var(--accent2)">✎ 修正済</span>' : ' <span style="color:var(--ink-dim);font-size:11.5px">(推定)</span>'}`;
     } else {
-      el.innerHTML = '😴 昨夜の睡眠 <span style="color:var(--accent2)">タップで入力</span>';
+      el.innerHTML = '😴 昨夜の睡眠 <span style="color:var(--accent2)">未入力</span>';
     }
   });
 }
@@ -277,7 +305,7 @@ function healthTodayCardHtml() {
       <div>🚶 <span class="big" data-step-steps>—</span><small> 歩</small></div>
       <div style="color:var(--ink-dim)">活動 約<b style="color:var(--accent)" data-step-kcal>0</b> kcal</div>
     </div>` : ''}
-    <div class="sleep-row" id="sleep-row" data-sleep-line style="font-size:13.5px;color:var(--ink-dim);padding:6px 0;cursor:pointer">😴 昨夜の睡眠 —</div>
+    <div class="sleep-row" id="sleep-row"><span data-sleep-line>😴 昨夜の睡眠 —</span><span class="sleep-edit">✎ 編集</span></div>
     <p class="card-note">${showSteps ? note : '睡眠は端末の使用状況から自動推定(タップで修正)。歩数は記録タブの「Apple Healthと同期」で表示されます。'}</p>
   </div>`;
 }
@@ -310,26 +338,33 @@ function loadLocalReminder() {
   catch (e) { return { enabled: false, hour: 19, minute: 0 }; }
 }
 function saveLocalReminder(r) { try { localStorage.setItem('kintoreLab.localReminder', JSON.stringify(r)); } catch (e) {} }
+// 世代カウンタ: ON/OFF/時刻変更の非同期処理が交錯した時、古い処理が新しい状態を上書きしないように
+let reminderGen = 0;
 async function enableLocalReminder(hour, minute) {
   const LN = capPlugin('LocalNotifications');
   if (!LN) { toast('この端末では通知を使えません'); return { ok: false, reason: 'unsupported' }; }
+  const gen = ++reminderGen;
   const h = Math.max(0, Math.min(23, Number(hour) || 0));
   const m = Math.max(0, Math.min(59, Number(minute) || 0));
   try {
     const perm = await LN.requestPermissions();
+    if (gen !== reminderGen) return { ok: false, reason: 'superseded' };
     if (perm && perm.display !== 'granted') { toast('通知が許可されませんでした。設定→筋トレLAB→通知 で許可してください'); return { ok: false, reason: 'denied' }; }
     await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] });
+    if (gen !== reminderGen) return { ok: false, reason: 'superseded' };
     await LN.schedule({ notifications: [{
       id: LOCAL_REMINDER_ID,
       title: '筋トレLAB 💪',
       body: '今日のトレ、いきましょう。記録もお忘れなく。',
       schedule: { on: { hour: h, minute: m }, repeats: true, allowWhileIdle: true },
     }] });
+    if (gen !== reminderGen) { try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] }); } catch (e) {} return { ok: false, reason: 'superseded' }; }
     saveLocalReminder({ enabled: true, hour: h, minute: m });
     return { ok: true };
   } catch (e) { console.warn('[local-notif] enable failed', e); toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
 }
 async function disableLocalReminder() {
+  ++reminderGen; // 走行中のenableを無効化
   const LN = capPlugin('LocalNotifications');
   if (LN) { try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] }); } catch (e) {} }
   const r = loadLocalReminder(); r.enabled = false; saveLocalReminder(r);
@@ -337,8 +372,13 @@ async function disableLocalReminder() {
 }
 async function setLocalReminderTime(hour, minute) {
   const r = loadLocalReminder();
-  r.hour = Number(hour); r.minute = Number(minute); saveLocalReminder(r);
-  if (r.enabled) await enableLocalReminder(r.hour, r.minute); // 有効中なら再スケジュール
+  if (!r.enabled) { r.hour = Number(hour); r.minute = Number(minute); saveLocalReminder(r); return; }
+  // ON中は再スケジュールの成否で状態を確定(失敗したらOFF表示に戻す=「ONなのに鳴らない」を防ぐ)
+  const res = await enableLocalReminder(Number(hour), Number(minute));
+  if (!res.ok && res.reason !== 'superseded') {
+    saveLocalReminder({ enabled: false, hour: Number(hour), minute: Number(minute) });
+    if (typeof renderTools === 'function' && location.hash.includes('tools')) renderTools();
+  }
 }
 function localReminderCardHtml() {
   if (!isNativeApp()) return '';
@@ -524,7 +564,10 @@ function sanitizeState(s) {
         if (typeof raw === 'number' && Number.isInteger(raw)) {
           m[ex.slice(0, 60)] = { id: raw, src: 'plan' }; // 旧形式を正規化
         } else if (raw && typeof raw === 'object' && Number.isInteger(Number(raw.id))) {
-          m[ex.slice(0, 60)] = { id: Number(raw.id), src: typeof raw.src === 'string' ? raw.src.slice(0, 40) : 'plan' };
+          const de = { id: Number(raw.id), src: typeof raw.src === 'string' ? raw.src.slice(0, 40) : 'plan' };
+          if (raw.keep) de.keep = true; // 借用チェック(別文脈ログへの紐付け)フラグ
+          if (typeof raw.prevSrc === 'string' && raw.prevSrc) de.prevSrc = raw.prevSrc.slice(0, 40);
+          m[ex.slice(0, 60)] = de;
         }
       });
       out.dayDone[dt] = m;
@@ -582,6 +625,9 @@ function sanitizeState(s) {
       if (typeof m.pubId === 'string' && m.pubId) entry.pubId = m.pubId.slice(0, 80);
       if (typeof m.pubLink === 'string' && m.pubLink) entry.pubLink = m.pubLink.slice(0, 300);
       if (m.published) entry.published = true;
+      // 端末非依存の安定ID(uid)と作成時刻: トゥームストーンとの照合に使う(無い旧メニューは付けない=挙動互換)
+      if (typeof m.uid === 'string' && m.uid) entry.uid = m.uid.slice(0, 24);
+      if (Number(m.createdAt) > 0) entry.createdAt = Math.round(numIn(m.createdAt, 0, 4102444800000, 0));
       out.myMenus.push(entry);
     });
   }
@@ -595,7 +641,9 @@ function sanitizeState(s) {
     s.menuTombstones.slice(-200).forEach(t => {
       if (!t || typeof t.k !== 'string' || !t.k || seenK.has(t.k)) return;
       seenK.add(t.k);
-      out.menuTombstones.push({ k: t.k.slice(0, 140), at: Math.round(numIn(t.at, 0, 4102444800000, 0)) });
+      const tt = { k: t.k.slice(0, 140), at: Math.round(numIn(t.at, 0, 4102444800000, 0)) };
+      if (typeof t.uid === 'string' && t.uid) tt.uid = t.uid.slice(0, 24);
+      out.menuTombstones.push(tt);
     });
   }
   // インターバルタイマーの保存プリセット
@@ -720,14 +768,19 @@ function menuContentKey(m) { return `${m.name}|${m.items.map(i => i.exId).join('
 
 // マイメニュー削除マーカー(トゥームストーン)。union方式のマージは削除を表現できず、
 // クラウド側に残った削除済みメニューが同期で復活する。削除内容キーを記録して復活を防ぐ。
+// uid(端末非依存の安定ID)があればそれも記録=custom種目のexId remapでキーがズレても確実に照合できる
 function tombstoneMenu(m) {
   if (!m) return;
   const k = menuContentKey(m);
   if (!Array.isArray(S.menuTombstones)) S.menuTombstones = [];
   S.menuTombstones = S.menuTombstones.filter(t => t.k !== k);
-  S.menuTombstones.push({ k, at: Date.now() });
+  const t = { k, at: Date.now() };
+  if (m.uid) t.uid = m.uid;
+  S.menuTombstones.push(t);
   if (S.menuTombstones.length > 200) S.menuTombstones = S.menuTombstones.slice(-200);
 }
+// 新規メニューの安定ID
+function newMenuUid() { return 'mm_' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36); }
 // メニュー作成/取り込み時は、同じ内容キーの削除マーカーを解除(再作成を復活扱いにしない)
 function clearMenuTombstone(m) {
   if (!m || !Array.isArray(S.menuTombstones)) return;
@@ -779,12 +832,19 @@ function mergeStates(local, remote) {
   const weights = [...wMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1));
 
   // 4) マイメニュー: remap 後に内容で union、改番。primary の myToday を追従
-  //    削除マーカー(トゥームストーン)を統合し、削除済み内容キーは復活させない(union方式の削除欠陥対策)
-  const tombMap = new Map(); // contentKey -> 最新 at
+  //    削除マーカー(トゥームストーン)を統合し、削除済みメニューは復活させない(union方式の削除欠陥対策)。
+  //    照合は uid(安定ID・remap非依存)を優先し、旧形式は contentKey + createdAt 時刻比較
+  //    (削除より後に作られたメニュー=再作成は殺さない)。
+  const tombMap = new Map();  // contentKey -> 最新 at(旧形式互換)
+  const tombUid = new Map();  // uid -> 最新 at
+  const tombObjs = new Map(); // 出力用: (uid||k) -> tombstoneオブジェクト
   [...(primary.menuTombstones || []), ...(secondary.menuTombstones || [])].forEach(t => {
     if (!t || typeof t.k !== 'string') return;
     const at = Number(t.at) || 0;
     if (!tombMap.has(t.k) || at > tombMap.get(t.k)) tombMap.set(t.k, at);
+    if (t.uid && (!tombUid.has(t.uid) || at > tombUid.get(t.uid))) tombUid.set(t.uid, at);
+    const okey = t.uid || t.k;
+    if (!tombObjs.has(okey) || at > tombObjs.get(okey).at) tombObjs.set(okey, { k: t.k, at, ...(t.uid ? { uid: t.uid } : {}) });
   });
   let mid = 1;
   const menuIdMap = new Map(); // contentKey -> new id
@@ -794,18 +854,21 @@ function mergeStates(local, remote) {
   [...primaryMenus, ...secondaryMenus].forEach(m => {
     const k = menuContentKey(m);
     if (menuMap.has(k)) return;
-    if (tombMap.has(k)) return; // 削除済み → 復活させない
+    // 削除判定: uid一致は常に削除。contentKey一致は「削除より後に作られたもの(createdAt>at)」なら生存=再作成を殺さない
+    if (m.uid && tombUid.has(m.uid)) return;
+    if (tombMap.has(k) && !((Number(m.createdAt) || 0) > tombMap.get(k))) return;
     const nm = { id: mid++, name: m.name, items: m.items.map(({ _src, ...it }) => it) };
     if (m.pubId) nm.pubId = m.pubId;
     if (m.pubLink) nm.pubLink = m.pubLink;
     if (m.published) nm.published = true;
+    if (m.uid) nm.uid = m.uid;
+    if (Number(m.createdAt) > 0) nm.createdAt = Number(m.createdAt);
     menuMap.set(k, nm); menuIdMap.set(k, nm.id);
   });
   const myMenus = [...menuMap.values()];
   // 統合したトゥームストーンを出力(180日超は刈り込み・200件上限)
   const tombCutoff = Date.now() - 180 * 864e5;
-  const menuTombstones = [...tombMap.entries()]
-    .map(([k, at]) => ({ k, at }))
+  const menuTombstones = [...tombObjs.values()]
     .filter(t => t.at > tombCutoff)
     .sort((x, y) => y.at - x.at)
     .slice(0, 200);
@@ -814,14 +877,51 @@ function mergeStates(local, remote) {
     const srcMenu = primary.myMenus.find(m => m.id === primary.myToday.id);
     if (srcMenu) { const nid2 = menuIdMap.get(menuContentKey(srcMenu)); if (nid2 != null) myToday = { date: primary.myToday.date, id: nid2 }; }
   }
+  // 各サイドの「旧メニューID → 新メニューID」変換表(dayDone/setCountの src='menu:N' 引き継ぎ用)
+  const menuIdTrans = { p: new Map(), s: new Map() };
+  primaryMenus.forEach(m => { const nid2 = menuIdMap.get(menuContentKey(m)); if (nid2 != null) menuIdTrans.p.set(m.id, nid2); });
+  secondaryMenus.forEach(m => { const nid2 = menuIdMap.get(menuContentKey(m)); if (nid2 != null) menuIdTrans.s.set(m.id, nid2); });
+  const transSrc = (src, side) => {
+    const mm = typeof src === 'string' ? src.match(/^menu:(\d+)$/) : null;
+    if (!mm) return src || 'plan';
+    const nid2 = menuIdTrans[side].get(Number(mm[1]));
+    return nid2 != null ? 'menu:' + nid2 : 'plan'; // 参照先メニューが消えた場合はplan扱い
+  };
 
-  // 5) lastW/lastR: 統合 (primary 優先)、dayDone は logs から今日分だけ再構築
+  // 5) lastW/lastR: 統合 (primary 優先)。
+  //    dayDone: 過去日は日付ごとにunionで保持(findCarryoverの「前回はマイメニュー日」判定を壊さない)、
+  //    今日の分だけ logs からIDを再構築。src の 'menu:旧ID' は新ID空間へ変換(同期の瞬間チェックが外れないように)
   const lastW = { ...secondary.lastW, ...primary.lastW };
   const lastR = { ...secondary.lastR, ...primary.lastR };
   const today = todayStr();
   const dayDone = {};
-  // 既存dayDoneのsrc(plan/menu:ID)を引き継ぐ。無ければplan。マイメニュー実施中のチェックが消えるのを防ぐ
-  const priorSrc = { ...((secondary.dayDone || {})[today] || {}), ...((primary.dayDone || {})[today] || {}) };
+  const addDayDone = (srcObj, side) => {
+    if (!srcObj) return;
+    Object.keys(srcObj).forEach(dt => {
+      if (dt === today) return; // 今日の分は後でlogsから再構築
+      const m0 = srcObj[dt];
+      const outDay = dayDone[dt] = dayDone[dt] || {};
+      Object.keys(m0).forEach(ex => {
+        const e = ddGet(m0, ex);
+        if (!e) return;
+        const key = side === 's' ? remapEx(ex) : ex;
+        outDay[key] = { id: e.id, src: transSrc(e.src, side) };
+      });
+    });
+  };
+  addDayDone(secondary.dayDone, 's');
+  addDayDone(primary.dayDone, 'p'); // primary優先で上書き
+  // 今日の分: 既存srcを(ID変換して)引き継ぐ。無ければplan。マイメニュー実施中のチェックが消えるのを防ぐ
+  const priorSrc = {};
+  [['s', secondary], ['p', primary]].forEach(([side, st]) => {
+    const m0 = (st.dayDone || {})[today] || {};
+    Object.keys(m0).forEach(ex => {
+      const e = ddGet(m0, ex);
+      if (!e) return;
+      const key = side === 's' ? remapEx(ex) : ex;
+      priorSrc[key] = { id: e.id, src: transSrc(e.src, side) };
+    });
+  });
   logs.filter(l => l.date === today).forEach(l => {
     const prev = ddGet(priorSrc, l.exId);
     (dayDone[today] = dayDone[today] || {})[l.exId] = { id: l.id, src: prev ? prev.src : 'plan' };
@@ -835,6 +935,7 @@ function mergeStates(local, remote) {
     nextId: nid,
     pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
+  out._updatedAt = Math.max(at, bt); // マージ結果の鮮度(次回マージの新旧判定用)
   // タイマープリセット: 内容で union(primary優先・上限30)
   const tpMap = new Map();
   [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
@@ -850,9 +951,21 @@ function mergeStates(local, remote) {
   out.publicLink = primary.publicLink || secondary.publicLink || '';
   out.fillDays = primary.fillDays;      // オプトイン設定はprimary優先
   out.activeRest = primary.activeRest;
-  // セット進捗: 日付ごとに union(primary優先で上書き)
+  // セット進捗: 日付ごとに union(primary優先で上書き)。キーの 'menu:旧ID|exId' は新ID空間へ変換
   const sc = {};
-  [secondary.setCount, primary.setCount].forEach(src => { if (src) Object.keys(src).forEach(dt => { sc[dt] = { ...(sc[dt] || {}), ...src[dt] }; }); });
+  [['s', secondary.setCount], ['p', primary.setCount]].forEach(([side, src]) => {
+    if (!src) return;
+    Object.keys(src).forEach(dt => {
+      const outDay = sc[dt] = sc[dt] || {};
+      Object.keys(src[dt]).forEach(key => {
+        const bar = key.lastIndexOf('|');
+        if (bar < 0) { outDay[key] = src[dt][key]; return; }
+        const ck = key.slice(0, bar), ex = key.slice(bar + 1);
+        const nk = transSrc(ck, side) + '|' + (side === 's' ? remapEx(ex) : ex);
+        outDay[nk] = src[dt][key];
+      });
+    });
+  });
   out.setCount = sc;
   // アクティブレスト実施記録: 日付ごとに union
   const rd = {};
@@ -873,7 +986,12 @@ function loadState() {
   try {
     const raw = localStorage.getItem(LS_KEY);
     if (!raw) return defaultState();
-    return sanitizeState(JSON.parse(raw));
+    const parsed = JSON.parse(raw);
+    const st = sanitizeState(parsed);
+    // ローカルの最終更新時刻を保持(sanitizeで剥がれるため付け戻す)。
+    // これが無いとmergeStatesで常にat=0=リモート優先になり、オフライン編集が古いクラウドに巻き戻る
+    st._updatedAt = Number(parsed && parsed._updatedAt) || 0;
+    return st;
   } catch (e) {
     console.warn('state load failed', e);
     return defaultState();
@@ -881,6 +999,7 @@ function loadState() {
 }
 let applyingRemote = false; // リモート適用中はクラウドへ再pushしない (エコー防止)
 function saveState() {
+  if (!applyingRemote) S._updatedAt = Date.now(); // ローカル編集の時刻(mergeStatesの新旧判定に使う)
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
   catch (e) { console.warn('state save failed', e); }
   if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
@@ -910,9 +1029,11 @@ window.__klApplyRemote = (remoteState) => {
   applyingRemote = true;
   let changed = false;
   try {
-    const before = JSON.stringify(S);
+    // changed判定は_updatedAtを除外して比較(タイムスタンプ差だけで書き戻しループ=ping-pongにならないように)
+    const strip = st => JSON.stringify({ ...st, _updatedAt: 0 });
+    const before = strip(S);
     const merged = mergeStates(S, remoteState);
-    changed = JSON.stringify(merged) !== before;
+    changed = strip(merged) !== before;
     S = merged;
     localStorage.setItem(LS_KEY, JSON.stringify(S));
     rebuildDB(S.customEx);
@@ -998,7 +1119,7 @@ function paywallHtml() {
     <div class="pw-plans">${plans}</div>
     <button class="btn pw-cta" id="pw-start">1週間無料で始める</button>
     <div class="pw-terms" id="pw-terms">${pwTermsText()}</div>
-    <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
+    <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
   </div>`;
 }
@@ -1602,9 +1723,9 @@ function renderHome() {
       <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
     </div>`;
 
-  html += healthTodayCardHtml(); // 歩数+睡眠カード(ネイティブ+同期済みのみ・空文字なら非表示)
-
-  // 週間ボリューム(今週 vs 先週)。どちらかに記録がある時だけ表示
+  // 閲覧系カード(今日のカラダ・週間ボリューム)は「今日のメニュー」(操作系)の下に置く
+  // — ジムで開いた瞬間に記録UIが最上部に来るように(情報の優先度 = 操作 > 閲覧)
+  let infoCards = healthTodayCardHtml();
   {
     const volThis = weekVolume(S.logs);
     const volLast = weekVolume(S.logs, dateAdd(todayStr(), -7));
@@ -1613,7 +1734,7 @@ function renderHome() {
       const deltaHtml = delta == null ? '<span class="sub">先週の記録なし</span>'
         : delta >= 0 ? `<span style="color:var(--accent);font-weight:800">先週比 +${delta}%</span>`
         : `<span style="color:var(--ink-dim);font-weight:700">先週比 ${delta}%</span>`;
-      html += `<div class="card"><h2>📊 今週のボリューム</h2>
+      infoCards += `<div class="card"><h2>📊 今週のボリューム</h2>
         <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
           <div><span class="big">${volThis.toLocaleString()}</span><small> kg</small></div>
           <div>${deltaHtml}</div>
@@ -1720,6 +1841,8 @@ function renderHome() {
       recov.map(r => `<div class="recov-cell ${r.state}"><div class="nm">${esc(r.name)}</div><div class="st">${r.state === 'resting' || r.state === 'almost' ? `あと${r.remainH}h` : stLabel[r.state]}</div></div>`).join('') +
       `</div><p class="card-note">記録から超回復(48〜72時間)の目安を計算。「回復済」の部位が狙い目。</p></div>`;
   }
+
+  html += infoCards; // 閲覧系(今日のカラダ・週間ボリューム)はメニューの下
 
   // 今日のヒント (日替わり・未成年にはカフェイン系を出さない)
   const tipList = S.profile && S.profile.age < 18 ? TIPS.filter(t => t.indexOf('カフェイン') < 0) : TIPS;
@@ -1881,23 +2004,31 @@ function toggleDone(exId, checked) {
     const rinp = $(`input.rinp[data-ex="${exId}"]`);
     const r = rinp && Number(rinp.value) > 0 ? Math.round(Number(rinp.value)) : repMid(item.reps); // 実際の回数を優先(未入力なら目標の中央値)
     if (r > 0) S.lastR[exId] = r;
-    // 同日・同種目の既存ログがあれば再利用(文脈違い/クイック記録との重複=週間ボリューム二重計上を防ぐ)
+    // 同日・同種目の既存ログがあれば再利用(文脈違いとの重複=週間ボリューム二重計上を防ぐ)。
+    // ただし「別コンテキストが所有するログ」は上書きせず紐付けのみ(実測セット・RIRを破壊しない)。
     const existing = S.logs.find(l => l.date === today && l.exId === exId);
-    let logId;
-    if (existing) {
+    const prevEntry = ddGet(S.dayDone[today], exId);
+    let logId, borrowed = false;
+    if (existing && (!prevEntry || prevEntry.src !== ck)) {
+      // 別文脈(または同期由来)の記録 → 中身は触らずチェックだけ付ける。解除時も消さない(keep)
+      logId = existing.id;
+      borrowed = true;
+      S.dayDone[today][exId] = { id: logId, src: ck, keep: true, ...(prevEntry ? { prevSrc: prevEntry.src } : {}) };
+    } else if (existing) {
       logId = existing.id;
       existing.sets = Array.from({ length: item.sets }, () => ({ w, r }));
+      S.dayDone[today][exId] = { id: logId, src: ck };
     } else {
       logId = newId();
       S.logs.push({ id: logId, date: today, exId, sets: Array.from({ length: item.sets }, () => ({ w, r })) });
+      S.dayDone[today][exId] = { id: logId, src: ck };
     }
-    S.dayDone[today][exId] = { id: logId, src: ck };
     if (!S.setCount[today]) S.setCount[today] = {};
     S.setCount[today][ck + '|' + exId] = item.sets; // ドット表示を満了に同期
     saveState();
-    // PR(自己ベスト)判定: 推定1RMが過去最高を超えたら祝う(重量記録がある種目のみ)
+    // PR(自己ベスト)判定: 推定1RMが過去最高を超えたら祝う(重量記録がある種目のみ・借用時は新データ無しなのでスキップ)
     let prMsg = '';
-    if (w > 0 && r > 0) {
+    if (!borrowed && w > 0 && r > 0) {
       const prevBest = bestE1rmBefore(S.logs, exId, today);
       const nowE = epley1RM(w, r);
       if (prevBest != null && nowE > prevBest + 0.01) {
@@ -1913,8 +2044,14 @@ function toggleDone(exId, checked) {
     const e = ddGet(S.dayDone[today], exId);
     // 現在のコンテキストで作った記録だけを消す (別セッションの記録は触らない)
     if (e && e.src === ck) {
-      S.logs = S.logs.filter(l => l.id !== e.id);
-      delete S.dayDone[today][exId];
+      if (e.keep) {
+        // 借用チェック(別文脈のログに紐付けただけ)→ ログは残し、チェックを元の所有者に戻す/外すのみ
+        if (e.prevSrc) S.dayDone[today][exId] = { id: e.id, src: e.prevSrc };
+        else delete S.dayDone[today][exId];
+      } else {
+        S.logs = S.logs.filter(l => l.id !== e.id);
+        delete S.dayDone[today][exId];
+      }
       if (S.setCount[today]) delete S.setCount[today][ck + '|' + exId]; // ドット進捗もクリア
       saveState();
     }
@@ -2399,7 +2536,7 @@ function importPublicMenu(pm) {
   rebuildDB(S.customEx);
   const mid = S.myMenus.reduce((a, m) => Math.max(a, m.id), 0) + 1;
   const nm = String(pm.name || 'メニュー') + (pm.displayName ? '（' + String(pm.displayName).slice(0, 8) + '）' : '');
-  const newMenu = { id: mid, name: nm.slice(0, 20), items };
+  const newMenu = { id: mid, name: nm.slice(0, 20), items, uid: newMenuUid(), createdAt: Date.now() };
   clearMenuTombstone(newMenu); // 同内容の削除マーカーがあれば解除(再取り込みを削除扱いにしない)
   S.myMenus.push(newMenu);
   saveState();
@@ -2848,7 +2985,7 @@ function openMyMenuModal() {
     }).filter(Boolean);
     if (!items.length) { toast('種目が見つかりませんでした。選び直してください'); return; }
     const newId2 = S.myMenus.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-    const newMenu2 = { id: newId2, name: name.slice(0, 20), items };
+    const newMenu2 = { id: newId2, name: name.slice(0, 20), items, uid: newMenuUid(), createdAt: Date.now() };
     clearMenuTombstone(newMenu2); // 同内容の削除マーカーがあれば解除
     S.myMenus.push(newMenu2);
     saveState();
@@ -2986,10 +3123,10 @@ function renderTools() {
   const p = S.profile;
 
   root.innerHTML = `
-    <div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
-      <p class="card-note" style="margin-top:-2px">詳細分析・無制限マイメニュー・広告なし・全端末同期。<b style="color:var(--accent)">最初の1週間無料</b>。</p>
-      <button class="btn" id="open-paywall">Proを見る</button>
-    </div>
+    ${isNativeApp() ? `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
+      <p class="card-note" style="margin-top:-2px">全機能・<b style="color:var(--accent)">最初の1週間無料</b>。科学的トレ設計をフルに。</p>
+      <button class="btn" id="open-paywall">プランを見る</button>
+    </div>` : ''}
     <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
@@ -3027,6 +3164,7 @@ function renderTools() {
         <div class="field"><label>目標重量 kg</label><input type="number" id="pl-target" placeholder="60" step="0.5"></div>
         <div class="field"><label>バーの重さ</label><select id="pl-bar"><option value="20">20kg(オリンピック)</option><option value="15">15kg</option><option value="10">10kg</option><option value="0">0kg(ダンベル等)</option></select></div>
       </div>
+      <div class="field"><label>ジムにあるプレート(タップで切替・記憶されます)</label><div id="pl-plates" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
       <div id="pl-out"></div>
     </div>
 
@@ -3103,19 +3241,36 @@ function renderTools() {
   $('#rm-w', root).addEventListener('input', rmCalc);
   $('#rm-r', root).addEventListener('input', rmCalc);
 
-  // プレート計算機: 目標重量 → 片側に付けるプレート(標準プレートで貪欲法)
+  // プレート計算機: 目標重量 → 片側に付けるプレート(手持ちプレートのみで貪欲法・設定は記憶)
   const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
+  const loadPlatePref = () => { try { return { bar: 20, have: Object.fromEntries(PLATES.map(p2 => [p2, true])), ...JSON.parse(localStorage.getItem('kintoreLab.plates') || '{}') }; } catch (e) { return { bar: 20, have: Object.fromEntries(PLATES.map(p2 => [p2, true])) }; } };
+  const savePlatePref = pref => { try { localStorage.setItem('kintoreLab.plates', JSON.stringify(pref)); } catch (e) {} };
+  const plPref = loadPlatePref();
+  const plT = $('#pl-target', root), plB = $('#pl-bar', root), plP = $('#pl-plates', root);
+  if (plB) plB.value = String(plPref.bar); // 前回のバー選択を復元
+  const renderPlateChips = () => {
+    if (!plP) return;
+    plP.innerHTML = PLATES.map(p2 => `<button type="button" class="chip ${plPref.have[p2] ? 'grow' : 'exclude'}" data-pl="${p2}">${p2}kg</button>`).join('');
+    $all('[data-pl]', plP).forEach(b => b.addEventListener('click', () => {
+      const p2 = Number(b.dataset.pl);
+      plPref.have[p2] = !plPref.have[p2];
+      savePlatePref(plPref);
+      renderPlateChips(); plCalc();
+    }));
+  };
   const plCalc = () => {
-    const target = Number($('#pl-target', root).value);
-    const bar = Number($('#pl-bar', root).value);
+    const target = Number(plT ? plT.value : 0);
+    const bar = Number(plB ? plB.value : 20);
     const out = $('#pl-out', root);
     if (!out) return;
     if (!target) { out.innerHTML = ''; return; }
     if (target < bar) { out.innerHTML = `<p class="card-note" style="color:var(--warn)">目標がバー(${bar}kg)より軽いです。バーだけで始めましょう。</p>`; return; }
-    let side = (target - bar) / 2;
+    const avail = PLATES.filter(p2 => plPref.have[p2]);
+    if (!avail.length) { out.innerHTML = '<p class="card-note" style="color:var(--warn)">プレートを1種類以上選んでください。</p>'; return; }
+    const side = (target - bar) / 2;
     const used = [];
     let rem = side;
-    PLATES.forEach(p2 => {
+    avail.forEach(p2 => {
       const n = Math.floor(rem / p2 + 1e-9);
       if (n > 0) { used.push([p2, n]); rem = Math.round((rem - n * p2) * 100) / 100; }
     });
@@ -3123,14 +3278,16 @@ function renderTools() {
     const chips = used.length
       ? used.map(([p2, n]) => `<span class="chip">${p2}kg × ${n}</span>`).join(' ')
       : '<span class="chip">プレートなし(バーのみ)</span>';
+    const minPlate = avail[avail.length - 1];
+    const upper = achieved + minPlate * 2; // ひとつ上の到達可能重量
     out.innerHTML = `<div class="tool-result">
       <div style="margin-bottom:6px">片側に: ${chips}</div>
-      <div>合計 <span class="big">${(Math.round(achieved * 100) / 100)}<small>kg</small></span>${rem > 0.01 ? `<small style="color:var(--ink-dim)">(最小1.25kg刻みのため目標-${Math.round(rem * 2 * 100) / 100}kg)</small>` : ''}</div>
+      <div>合計 <span class="big">${(Math.round(achieved * 100) / 100)}<small>kg</small></span>${rem > 0.01 ? `<small style="color:var(--ink-dim)"> (目標-${Math.round(rem * 2 * 100) / 100}kg。${minPlate}kg×1を左右に足すと${Math.round(upper * 100) / 100}kg)</small>` : ''}</div>
     </div>`;
   };
-  const plT = $('#pl-target', root), plB = $('#pl-bar', root);
+  renderPlateChips();
   if (plT) plT.addEventListener('input', plCalc);
-  if (plB) plB.addEventListener('change', plCalc);
+  if (plB) plB.addEventListener('change', () => { plPref.bar = Number(plB.value); savePlatePref(plPref); plCalc(); });
 
   // FFMI
   // FFMI: 体脂肪率を自動推定して即算出(測定値の入力があれば優先)
@@ -3365,11 +3522,17 @@ function itTick() {
   iTimer.sec = Math.max(0, Math.ceil(remMs / 1000));
   const rem = iTimer.sec;
   if (rem > 0 && rem <= 3 && rem !== iTimer.lastBeep) { iTimer.lastBeep = rem; itBeep(660, 0.12); }
-  if (remMs <= 0) itAdvance();
+  if (remMs <= 0) itAdvance(-remMs); // 超過分を渡す(バックグラウンド放置で複数フェーズ跨いだ分を繰り越す)
   else itSyncDisp();
 }
-function itAdvance() {
-  const next = iTimer.idx + 1;
+function itAdvance(overshootMs) {
+  // ロック/バックグラウンドで長時間経過していた場合、超過時間ぶんフェーズをまとめて消化する
+  let carry = Math.max(0, Number(overshootMs) || 0);
+  let next = iTimer.idx + 1;
+  while (next < iTimer.phases.length && carry >= iTimer.phases[next].sec * 1000) {
+    carry -= iTimer.phases[next].sec * 1000;
+    next++;
+  }
   if (next >= iTimer.phases.length) {
     clearInterval(iTimer.iv); iTimer.iv = null;
     iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
@@ -3381,7 +3544,9 @@ function itAdvance() {
     return;
   }
   itLoadPhase(next);
-  iTimer.endAt = Date.now() + iTimer.sec * 1000;
+  iTimer.endAt = Date.now() + iTimer.sec * 1000 - carry; // フェーズ途中に着地
+  iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
+  iTimer.lastBeep = -1; // 着地フェーズで残り3秒カウントダウン音が正しく鳴るように
   const p = iTimer.phases[next];
   itBeep(p.type === 'work' ? 880 : 520, 0.18);
   if (navigator.vibrate) navigator.vibrate(p.type === 'work' ? [120, 60, 120] : [200]);
