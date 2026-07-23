@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -276,6 +276,14 @@ function sanitizeState(s) {
       if (arr.length) out.foodLog[dt] = arr;
     });
   }
+  // 水分(日付→杯数)
+  if (s.water && typeof s.water === 'object') {
+    Object.keys(s.water).forEach(dt => {
+      if (!DATE_RE.test(dt)) return;
+      const n = Math.round(numIn(s.water[dt], 0, 30, 0));
+      if (n > 0) out.water[dt] = n;
+    });
+  }
   // アクティブレスト実施記録(日付→moveId→true)
   if (s.recoveryDone && typeof s.recoveryDone === 'object') {
     Object.keys(s.recoveryDone).forEach(dt => {
@@ -439,6 +447,10 @@ function mergeStates(local, remote) {
   const fl = {};
   [secondary.foodLog, primary.foodLog].forEach(src => { if (src) Object.keys(src).forEach(dt => { fl[dt] = src[dt]; }); });
   out.foodLog = fl;
+  // 水分: 日付ごとにmax(どちらかで飲んだ分を活かす)
+  const wt = {};
+  [secondary.water, primary.water].forEach(src => { if (src) Object.keys(src).forEach(dt => { wt[dt] = Math.max(wt[dt] || 0, src[dt]); }); });
+  out.water = wt;
   return out;
 }
 
@@ -720,9 +732,10 @@ function exSearchName(ex) {
 
 // ===== 種目詳細モーダル =====
 // restSec を渡すと「この種目の休憩タイマー」ボタンを表示する
-function openExerciseModal(exId, restSec) {
+function openExerciseModal(exId, restSec, planRef) {
   const ex = DB.byId[exId];
   if (!ex) return;
+  const canEdit = planRef && S.plan && S.plan.days[planRef.di] && S.plan.days[planRef.di].items[planRef.ii];
   const bg = openModal(`
     <h2>${esc(ex.name)}</h2>
     <p class="modal-sub">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]} / ${'★'.repeat(ex.level)}${'☆'.repeat(3 - ex.level)} ${ex.compound ? '/ 多関節(コンパウンド)' : '/ 単関節(アイソレーション)'}</p>
@@ -737,7 +750,10 @@ function openExerciseModal(exId, restSec) {
     ${restSec ? `<button class="btn" id="ex-timer" style="margin-bottom:10px">⏱ 休憩タイマー ${Math.round(restSec)}秒 スタート</button>` : ''}
     <a class="btn ${restSec ? 'ghost' : ''}" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
        href="https://www.youtube.com/results?search_query=${encodeURIComponent(exSearchName(ex) + ' フォーム やり方')}">🎬 フォーム動画を見る (YouTube)</a>
+    ${canEdit ? '<button class="btn ghost" id="ex-swap" style="margin-bottom:10px">🔄 別の種目に変える</button>' : ''}
     <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  const sw = $('#ex-swap', bg);
+  if (sw) sw.addEventListener('click', () => { closeModal(); openPlanExercisePicker(planRef.di, planRef.ii); });
   const tb = $('#ex-timer', bg);
   if (tb) tb.addEventListener('click', () => {
     startRestTimer(restSec, ex.name + ' の休憩');
@@ -901,6 +917,27 @@ function cycleCardHtml() {
     <button class="btn ghost small" id="cycle-setup">周期を更新</button>
     <p class="card-note">${cp.len}日周期での目安。次の生理が来たら開始日を更新すると精度が上がります。個人差があるので体調優先で。</p></div>`;
 }
+// ディロード(減量週)提案: 直近2週で「限界(RIR0)」が頻発したら疲労サイン
+function deloadSignal() {
+  const today = todayStr();
+  const since = dateAdd(today, -14);
+  const recent = S.logs.filter(l => l.date >= since);
+  const dates = [...new Set(recent.map(l => l.date))];
+  if (dates.length < 6) return null; // 頻度が高くない=ディロード不要
+  const hardDates = new Set(recent.filter(l => (l.sets || []).some(s => s.rir === 0)).map(l => l.date));
+  if (hardDates.size >= 3) return { count: hardDates.size };
+  return null;
+}
+function deloadCardHtml() {
+  if (!S.profile) return '';
+  const d = deloadSignal();
+  if (!d) return '';
+  return `<div class="card" style="border-color:var(--warn)"><h2>😮‍💨 そろそろディロード?</h2>
+    <p style="font-size:13.5px;line-height:1.7">直近2週間で「限界まで追い込んだ日」が<b>${d.count}回</b>。疲労が溜まっているサインです。<br>
+    <b>1週間だけ、重量はそのままでセット数を半分</b>に落とす「ディロード」を挟むと、神経系と関節が回復して、その後グッと伸びます。停滞したまま追い込み続けるより結果的に近道。</p>
+    <p class="card-note">これは強制ではなく提案です。体調が良ければ続けてもOK。目安として覚えておいてください。</p></div>`;
+}
+
 function openCycleSetup() {
   const c = S.cycle || { start: todayStr(), length: 28 };
   const bg = openModal(`
@@ -1095,9 +1132,10 @@ function renderHome() {
 
     homeCarry = ctx.carry; // チェック処理と表示のズレを防ぐスナップショット
     const curCtxKey = ctxKeyOf(ctx); // 通常プランとマイメニューでチェック状態を分離
-    const exRow = (it, isCarry) => {
+    const exRow = (it, isCarry, idx) => {
       const ex = DB.byId[it.exId];
       if (!ex) return '';
+      const planCtx = !ctx.myMenu && !isCarry && idx != null && ctx.idx >= 0; // プラン日の種目=編集可
       const de = ddGet(doneMap, it.exId);
       const done = !!(de && de.src === curCtxKey);
       const lastW = S.lastW[it.exId];
@@ -1115,7 +1153,7 @@ function renderHome() {
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
-          <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}">
+          <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${planCtx ? ` data-di="${ctx.idx}" data-ii="${idx}"` : ''}>
             <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
             <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
             <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
@@ -1133,8 +1171,9 @@ function renderHome() {
     if (ctx.day) {
       const burn = S.profile ? sessionBurn([...ctx.day.items, ...ctx.carry], DB.byId, S.profile.w) : 0;
       html += `<div class="card"><h2>🏋️ 今日は「${esc(ctx.day.name)}」${ctx.swapped ? '<span class="tag high" style="font-size:10px">振替</span>' : ''}${ctx.myMenu ? '<span class="tag low" style="font-size:10px">マイ</span>' : ''}<span class="sub">約${ctx.day.minutes}分 / 約${burn}kcal</span></h2>`;
-      ctx.day.items.forEach(it => { html += exRow(it, false); });
+      ctx.day.items.forEach((it, i) => { html += exRow(it, false, i); });
       ctx.carry.forEach(it => { html += exRow(it, true); });
+      if (!ctx.myMenu && ctx.idx >= 0) html += `<div style="padding:8px 0 2px"><button class="btn ghost small" id="home-add-ex" data-di="${ctx.idx}" style="width:100%">＋ 種目を追加</button></div>`;
       html += `<p class="card-note">チェックすると記録に自動保存。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}${ctx.myMenu ? ' <button class="btn small ghost" id="mymenu-undo">通常メニューに戻す</button>' : ''}</p></div>`;
     } else {
       const dow = new Date().getDay();
@@ -1158,6 +1197,7 @@ function renderHome() {
   // 今日のヒント (日替わり・未成年にはカフェイン系を出さない)
   const tipList = S.profile && S.profile.age < 18 ? TIPS.filter(t => t.indexOf('カフェイン') < 0) : TIPS;
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
+  html += deloadCardHtml();
   html += `<div class="card tip-card"><h2>💡 今日の筋知識</h2><p style="font-size:13.5px">${esc(tipList[tipIdx])}</p></div>`;
   html += timingCardHtml();
   html += cycleCardHtml();
@@ -1204,8 +1244,11 @@ function renderHome() {
     chk.addEventListener('change', () => toggleDone(chk.dataset.ex, chk.checked));
   });
   $all('[data-open-ex]', root).forEach(el => {
-    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0));
+    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0,
+      el.dataset.di != null ? { di: Number(el.dataset.di), ii: Number(el.dataset.ii) } : null));
   });
+  const addEx = $('#home-add-ex', root);
+  if (addEx) addEx.addEventListener('click', () => openPlanExercisePicker(Number(addEx.dataset.di), null));
   $all('.rc-chk', root).forEach(chk => {
     chk.addEventListener('change', () => toggleRecoveryDone(chk.dataset.rc, chk.checked));
   });
@@ -1554,11 +1597,11 @@ function openPlanItemEditor(di, ii) {
     const reps = ($('#pe-reps', bg).value || '').trim().slice(0, 20);
     if (reps) item.reps = reps;
     item.rest = Math.max(15, Math.min(600, Math.round(Number($('#pe-rest', bg).value) || item.rest)));
-    recomputePlanDerived(); saveState(); closeModal(); toast('更新しました'); renderPlan();
+    recomputePlanDerived(); saveState(); closeModal(); toast('更新しました'); route();
   });
   $('#pe-del', bg).addEventListener('click', () => {
     day.items.splice(ii, 1);
-    recomputePlanDerived(); saveState(); closeModal(); toast('削除しました'); renderPlan();
+    recomputePlanDerived(); saveState(); closeModal(); toast('削除しました'); route();
   });
   $('#pe-swap', bg).addEventListener('click', () => { closeModal(); openPlanExercisePicker(di, ii); });
 }
@@ -1595,7 +1638,7 @@ function openPlanExercisePicker(di, replaceIi) {
       else S.plan.days[di].items.push(newItem);
       recomputePlanDerived(); saveState(); closeModal();
       toast(replaceIi != null ? '種目を変更しました' : '種目を追加しました');
-      renderPlan();
+      route();
     }));
   };
   $all('.pick-part', bg).forEach(b => b.addEventListener('click', () => {

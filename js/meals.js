@@ -24,6 +24,31 @@ function foodLogTotals(date) {
     return { kcal: a.kcal + f.kcal * it.qty, p: a.p + f.p * it.qty, f: a.f + f.f * it.qty, c: a.c + f.c * it.qty };
   }, { kcal: 0, p: 0, f: 0, c: 0 });
 }
+// 水分目標(杯・250ml換算・体重×33ml/kg)
+function waterTarget(profile) {
+  return Math.max(6, Math.min(12, Math.round(((profile && profile.w) || 65) * 0.033 / 0.25)));
+}
+// 体組成の推定: 記録した体重変化を脂肪/筋肉に按分(トレ歴で係数を変える)
+function bodyCompEstimate(profile, weights) {
+  const pts = (weights || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  if (pts.length < 2) return null;
+  const first = pts[0], last = pts[pts.length - 1];
+  const change = Math.round((last.kg - first.kg) * 10) / 10;
+  if (Math.abs(change) < 0.4) return null;
+  const days = Math.round((new Date(last.date + 'T12:00:00') - new Date(first.date + 'T12:00:00')) / 86400000);
+  const lvl = profile.level || 1;
+  let fat, muscle;
+  if (change < 0) {
+    const fatFrac = lvl === 1 ? 0.95 : lvl === 2 ? 0.88 : 0.82;
+    fat = Math.round(change * fatFrac * 10) / 10;
+    muscle = Math.round((change - fat) * 10) / 10;
+  } else {
+    const muscleFrac = lvl === 1 ? 0.55 : lvl === 2 ? 0.4 : 0.28;
+    muscle = Math.round(change * muscleFrac * 10) / 10;
+    fat = Math.round((change - muscle) * 10) / 10;
+  }
+  return { days, change, fat, muscle, cut: change < 0 };
+}
 
 // ===== 目標計算 =====
 // 体重ナビと献立が必ず同じ方針になるよう、閾値は共有定数で持つ
@@ -302,6 +327,18 @@ function renderMeals() {
     <p class="card-note">数量は「1食あたりの単位(表示中)」の個数。例: ご飯100gを1.5なら150g。</p>
   </div>`;
 
+  // 💧 水分トラッキング
+  const wTgt = waterTarget(S.profile);
+  const wCur = (S.water && S.water[flDate]) || 0;
+  const cups = Array.from({ length: wTgt }, (_, i) => `<span class="wcup ${i < wCur ? 'on' : ''}">${i < wCur ? '💧' : '·'}</span>`).join('');
+  html += `<div class="card"><h2>💧 水分<span class="sub">${wCur}/${wTgt}杯(1杯250ml)</span></h2>
+    <div class="wcups">${cups}</div>
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn small ghost" id="water-minus" style="flex:1">−1杯</button>
+      <button class="btn small" id="water-plus" style="flex:2">＋1杯 飲んだ💧</button>
+    </div>
+    <p class="card-note">目安 約${Math.round(wTgt * 0.25 * 10) / 10}L/日(体重×33ml)。減量中は満腹感、増量中は消化を助けます。トレ中もこまめに。</p></div>`;
+
   // 体重ナビ
   const nav = weightNav(S.profile, S.weights);
   html += `<div class="card"><h2>⚖️ 体重ナビ<span class="sub">現在${S.profile.w}kg / BMI ${nav.bmi}</span></h2>`;
@@ -326,6 +363,17 @@ function renderMeals() {
     </div>`;
   }
   html += `</div>`;
+
+  // 🧬 体組成の推定(体重変化の脂肪/筋肉の内訳)
+  const bc = bodyCompEstimate(S.profile, S.weights);
+  if (bc) {
+    const sign = v => (v >= 0 ? '+' : '') + v;
+    html += `<div class="card"><h2>🧬 体組成の推定<span class="sub">この${bc.days}日</span></h2>
+      <p style="font-size:13.5px;line-height:1.7">体重 <b>${sign(bc.change)}kg</b> の内訳(推定):
+        <span class="chip" style="border-color:var(--warn);color:var(--warn)">脂肪 ${sign(bc.fat)}kg</span>
+        <span class="chip grow">筋肉 ${sign(bc.muscle)}kg</span></p>
+      <p class="card-note">${bc.cut ? '筋トレ+タンパク質を続けていれば、落ちた体重の大半は脂肪で筋肉はほぼ守れます。' : 'トレ歴が浅いほど増えた体重に筋肉が占める割合が高くなります。'}トレ歴(${SCIENCE.levels ? '' : ''}レベル)から按分した目安で、実測ではありません。体重を継続記録するほど精度が上がります。</p></div>`;
+  }
 
   plan.meals.forEach(m => {
     html += `<div class="card"><h2>${m.icon} ${esc(m.name)}<span class="sub">${g(m.totals.kcal)}kcal / P${g(m.totals.p)}g</span></h2>`;
@@ -417,6 +465,15 @@ function renderMeals() {
     const dt = todayStr(), i = Number(b.dataset.i);
     if (S.foodLog[dt]) { S.foodLog[dt].splice(i, 1); if (!S.foodLog[dt].length) delete S.foodLog[dt]; saveState(); renderMeals(); }
   }));
+  const wPlus = $('#water-plus', root), wMinus = $('#water-minus', root);
+  const setWater = (delta) => {
+    const dt = todayStr();
+    const cur = (S.water[dt] || 0) + delta;
+    if (cur <= 0) delete S.water[dt]; else S.water[dt] = Math.min(30, cur);
+    saveState(); renderMeals();
+  };
+  if (wPlus) wPlus.addEventListener('click', () => setWater(1));
+  if (wMinus) wMinus.addEventListener('click', () => setWater(-1));
 }
 
 // 食事: PFC目標を自分で設定(カロリーはP/F/Cから導出)
