@@ -1706,10 +1706,17 @@ function openMenuPublishModal(menu) {
   const c = window.__klCloud;
   if (!c || !c.available) { toast('この環境では公開を利用できません'); return; }
   if (!c.myUid()) {
+    const native = isNativeApp();
     const bg = openModal(`<h2>公開にはログインが必要です</h2>
-      <p class="modal-sub">「みんなのメニュー」に公開するには、Googleログインが必要です(投稿者を識別してスパムを防ぐため)。</p>
-      <div style="display:flex;gap:10px;margin-top:14px"><button class="btn ghost" onclick="closeModal()">閉じる</button><button class="btn" id="pub-login">Googleでログイン</button></div>`);
+      <p class="modal-sub">「みんなのメニュー」に公開するには、ログインが必要です(投稿者を識別してスパムを防ぐため)。</p>
+      <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
+        <button class="btn" id="pub-login">Googleでログイン</button>
+        ${native ? '<button class="btn btn-apple" id="pub-login-apple"> Appleでサインイン</button>' : ''}
+        <button class="btn ghost" onclick="closeModal()">閉じる</button>
+      </div>`);
     $('#pub-login', bg).addEventListener('click', () => { closeModal(); c.signIn(); });
+    const pubApple = $('#pub-login-apple', bg);
+    if (pubApple) pubApple.addEventListener('click', () => { closeModal(); c.signInApple(); });
     return;
   }
   // プロフィール未設定なら先に設定してもらう(初回のみ)
@@ -2379,9 +2386,13 @@ function cloudCardHtml() {
       ${isNativeApp() ? '' : '<p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのままでも届きます。</p>'}
     </div>`;
   }
+  const native = isNativeApp();
   return `<div class="card"><h2>☁️ 端末間同期</h2>
-    <p style="font-size:13.5px;margin-bottom:10px">Googleでログインすると、記録・メニュー・体重が<b>スマホとPCなど複数の端末で同期</b>されます。機種変更してもデータが引き継がれます。</p>
-    <button class="btn" id="cloud-signin">Googleでログイン</button>
+    <p style="font-size:13.5px;margin-bottom:10px">ログインすると、記録・メニュー・体重が<b>スマホとPCなど複数の端末で同期</b>されます。機種変更してもデータが引き継がれます。</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <button class="btn" id="cloud-signin">Googleでログイン</button>
+      ${native ? '<button class="btn btn-apple" id="cloud-signin-apple"> Appleでサインイン</button>' : ''}
+    </div>
     <p class="card-note">ログインしなくても全機能そのまま使えます(データはこの端末に保存)。ログインは任意です。</p>
   </div>`;
 }
@@ -2412,6 +2423,8 @@ function bindCloudCard(root) {
   if (editPf) editPf.addEventListener('click', () => openPublicProfileModal());
   const inBtn = $('#cloud-signin', root);
   if (inBtn) inBtn.addEventListener('click', () => { if (window.__klCloud) window.__klCloud.signIn(); });
+  const inApple = $('#cloud-signin-apple', root);
+  if (inApple) inApple.addEventListener('click', () => { if (window.__klCloud && window.__klCloud.signInApple) window.__klCloud.signInApple(); });
   const outBtn = $('#cloud-signout', root);
   if (outBtn) outBtn.addEventListener('click', () => {
     if (confirm('ログアウトします。この端末のデータは残りますが、以後の変更は同期されません。')) {

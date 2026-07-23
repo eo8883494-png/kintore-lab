@@ -4,5 +4,11 @@
   "webDir": "www",
   "ios": {
     "contentInset": "always"
+  },
+  "plugins": {
+    "FirebaseAuthentication": {
+      "skipNativeAuth": true,
+      "providers": ["google.com", "apple.com"]
+    }
   }
 }

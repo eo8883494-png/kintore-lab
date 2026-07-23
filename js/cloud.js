@@ -5,7 +5,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast, equalTo, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
+  getAuth, GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-messaging.js";
 
@@ -323,6 +323,33 @@ async function reportMenu(id) {
   catch (e) { console.warn('[cloud] reportMenu failed', e); return { ok: false, reason: 'write', message: e.message }; }
 }
 
+// ===== ネイティブサインイン (Capacitor / iOS・Android) =====
+// Google はセキュリティ上 WebView 内の OAuth をブロックするため、ネイティブ層で資格情報を取得し
+// それを Firebase JS SDK に渡す(signInWithCredential)。これで onAuthStateChanged 以降の既存処理をそのまま使える。
+function isNative() { try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch (e) { return false; } }
+function nativeAuthPlugin() { return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.FirebaseAuthentication) || null; }
+
+async function nativeGoogleSignIn() {
+  const FA = nativeAuthPlugin();
+  if (!FA) throw new Error('ネイティブ認証プラグインが見つかりません');
+  const res = await FA.signInWithGoogle({ skipNativeAuth: true }); // Firebaseへのサインインは下でJS SDKが行う
+  const cr = (res && res.credential) || {};
+  if (!cr.idToken) throw new Error('Googleの資格情報を取得できませんでした');
+  const cred = GoogleAuthProvider.credential(cr.idToken, cr.accessToken || undefined);
+  return signInWithCredential(auth, cred);
+}
+
+async function nativeAppleSignIn() {
+  const FA = nativeAuthPlugin();
+  if (!FA) throw new Error('ネイティブ認証プラグインが見つかりません');
+  const res = await FA.signInWithApple({ skipNativeAuth: true });
+  const cr = (res && res.credential) || {};
+  if (!cr.idToken) throw new Error('Appleの資格情報を取得できませんでした');
+  const provider = new OAuthProvider('apple.com');
+  const cred = provider.credential({ idToken: cr.idToken, rawNonce: cr.nonce });
+  return signInWithCredential(auth, cred);
+}
+
 // ===== 公開API (app.js から利用) =====
 window.__klCloud = {
   available: !!auth,
@@ -335,8 +362,16 @@ window.__klCloud = {
     };
   },
   push,
+  nativeAuth: isNative(),   // ネイティブ実行中なら true(UIのボタン出し分け用)
   signIn() {
     if (!auth) { alert('この環境では同期を利用できません。'); return; }
+    if (isNative()) {
+      nativeGoogleSignIn().catch(err => {
+        console.warn('[cloud] native google signIn failed', err);
+        if (!(err && String(err.message || err).includes('canceled'))) alert('Googleログインに失敗しました。時間をおいて再度お試しください。');
+      });
+      return;
+    }
     const provider = new GoogleAuthProvider();
     signInWithPopup(auth, provider).catch(err => {
       // ポップアップがブロックされたらリダイレクト方式にフォールバック
@@ -347,7 +382,23 @@ window.__klCloud = {
       }
     });
   },
-  signOut() { if (auth) signOut(auth); },
+  signInApple() {
+    if (!auth) { alert('この環境では同期を利用できません。'); return; }
+    if (isNative()) {
+      nativeAppleSignIn().catch(err => {
+        console.warn('[cloud] native apple signIn failed', err);
+        if (!(err && String(err.message || err).includes('canceled'))) alert('Appleログインに失敗しました。時間をおいて再度お試しください。');
+      });
+      return;
+    }
+    const provider = new OAuthProvider('apple.com');
+    signInWithPopup(auth, provider).catch(err => console.warn('[cloud] apple signIn failed', err));
+  },
+  signOut() {
+    // ネイティブのGoogle/Appleセッションも破棄してから JS SDK をサインアウト
+    if (isNative()) { try { const FA = nativeAuthPlugin(); if (FA) FA.signOut(); } catch (e) {} }
+    if (auth) signOut(auth);
+  },
   // 通知リマインダー
   reminderStatus() {
     return { enabled: !!reminder.enabled, hour: reminder.hour, permission: (typeof Notification !== 'undefined' ? Notification.permission : 'unsupported') };
