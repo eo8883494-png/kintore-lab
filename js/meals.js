@@ -193,7 +193,8 @@ function qtyLabel(food, qty) {
 // ===== 体重ナビ: 「あと何kg増減すべきか」と実績ペース判定 =====
 function weightNav(profile, weights) {
   const hM = profile.h / 100;
-  const w = profile.w;
+  // モード/BMI判定は最新の体重記録を優先(profile.wが同期でstaleでも実体重に追従)
+  const w = (weights && weights.length) ? weights[weights.length - 1].kg : profile.w;
   const bmi = w / (hM * hM);
   const nav = { bmi: Math.round(bmi * 10) / 10, mode: 'keep', diff: 0, pace: 0, weeks: 0, msg: '', trend: null, advice: '' };
 
@@ -248,6 +249,15 @@ function weightNav(profile, weights) {
     else if (nav.trend < nav.pace * 0.4) { nav.advice = `増え方が足りない(${nav.trend}kg/週)。1日+200kcal(ご飯120g or プロテイン+バナナ)追加を。`; nav.suggestKcal = 200; nav.stalled = nav.trend <= 0.05; }
     else if (nav.trend > nav.pace * 2) { nav.advice = `増えすぎ(${nav.trend}kg/週)。脂肪が主に増えるゾーンなので1日−150kcal調整を。`; nav.suggestKcal = -150; }
     else nav.advice = `理想的な増量ペース(${nav.trend}kg/週)。筋肉主体で増えています。`;
+  }
+  // 女性の黄体期/月経期は見かけの体重増(水分)で誤停滞するので、カロリー調整の提案を保留する
+  if (profile.sex === 'f' && typeof cyclePhase === 'function' && typeof S !== 'undefined' && S.cycle && nav.suggestKcal) {
+    const cp = cyclePhase(S.cycle, todayStr());
+    if (cp && (cp.phase === 'luteal' || cp.phase === 'menstruation')) { nav.cycleHold = cp.label; nav.suggestKcal = 0; nav.stalled = false; }
+  }
+  // 直近で調整済み&その後に新しい体重記録が無ければ再提案しない(連打で下限まで下げ続けるのを防ぐ)
+  if (nav.suggestKcal && typeof S !== 'undefined' && S.lastCalAdjust && weights && weights.length) {
+    if (weights[weights.length - 1].date <= S.lastCalAdjust) { nav.adjustHold = true; nav.suggestKcal = 0; }
   }
   return nav;
 }
@@ -354,6 +364,7 @@ function renderMeals() {
     html += `<p style="font-size:13.5px">${esc(nav.msg)}</p>`;
   }
   if (nav.advice) html += `<p class="card-note">📈 ${esc(nav.advice)}</p>`;
+  if (nav.cycleHold) html += `<p class="card-note">🌙 今は<b>${esc(nav.cycleHold)}</b>で体重が水分で増減しやすい時期。停滞かどうかの判定・カロリー調整は一旦保留しています(周期が一巡すると正しく判定できます)。</p>`;
   if (nav.suggestKcal) {
     const dir = nav.suggestKcal < 0 ? '下げる' : '上げる';
     const abs = Math.abs(nav.suggestKcal);
@@ -445,6 +456,8 @@ function renderMeals() {
     const f = Math.round((newKcal * fatRatio) / 9);
     const c = Math.max(0, Math.round((newKcal - p * 4 - f * 9) / 4));
     S.mealTargets = { custom: true, p, f, c };
+    // 直近の体重記録日を記録=次の新しい体重記録が来るまで再提案しない
+    if (S.weights && S.weights.length) S.lastCalAdjust = S.weights[S.weights.length - 1].date;
     saveState();
     toast(`目標を約${Math.abs(nav.suggestKcal)}kcal${nav.suggestKcal < 0 ? '下げ' : '上げ'}ました`);
     renderMeals();

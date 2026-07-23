@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -241,6 +241,7 @@ function sanitizeState(s) {
   if (s.cycle && typeof s.cycle === 'object' && typeof s.cycle.start === 'string' && DATE_RE.test(s.cycle.start)) {
     out.cycle = { start: s.cycle.start, length: Math.round(numIn(s.cycle.length, 20, 45, 28)) };
   }
+  if (typeof s.lastCalAdjust === 'string' && DATE_RE.test(s.lastCalAdjust)) out.lastCalAdjust = s.lastCalAdjust;
   // 食事の手動PFC目標(設定時のみ・カロリーはP/F/Cから導出)
   if (s.mealTargets && typeof s.mealTargets === 'object' && s.mealTargets.custom) {
     out.mealTargets = {
@@ -411,7 +412,12 @@ function mergeStates(local, remote) {
   const lastR = { ...secondary.lastR, ...primary.lastR };
   const today = todayStr();
   const dayDone = {};
-  logs.filter(l => l.date === today).forEach(l => { (dayDone[today] = dayDone[today] || {})[l.exId] = { id: l.id, src: 'plan' }; });
+  // 既存dayDoneのsrc(plan/menu:ID)を引き継ぐ。無ければplan。マイメニュー実施中のチェックが消えるのを防ぐ
+  const priorSrc = { ...((secondary.dayDone || {})[today] || {}), ...((primary.dayDone || {})[today] || {}) };
+  logs.filter(l => l.date === today).forEach(l => {
+    const prev = ddGet(priorSrc, l.exId);
+    (dayDone[today] = dayDone[today] || {})[l.exId] = { id: l.id, src: prev ? prev.src : 'plan' };
+  });
 
   const out = defaultState();
   Object.assign(out, {
@@ -427,6 +433,7 @@ function mergeStates(local, remote) {
   out.timerPresets = [...tpMap.values()].slice(0, 30);
   out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
   out.cycle = primary.cycle || secondary.cycle; // 生理周期はprimary優先
+  out.lastCalAdjust = primary.lastCalAdjust || secondary.lastCalAdjust || '';
   // 公開プロフィール(表示名・アイコン・画像・アピール・リンク)を引き継ぐ(mergeで消さない)
   out.publicName = primary.publicName || secondary.publicName || '';
   out.publicIcon = primary.publicIcon || secondary.publicIcon || '';
@@ -797,10 +804,11 @@ function progressiveTarget(exId, item, ex) {
   const topReps = last.sets.filter(s => (s.w || 0) >= lastW).map(s => s.r || 0);
   if (hi && topReps.length && topReps.every(r => r >= hi)) {
     let inc = ex.equipment === 'barbell' ? 2.5 : (ex.compound ? 2 : 1);
-    const rir = minRir(last); // 前回のキツさ(残り何回)
+    const rir = minRir(last); // 前回のキツさ(残り何回)。99=未記録
+    const hasRir = rir !== 99;
     let note = '';
-    if (rir >= 2) { inc *= 2; note = '(余裕あり=大きめに)'; }        // 楽だった→大きく上げる
-    else if (rir === 0) { note = '(限界だった=無理なら据え置き)'; }   // 限界→通常の刻み
+    if (hasRir && rir >= 2) { inc *= 2; note = '(余裕あり=大きめに)'; }        // 楽だった→大きく上げる
+    else if (hasRir && rir === 0) { note = '(限界だった=無理なら据え置き)'; }  // 限界→通常の刻み
     const nw = Math.round((lastW + inc) * 2) / 2;
     return { prefill: nw, up: true, hint: `前回 ${lastW}kg で${hi}回クリア${note}→ 今回 ${nw}kg に上げどき💪` };
   }
@@ -1000,6 +1008,9 @@ function findCarryover(excludeIds) {
   recoveryStatus(pastLogs, DB.byId).forEach(r => { recov[r.part] = r.state; });
   const lastTrained = [...new Set(pastLogs.map(l => l.date))].filter(d => d < today).sort().reverse()[0];
   if (!lastTrained) return [];
+  // 前回がマイメニュー実施日(プラン文脈の完了が1つも無い)なら、意図的に別メニューをやった日=積み残し提案しない
+  const ltDone = S.dayDone[lastTrained];
+  if (ltDone && Object.keys(ltDone).length && !Object.keys(ltDone).some(k => { const e = ddGet(ltDone, k); return e && e.src === 'plan'; })) return [];
   const dow = new Date(lastTrained + 'T12:00:00').getDay();
   const day = S.plan.days.find(x => x.weekday === dow);
   if (!day) return [];
@@ -1132,6 +1143,7 @@ function renderHome() {
 
     homeCarry = ctx.carry; // チェック処理と表示のズレを防ぐスナップショット
     const curCtxKey = ctxKeyOf(ctx); // 通常プランとマイメニューでチェック状態を分離
+    const deloadActive = !!deloadSignal(); // ディロード中は増量提案を出さない(矛盾回避)
     const exRow = (it, isCarry, idx) => {
       const ex = DB.byId[it.exId];
       if (!ex) return '';
@@ -1144,12 +1156,14 @@ function renderHome() {
       const unit = ex.isometric ? '秒キープ' : '回';
       const rUnit = ex.isometric ? '秒' : '回';
       const scKey = curCtxKey + '|' + it.exId;
-      const cnt = done ? it.sets : ((S.setCount[today] && S.setCount[today][scKey]) || 0);
+      const doneLog = done && de ? S.logs.find(l => l.id === de.id) : null;
+      // 完了時は実際に記録したセット数を採用(完了後にプランのセット数を編集しても表示がズレない)
+      const cnt = done ? (doneLog ? doneLog.sets.length : it.sets) : ((S.setCount[today] && S.setCount[today][scKey]) || 0);
       const dots = Array.from({ length: it.sets }, (_, i) => `<span class="sd ${i < cnt ? 'on' : ''}" data-i="${i}"></span>`).join('');
       const po = progressiveTarget(it.exId, it, ex); // 漸進性過負荷: 前回実績→今回の狙い
-      const wVal = po && po.prefill != null ? po.prefill : (lastW != null ? lastW : '');
-      let rir; // 完了後のキツさ(RIR)
-      if (done && de) { const lg = S.logs.find(l => l.id === de.id); rir = lg && lg.sets[0] ? lg.sets[0].rir : undefined; }
+      // 入力欄は前回実績(lastW)を初期値に。提案重量はヒント表示のみ=未挙上の重量を誤記録しない
+      const wVal = lastW != null ? lastW : '';
+      const rir = doneLog && doneLog.sets[0] ? doneLog.sets[0].rir : undefined; // 完了後のキツさ(RIR)
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
@@ -1157,7 +1171,9 @@ function renderHome() {
             <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
             <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
             <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
-            ${po && po.hint && !done ? `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>` : ''}
+            ${po && po.hint && !done ? (deloadActive && po.up
+              ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
+              : `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>`) : ''}
             ${done ? (rir == null
               ? `<div class="rir-pick" data-ex="${it.exId}">今日のキツさ: <button class="rirb" data-rir="3">楽</button><button class="rirb" data-rir="1">普通</button><button class="rirb" data-rir="0">限界</button></div>`
               : `<div class="rir-label">キツさ: ${rirLabel(rir)}</div>`) : ''}
@@ -1313,7 +1329,12 @@ function setExerciseProgress(exId, newCount) {
   const wasDone = !!(de && de.src === ck);
   // 満了 → 記録(自動チェック)。満了未満へ戻す → 記録解除。どちらも toggleDone が再描画する
   if (newCount >= total && !wasDone) { saveState(); toggleDone(exId, true); return; }
-  if (newCount < total && wasDone) { saveState(); toggleDone(exId, false); return; }
+  if (newCount < total && wasDone) {
+    toggleDone(exId, false); // 記録解除(この中でsetCountも消える)
+    // 1セットだけ戻した進捗は残す(0リセットしない)
+    if (newCount > 0) { if (!S.setCount[today]) S.setCount[today] = {}; S.setCount[today][key] = newCount; saveState(); renderHome(); }
+    return;
+  }
   // 途中のセット完了(増加時のみ)は休憩タイマーを出す
   if (newCount > prev && newCount < total) {
     const ex = DB.byId[exId];
@@ -1340,11 +1361,16 @@ function toggleDone(exId, checked) {
     const rinp = $(`input.rinp[data-ex="${exId}"]`);
     const r = rinp && Number(rinp.value) > 0 ? Math.round(Number(rinp.value)) : repMid(item.reps); // 実際の回数を優先(未入力なら目標の中央値)
     if (r > 0) S.lastR[exId] = r;
-    const logId = newId();
-    S.logs.push({
-      id: logId, date: today, exId,
-      sets: Array.from({ length: item.sets }, () => ({ w, r })),
-    });
+    // 同日・同種目の既存ログがあれば再利用(文脈違い/クイック記録との重複=週間ボリューム二重計上を防ぐ)
+    const existing = S.logs.find(l => l.date === today && l.exId === exId);
+    let logId;
+    if (existing) {
+      logId = existing.id;
+      existing.sets = Array.from({ length: item.sets }, () => ({ w, r }));
+    } else {
+      logId = newId();
+      S.logs.push({ id: logId, date: today, exId, sets: Array.from({ length: item.sets }, () => ({ w, r })) });
+    }
     S.dayDone[today][exId] = { id: logId, src: ck };
     if (!S.setCount[today]) S.setCount[today] = {};
     S.setCount[today][ck + '|' + exId] = item.sets; // ドット表示を満了に同期
@@ -1569,6 +1595,19 @@ function recomputePlanDerived() {
   });
   S.plan.weeklySets = ws;
 }
+// プラン種目を削除/差し替えする時、当日そのプラン種目を完了済みなら記録も掃除する(幽霊化・ボリューム水増し防止)
+function clearTodayPlanCompletion(exId) {
+  const today = todayStr();
+  const dd = S.dayDone[today];
+  if (dd && dd[exId]) {
+    const e = ddGet(dd, exId);
+    if (e && e.src === 'plan') {
+      S.logs = S.logs.filter(l => l.id !== e.id);
+      delete dd[exId];
+      if (S.setCount[today]) delete S.setCount[today]['plan|' + exId];
+    }
+  }
+}
 
 // プラン: 1種目のセット/レップ/休憩を自由編集(+削除・種目変更)
 function openPlanItemEditor(di, ii) {
@@ -1600,6 +1639,7 @@ function openPlanItemEditor(di, ii) {
     recomputePlanDerived(); saveState(); closeModal(); toast('更新しました'); route();
   });
   $('#pe-del', bg).addEventListener('click', () => {
+    clearTodayPlanCompletion(item.exId); // 当日の完了記録も掃除
     day.items.splice(ii, 1);
     recomputePlanDerived(); saveState(); closeModal(); toast('削除しました'); route();
   });
@@ -1634,8 +1674,10 @@ function openPlanExercisePicker(di, replaceIi) {
         rest: restFor(e, goal),
         priority: base ? base.priority : false,
       };
-      if (replaceIi != null) S.plan.days[di].items[replaceIi] = newItem;
-      else S.plan.days[di].items.push(newItem);
+      if (replaceIi != null) {
+        clearTodayPlanCompletion(S.plan.days[di].items[replaceIi].exId); // 差し替え前の種目の当日記録を掃除
+        S.plan.days[di].items[replaceIi] = newItem;
+      } else S.plan.days[di].items.push(newItem);
       recomputePlanDerived(); saveState(); closeModal();
       toast(replaceIi != null ? '種目を変更しました' : '種目を追加しました');
       route();
@@ -1795,10 +1837,17 @@ function importPublicMenu(pm) {
   if (S.myMenus.length >= 20) { toast('マイメニューは20件までです'); return; }
   let maxN = 0;
   S.customEx.forEach(e => { const n = Number((String(e.id).match(/\d+$/) || [0])[0]); if (n > maxN) maxN = n; });
+  // リモート(公開ギャラリー)の値は信頼せずクランプ(sanitizeStateのmyMenus.itemsと同規則)
+  const clampSets = v => Math.round(numIn(v, 1, 10, 3));
+  const clampRest = v => Math.round(numIn(v, 15, 600, 90));
+  const clampReps = v => typeof v === 'string' ? v.slice(0, 20) : '10-15';
   const items = (pm.items || []).slice(0, 15).map(it => {
     // 標準DBの種目はそのまま。相手のオリジナル種目(custom-*)はid衝突を避けて必ず新規作成する
     const isCustomId = /^custom-/.test(String(it.exId || ''));
-    if (DB.byId[it.exId] && !isCustomId) return { exId: it.exId, part: it.part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
+    if (DB.byId[it.exId] && !isCustomId) {
+      const ex = DB.byId[it.exId];
+      return { exId: it.exId, part: SCIENCE.partMap[it.part] ? it.part : ex.part, sets: clampSets(it.sets), reps: clampReps(it.reps), rest: clampRest(it.rest), priority: false };
+    }
     const part = SCIENCE.partMap[it.part] ? it.part : 'abs';
     const id = 'custom-' + (++maxN);
     S.customEx.push({
@@ -1807,7 +1856,7 @@ function importPublicMenu(pm) {
       form: ['取り込んだ種目: いつものフォームでOK', '効かせたい部位を意識する', '無理のない重量で丁寧に'],
       mistake: '', repHyp: '10-15', repStr: '8-12', repEnd: '15-20', custom: true,
     });
-    return { exId: id, part, sets: it.sets, reps: it.reps, rest: it.rest, priority: false };
+    return { exId: id, part, sets: clampSets(it.sets), reps: clampReps(it.reps), rest: clampRest(it.rest), priority: false };
   }).filter(Boolean);
   if (!items.length) { toast('取り込める種目がありませんでした'); return; }
   rebuildDB(S.customEx);
