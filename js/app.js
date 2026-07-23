@@ -946,6 +946,10 @@ const PRO_PLANS = [
   { id: 'monthly', label: '月額プラン', price: '¥680', sub: '/月', per: '', best: false },
 ];
 let pwPlan = 'annual'; // 既定は年間(おすすめ)
+function pwTermsText() {
+  const p = PRO_PLANS.find(x => x.id === pwPlan) || PRO_PLANS[0];
+  return `7日間無料 → その後 ${p.price}${p.sub}（${p.label}）。1週間以内に解約・プラン変更しなければ自動で課金されます。`;
+}
 function paywallHtml() {
   const feats = [
     ['🧪', '効率シミュレーター', '時間×頻度で"どれだけ変わるか"を予測'],
@@ -972,7 +976,8 @@ function paywallHtml() {
     </ul>
     <div class="pw-plans">${plans}</div>
     <button class="btn pw-cta" id="pw-start">1週間無料で始める</button>
-    <p class="pw-legal">🎁 最初の7日間は無料。トライアル終了後は選択したプランで<b>自動的に継続課金</b>されます。解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
+    <div class="pw-terms" id="pw-terms">${pwTermsText()}</div>
+    <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
   </div>`;
 }
@@ -980,6 +985,7 @@ function bindPaywall(bg) {
   bg.querySelectorAll('[data-plan]').forEach(b => b.addEventListener('click', () => {
     pwPlan = b.dataset.plan;
     bg.querySelectorAll('[data-plan]').forEach(x => x.classList.toggle('sel', x.dataset.plan === pwPlan));
+    const t = bg.querySelector('#pw-terms'); if (t) t.textContent = pwTermsText();
   }));
   const start = $('#pw-start', bg);
   if (start) start.addEventListener('click', () => {
