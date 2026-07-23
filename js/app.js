@@ -102,7 +102,7 @@ async function importHealthWeight() {
   const H = healthPlugin();
   if (!H) { toast('この端末ではApple Healthを使えません'); return; }
   try {
-    try { await H.requestAuthorization({ read: ['steps', 'weight', 'sleep'], write: ['weight'] }); }
+    try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
     catch (e) { console.warn('[health] auth denied', e); toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
@@ -131,9 +131,8 @@ async function importHealthWeight() {
     haptic('success');
     // 先に体重反映で再描画 → その後に歩数を表示欄へ(再描画でDOMが作り直されるため順序が重要)
     if (typeof renderLog === 'function' && (added || updated)) renderLog();
-    const [steps, sleep] = await Promise.all([queryTodaySteps(H), queryLastSleep(H)]);
+    const steps = await queryTodaySteps(H);
     hkTodaySteps = { date: todayStr(), steps };
-    hkLastSleep = { date: todayStr(), minutes: sleep };
     const hp = loadHealthPref(); hp.autoSteps = true; saveHealthPref(hp); // 以後ホームに歩数・睡眠を表示
     const stepEl = document.getElementById('hk-steps');
     if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
@@ -159,36 +158,90 @@ async function writeHealthWeight(kg, dateStr) {
 function loadHealthPref() { try { return { autoSteps: false, ...JSON.parse(localStorage.getItem('kintoreLab.health') || '{}') }; } catch (e) { return { autoSteps: false }; } }
 function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSON.stringify(p)); } catch (e) {} }
 let hkTodaySteps = { date: '', steps: null };
-let hkLastSleep = { date: '', minutes: null };
-// 昨夜の睡眠(分)を取得。段階データがあれば段階(rem/deep/light)を、無ければasleepを合算(inBed/awakeは除外)
-async function queryLastSleep(H) {
-  const end = new Date();
-  const start = new Date(end.getTime() - 24 * 3600 * 1000);
-  try {
-    const r = await H.readSamples({ dataType: 'sleep', startDate: start.toISOString(), endDate: end.toISOString() });
-    const rows = (r && r.samples) || [];
-    const stageStates = ['rem', 'deep', 'light', 'core'];
-    const hasStages = rows.some(s => stageStates.includes(String(s.sleepState || '').toLowerCase()));
-    let mins = 0;
-    rows.forEach(s => {
-      const st = String(s.sleepState || '').toLowerCase();
-      if (hasStages) { if (stageStates.includes(st)) mins += Number(s.value) || 0; }
-      else if (st === 'asleep') mins += Number(s.value) || 0;
-    });
-    mins = Math.round(mins);
-    return mins > 0 ? mins : null;
-  } catch (e) { console.warn('[health] read sleep failed', e); return null; }
-}
-// 今日の歩数・昨夜の睡眠を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
+// 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
 async function refreshHealthToday() {
   if (!isNativeApp()) return;
   if (!loadHealthPref().autoSteps) return;
   const H = healthPlugin();
   if (!H) return;
-  const [steps, sleep] = await Promise.all([queryTodaySteps(H), queryLastSleep(H)]);
+  const steps = await queryTodaySteps(H);
   hkTodaySteps = { date: todayStr(), steps };
-  hkLastSleep = { date: todayStr(), minutes: sleep };
   updateHealthDisplays();
+}
+
+// ===== 睡眠推定(端末の無操作時間から。HealthKitに睡眠が無い人向け・誤差ありなので修正可) =====
+const SLEEP_MIN_GAP = 180;    // 3時間以上の無操作を睡眠候補とみなす(分)
+const SLEEP_MAX = 16 * 60;    // 上限16時間
+function loadSleepLog() { try { return JSON.parse(localStorage.getItem('kintoreLab.sleepLog') || '{}'); } catch (e) { return {}; } }
+function saveSleepLog(o) { try { localStorage.setItem('kintoreLab.sleepLog', JSON.stringify(o)); } catch (e) {} }
+function markActive() { try { localStorage.setItem('kintoreLab.lastActive', String(Date.now())); } catch (e) {} }
+function sleepMinutesFor(dateStr) { const l = loadSleepLog(); return (l[dateStr] && l[dateStr].min != null) ? Number(l[dateStr].min) : null; }
+function sleepEditedFor(dateStr) { const l = loadSleepLog(); return !!(l[dateStr] && l[dateStr].edited); }
+function setSleepManual(dateStr, minutes) {
+  const l = loadSleepLog();
+  l[dateStr] = { ...(l[dateStr] || {}), min: Math.max(0, Math.min(SLEEP_MAX, Math.round(minutes))), edited: true };
+  saveSleepLog(l);
+}
+// 推定/修正した睡眠を Apple Health / Health Connect にも書き込む(best-effort・失敗しても無害)
+async function writeHealthSleep(dateStr) {
+  const H = healthPlugin();
+  if (!H) return;
+  const l = loadSleepLog();
+  const rec = l[dateStr];
+  if (!rec || !(Number(rec.min) > 0)) return;
+  if (rec.written === rec.min) return; // 同内容の重複書き込みを避ける
+  let end;
+  if (rec.end) end = new Date(rec.end);
+  else { end = new Date(); end.setHours(7, 0, 0, 0); } // 起床時刻の既定=当日7:00
+  const start = new Date(end.getTime() - rec.min * 60000);
+  try {
+    await H.requestAuthorization({ read: [], write: ['sleep'] });
+    await H.saveSample({ dataType: 'sleep', value: Math.round(rec.min), unit: 'minute', startDate: start.toISOString(), endDate: end.toISOString() });
+    l[dateStr] = { ...rec, written: rec.min };
+    saveSleepLog(l);
+  } catch (e) { console.warn('[health] write sleep failed', e); }
+}
+// アプリ復帰/起動時: 前回操作からの無操作ギャップを睡眠として推定(朝=3〜11時の起床のみ・手修正日は上書きしない)
+function detectSleepFromGap() {
+  let last = 0;
+  try { last = Number(localStorage.getItem('kintoreLab.lastActive')) || 0; } catch (e) {}
+  const now = Date.now();
+  if (last) {
+    const gap = Math.round((now - last) / 60000);
+    const wakeHour = new Date(now).getHours();
+    if (gap >= SLEEP_MIN_GAP && gap <= SLEEP_MAX && wakeHour >= 3 && wakeHour <= 11) {
+      const d = todayStr();
+      const l = loadSleepLog();
+      if (!(l[d] && l[d].edited)) { l[d] = { min: gap, start: last, end: now, edited: false }; saveSleepLog(l); writeHealthSleep(d); }
+    }
+  }
+  markActive();
+}
+// 睡眠時間の手修正モーダル
+function openSleepEdit() {
+  const cur = sleepMinutesFor(todayStr());
+  const ch = cur != null ? Math.floor(cur / 60) : 7;
+  const cm = cur != null ? Math.round((cur % 60) / 15) * 15 % 60 : 0;
+  const hOpts = Array.from({ length: 15 }, (_, i) => i).map(h => `<option value="${h}" ${h === ch ? 'selected' : ''}>${h}</option>`).join('');
+  const mOpts = [0, 15, 30, 45].map(m => `<option value="${m}" ${m === cm ? 'selected' : ''}>${String(m).padStart(2, '0')}</option>`).join('');
+  const bg = openModal(`<h2>😴 昨夜の睡眠</h2>
+    <p class="modal-sub">端末を触っていない時間からの推定です。実際に合わせて修正できます。</p>
+    <div class="grid2" style="margin-top:12px">
+      <div class="field"><label>時間</label><select id="sl-h">${hOpts}</select></div>
+      <div class="field"><label>分</label><select id="sl-m">${mOpts}</select></div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" onclick="closeModal()">閉じる</button>
+      <button class="btn" id="sl-save">保存</button>
+    </div>`);
+  $('#sl-save', bg).addEventListener('click', () => {
+    const h = Number($('#sl-h', bg).value), m = Number($('#sl-m', bg).value);
+    setSleepManual(todayStr(), h * 60 + m);
+    writeHealthSleep(todayStr()); // Apple Healthにも反映
+    closeModal();
+    updateHealthDisplays();
+    toast('睡眠時間を更新しました');
+  });
 }
 function updateHealthDisplays() {
   const steps = (hkTodaySteps.date === todayStr()) ? hkTodaySteps.steps : null;
@@ -198,30 +251,34 @@ function updateHealthDisplays() {
   document.querySelectorAll('[data-step-kcal]').forEach(el => { el.textContent = String(kcal); });
   const hk = document.getElementById('hk-steps');
   if (hk && steps != null) hk.textContent = `🚶 今日の歩数: ${steps.toLocaleString()}歩`;
-  // 睡眠
-  const sMin = (hkLastSleep.date === todayStr()) ? hkLastSleep.minutes : null;
+  // 睡眠(端末の無操作から推定・タップで修正)
+  const sMin = sleepMinutesFor(todayStr());
+  const edited = sleepEditedFor(todayStr());
   document.querySelectorAll('[data-sleep-line]').forEach(el => {
     if (sMin != null) {
       const h = Math.floor(sMin / 60), m = sMin % 60;
-      const q = sMin < 360 ? '⚠️ 睡眠不足ぎみ(筋合成が落ちやすい)' : sMin >= 420 ? '✅ 十分に取れています' : 'もう少し欲しいところ';
-      el.textContent = `😴 昨夜の睡眠 ${h}時間${m}分 ・ ${q}`;
-    } else el.textContent = '😴 昨夜の睡眠 データなし';
+      const q = sMin < 360 ? '⚠️ 睡眠不足ぎみ' : sMin >= 420 ? '✅ 十分' : 'もう少し欲しい';
+      el.innerHTML = `😴 昨夜の睡眠 <b style="color:var(--ink)">${h}時間${m}分</b> ・ ${q} <span style="color:var(--accent2)">${edited ? '✎ 修正済' : '(推定・タップで修正)'}</span>`;
+    } else {
+      el.innerHTML = '😴 昨夜の睡眠 <span style="color:var(--accent2)">タップで入力</span>';
+    }
   });
 }
-// ホームの「今日のカラダ」カード(歩数+睡眠)。ネイティブ+同期オプトイン済み+プロフィールありのみ
+// ホームの「今日のカラダ」カード(歩数+睡眠推定)。ネイティブ+プロフィールありで表示。歩数はApple Health同期済みのみ
 function healthTodayCardHtml() {
-  if (!(isNativeApp() && S.profile && loadHealthPref().autoSteps)) return '';
+  if (!(isNativeApp() && S.profile)) return '';
   const goal = S.profile.goal;
   const note = goal === 'diet' ? '歩いた分は減量の"貯金"。無理な食事制限より歩数を積むのが続けやすい脂肪減です。'
     : (goal === 'hyp' || goal === 'str') ? '増量中はこの活動分の補給も忘れずに(不足だと増えにくい)。'
     : '日々の活動量の目安。よく歩いた日は消費も増えています。';
-  return `<div class="card"><h2>📲 今日のカラダ<span class="sub">Apple Health</span></h2>
-    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px">
+  const showSteps = loadHealthPref().autoSteps;
+  return `<div class="card"><h2>📲 今日のカラダ</h2>
+    ${showSteps ? `<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:8px">
       <div>🚶 <span class="big" data-step-steps>—</span><small> 歩</small></div>
       <div style="color:var(--ink-dim)">活動 約<b style="color:var(--accent)" data-step-kcal>0</b> kcal</div>
-    </div>
-    <div style="color:var(--ink-dim);font-size:13.5px" data-sleep-line>😴 昨夜の睡眠 —</div>
-    <p class="card-note">${note}</p>
+    </div>` : ''}
+    <div class="sleep-row" id="sleep-row" data-sleep-line style="font-size:13.5px;color:var(--ink-dim);padding:6px 0;cursor:pointer">😴 昨夜の睡眠 —</div>
+    <p class="card-note">${showSteps ? note : '睡眠は端末の使用状況から自動推定(タップで修正)。歩数は記録タブの「Apple Healthと同期」で表示されます。'}</p>
   </div>`;
 }
 
@@ -1556,8 +1613,13 @@ function renderHome() {
 
   root.innerHTML = html;
 
-  // カードがあれば、描画後に最新の歩数・睡眠を非同期取得して埋める
-  if (isNativeApp()) { updateHealthDisplays(); refreshHealthToday(); }
+  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正
+  if (isNativeApp()) {
+    updateHealthDisplays();
+    refreshHealthToday();
+    const sleepRow = $('#sleep-row', root);
+    if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
+  }
 
   const setup = $('#home-setup', root);
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
@@ -3231,14 +3293,18 @@ function refreshFromStorage() {
 }
 window.addEventListener('storage', e => { if (e.key === LS_KEY) refreshFromStorage(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) { markActive(); return; } // 離脱時刻を記録(睡眠推定の起点)
   if (timer.iv) tickTimer(); // ロック中に満了したタイマーは復帰直後に鳴らす
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
+  detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
   refreshFromStorage();
+  if (isNativeApp()) updateHealthDisplays();
 });
 
 // ===== 起動 =====
 document.addEventListener('DOMContentLoaded', () => {
+  detectSleepFromGap();               // 起動時: 前回操作からの無操作ギャップを睡眠推定(朝の起床時)
+  setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
   route();
   if (!S.profile) openProfileWizard(true);
   // 浮遊レストタイマーのボタン (静的要素なので一度だけ束縛)
