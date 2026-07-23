@@ -5,7 +5,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast, equalTo, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import {
-  getAuth, GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
+  getAuth, initializeAuth, indexedDBLocalPersistence, GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-messaging.js";
 
@@ -26,7 +26,13 @@ let app, db, auth;
 try {
   app = initializeApp(firebaseConfig);
   db = getDatabase(app);
-  auth = getAuth(app);
+  // Capacitorネイティブ(capacitor://localhost)では、getAuth() が内部に持つ redirect リゾルバが
+  // authDomain の iframe を読もうとして signInWithCredential ごとハングする。
+  // native時はリゾルバを持たない initializeAuth を使い、getRedirectResult も呼ばない(下部参照)。
+  const nativeEnv = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+  auth = nativeEnv
+    ? initializeAuth(app, { persistence: [indexedDBLocalPersistence, browserLocalPersistence] })
+    : getAuth(app);
 } catch (e) {
   console.warn('[cloud] Firebase init failed — 同期は無効、ローカルのみで動作します', e);
 }
@@ -329,14 +335,25 @@ async function reportMenu(id) {
 function isNative() { try { return !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()); } catch (e) { return false; } }
 function nativeAuthPlugin() { return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.FirebaseAuthentication) || null; }
 
+// ハング検知用: 一定時間で reject させる(WebView内でsignInWithCredentialが無応答なら原因特定できるように)
+function withTimeout(promise, ms, label) {
+  let t;
+  const timer = new Promise((_, rej) => { t = setTimeout(() => rej(new Error((label || '処理') + ' timeout ' + ms + 'ms')), ms); });
+  return Promise.race([promise, timer]).finally(() => clearTimeout(t));
+}
+
 async function nativeGoogleSignIn() {
   const FA = nativeAuthPlugin();
   if (!FA) throw new Error('ネイティブ認証プラグインが見つかりません');
   const res = await FA.signInWithGoogle({ skipNativeAuth: true }); // Firebaseへのサインインは下でJS SDKが行う
   const cr = (res && res.credential) || {};
+  console.log('[cloud] google native cred: idToken=' + !!cr.idToken + ' accessToken=' + !!cr.accessToken);
   if (!cr.idToken) throw new Error('Googleの資格情報を取得できませんでした');
   const cred = GoogleAuthProvider.credential(cr.idToken, cr.accessToken || undefined);
-  return signInWithCredential(auth, cred);
+  console.log('[cloud] signInWithCredential start (google)');
+  const uc = await withTimeout(signInWithCredential(auth, cred), 15000, 'signInWithCredential');
+  console.log('[cloud] signInWithCredential OK uid=' + (uc && uc.user && uc.user.uid));
+  return uc;
 }
 
 async function nativeAppleSignIn() {
@@ -347,7 +364,8 @@ async function nativeAppleSignIn() {
   if (!cr.idToken) throw new Error('Appleの資格情報を取得できませんでした');
   const provider = new OAuthProvider('apple.com');
   const cred = provider.credential({ idToken: cr.idToken, rawNonce: cr.nonce });
-  return signInWithCredential(auth, cred);
+  const uc = await withTimeout(signInWithCredential(auth, cred), 15000, 'signInWithCredential');
+  return uc;
 }
 
 // ===== 公開API (app.js から利用) =====
@@ -367,8 +385,9 @@ window.__klCloud = {
     if (!auth) { alert('この環境では同期を利用できません。'); return; }
     if (isNative()) {
       nativeGoogleSignIn().catch(err => {
-        console.warn('[cloud] native google signIn failed', err);
-        if (!(err && String(err.message || err).includes('canceled'))) alert('Googleログインに失敗しました。時間をおいて再度お試しください。');
+        const msg = (err && (err.code || err.message)) || String(err);
+        console.warn('[cloud] native google signIn failed', msg, err);
+        if (!String(msg).includes('canceled')) alert('Googleログイン失敗: ' + msg);
       });
       return;
     }
@@ -386,8 +405,9 @@ window.__klCloud = {
     if (!auth) { alert('この環境では同期を利用できません。'); return; }
     if (isNative()) {
       nativeAppleSignIn().catch(err => {
-        console.warn('[cloud] native apple signIn failed', err);
-        if (!(err && String(err.message || err).includes('canceled'))) alert('Appleログインに失敗しました。時間をおいて再度お試しください。');
+        const msg = (err && (err.code || err.message)) || String(err);
+        console.warn('[cloud] native apple signIn failed', msg, err);
+        if (!String(msg).includes('canceled')) alert('Appleログイン失敗: ' + msg);
       });
       return;
     }
@@ -408,8 +428,11 @@ window.__klCloud = {
 
 // ===== 認証状態の監視 =====
 if (auth) {
-  setPersistence(auth, browserLocalPersistence).catch(() => {});
-  getRedirectResult(auth).catch(() => {});
+  // Webのみ: リダイレクト方式の後処理。ネイティブでは redirect リゾルバを持たないので呼ばない(ハング要因)。
+  if (!isNative()) {
+    setPersistence(auth, browserLocalPersistence).catch(() => {});
+    getRedirectResult(auth).catch(() => {});
+  }
   onAuthStateChanged(auth, user => {
     if (user) onLogin(user);
     else onLogout();
