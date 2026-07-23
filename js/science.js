@@ -106,6 +106,13 @@ function calcBurn(mets, weightKg, minutes) {
   return Math.round(mets * weightKg * (minutes / 60) * 1.05);
 }
 
+// 歩数からの活動消費カロリー(概算): 体重kg × 歩数 × 0.0005(70kgで1万歩≈350kcal)
+function stepKcal(steps, weightKg) {
+  const s = Number(steps), w = Number(weightKg);
+  if (!(s > 0) || !(w > 0)) return 0;
+  return Math.round(s * w * 0.0005);
+}
+
 // セッション消費カロリー: 種目ごとのMETsで実施時間を、休憩はMETs1.8で積算
 function sessionBurn(items, exDb, weightKg) {
   let kcal = SCIENCE.warmupMin / 60 * 3.5 * weightKg * 1.05; // ウォームアップ

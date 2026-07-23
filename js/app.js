@@ -132,6 +132,8 @@ async function importHealthWeight() {
     // 先に体重反映で再描画 → その後に歩数を表示欄へ(再描画でDOMが作り直されるため順序が重要)
     if (typeof renderLog === 'function' && (added || updated)) renderLog();
     const steps = await queryTodaySteps(H);
+    hkTodaySteps = { date: todayStr(), steps };
+    const hp = loadHealthPref(); hp.autoSteps = true; saveHealthPref(hp); // 以後ホームに歩数を表示
     const stepEl = document.getElementById('hk-steps');
     if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
     if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
@@ -150,6 +152,45 @@ async function writeHealthWeight(kg, dateStr) {
     const iso = when.toISOString();
     await H.saveSample({ dataType: 'weight', value: Math.round(v * 10) / 10, unit: 'kilogram', startDate: iso, endDate: iso });
   } catch (e) { console.warn('[health] write weight failed', e); }
+}
+
+// 歩数のホーム表示/カロリー反映の設定(端末内)。一度でも同期したら autoSteps=true
+function loadHealthPref() { try { return { autoSteps: false, ...JSON.parse(localStorage.getItem('kintoreLab.health') || '{}') }; } catch (e) { return { autoSteps: false }; } }
+function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSON.stringify(p)); } catch (e) {} }
+let hkTodaySteps = { date: '', steps: null };
+// 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
+async function refreshTodaySteps() {
+  if (!isNativeApp()) return;
+  if (!loadHealthPref().autoSteps) return;
+  const H = healthPlugin();
+  if (!H) return;
+  const steps = await queryTodaySteps(H);
+  hkTodaySteps = { date: todayStr(), steps };
+  updateStepDisplays();
+}
+function updateStepDisplays() {
+  const steps = (hkTodaySteps.date === todayStr()) ? hkTodaySteps.steps : null;
+  const w = S.profile ? S.profile.w : 0;
+  const kcal = steps != null ? stepKcal(steps, w) : 0;
+  document.querySelectorAll('[data-step-steps]').forEach(el => { el.textContent = steps != null ? steps.toLocaleString() : '—'; });
+  document.querySelectorAll('[data-step-kcal]').forEach(el => { el.textContent = String(kcal); });
+  const hk = document.getElementById('hk-steps');
+  if (hk && steps != null) hk.textContent = `🚶 今日の歩数: ${steps.toLocaleString()}歩`;
+}
+// ホームの歩数カード(ネイティブ+同期オプトイン済み+プロフィールありのみ)
+function stepsCardHtml() {
+  if (!(isNativeApp() && S.profile && loadHealthPref().autoSteps)) return '';
+  const goal = S.profile.goal;
+  const note = goal === 'diet' ? '歩いた分は減量の"貯金"。無理な食事制限より歩数を積むのが続けやすい脂肪減です。'
+    : (goal === 'hyp' || goal === 'str') ? '増量中はこの活動分の補給も忘れずに(不足だと増えにくい)。'
+    : '日々の活動量の目安。よく歩いた日は消費も増えています。';
+  return `<div class="card"><h2>🚶 今日の歩数<span class="sub">Apple Health</span></h2>
+    <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+      <div><span class="big" data-step-steps>—</span><small> 歩</small></div>
+      <div style="color:var(--ink-dim)">活動 約<b style="color:var(--accent)" data-step-kcal>0</b> kcal</div>
+    </div>
+    <p class="card-note">${note}</p>
+  </div>`;
 }
 
 // ===== ローカル通知(トレ通知・端末内で完結・ログイン/サーバー不要) =====
@@ -1373,6 +1414,8 @@ function renderHome() {
       <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
     </div>`;
 
+  html += stepsCardHtml(); // 歩数カード(ネイティブ+同期済みのみ・空文字なら非表示)
+
   const ctx0 = todayPlanContext();
   if (!S.profile && !ctx0.myMenu) {
     html += `<div class="card"><div class="empty"><span class="big-emoji">💪</span>まずはプロフィール設定から。<br>30秒であなた専用メニューを作ります。</div>
@@ -1480,6 +1523,9 @@ function renderHome() {
   html += cycleCardHtml();
 
   root.innerHTML = html;
+
+  // 歩数カードがあれば、描画後に最新の歩数を非同期取得して埋める
+  if (isNativeApp()) { updateStepDisplays(); refreshTodaySteps(); }
 
   const setup = $('#home-setup', root);
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
