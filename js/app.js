@@ -1423,6 +1423,18 @@ function exSearchName(ex) {
 
 // ===== 種目詳細モーダル =====
 // restSec を渡すと「この種目の休憩タイマー」ボタンを表示する
+// ===== 種目の埋め込み動画(YouTube動画ID) =====
+// 種目ID(またはRECOVERY_MOVESのID) → YouTube動画ID。登録した種目だけモーダル内にプレイヤーが出る。
+// 友人のトレ動画ができたらここに1行足すだけ(未登録種目は従来どおりYouTube検索ボタン)。
+const EX_VIDEOS = {
+  // 例: 'bench-press': 'dQw4w9WgXcQ',
+};
+function exVideoHtml(id) {
+  const vid = EX_VIDEOS[id];
+  if (!vid || !/^[\w-]{6,20}$/.test(vid)) return '';
+  return `<div class="ex-video"><iframe src="https://www.youtube-nocookie.com/embed/${vid}?playsinline=1&rel=0" title="フォーム動画" frameborder="0" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>`;
+}
+
 // ウォームアップセット提案: 前回のメイン重量(lastW)から逓増(2.5kg刻み)。自重種目・記録なしは非表示
 function warmupHtml(ex) {
   if (!ex || ex.equipment === 'bodyweight') return '';
@@ -1456,6 +1468,7 @@ function openExerciseModal(exId, restSec, planRef) {
     </div>
     ${ex.equipment !== 'bodyweight' ? '<div class="field"><label>重量の決め方</label><p style="font-size:12.5px;color:var(--ink-dim)">指定回数の下限がフォームを保ってギリギリできる重さが適正。迷ったら軽めで始めて、毎回2.5%(または最小プレート1枚)ずつ足す。</p></div>' : ''}
     ${warmupHtml(ex)}
+    ${exVideoHtml(ex.id)}
     ${restSec ? `<button class="btn" id="ex-timer" style="margin-bottom:10px">⏱ 休憩タイマー ${Math.round(restSec)}秒 スタート</button>` : ''}
     <button class="btn ${restSec ? 'ghost' : ''}" id="ex-yt" style="margin-bottom:10px">🎬 フォーム動画を見る (YouTube)</button>
     ${canEdit ? '<button class="btn ghost" id="ex-swap" style="margin-bottom:10px">🔄 別の種目に変える</button>' : ''}
@@ -1794,6 +1807,7 @@ function openRecoveryModal(id) {
     <p class="modal-sub"><span class="tag low">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.area)} / 目安 ${esc(m.amount)}</p>
     <div class="field"><label>やり方</label><p style="font-size:13.5px;line-height:1.7">${esc(m.cue)}</p></div>
     <div class="field"><label>ポイント</label><p style="font-size:13px;color:var(--ink-dim)">反動をつけずゆっくり、呼吸を止めない。<b style="color:var(--warn)">痛みが出たら中止</b>。休養日の回復を助ける低強度メニューです。</p></div>
+    ${exVideoHtml(m.id)}
     <button class="btn ghost" id="rc-yt" style="margin-bottom:10px">🎬 やり方の動画を見る (YouTube)</button>
     <button class="btn" id="rc-done-btn">${done ? '✓ 実施済み(取り消す)' : '実施した'}</button>
     <button class="btn ghost" onclick="closeModal()" style="margin-top:8px">閉じる</button>`);
