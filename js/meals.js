@@ -174,6 +174,7 @@ function weightNav(profile, weights) {
       nav.diff = Math.round((w - target) * 10) / 10;
       nav.pace = Math.max(0.2, Math.round(w * 0.005 * 10) / 10); // 週0.5% (筋肉を守れる上限ペース)
       nav.weeks = Math.ceil(nav.diff / nav.pace);
+      nav.target = Math.round(target * 10) / 10;
     }
   } else if (profile.goal === 'hyp' || profile.goal === 'str') {
     const target = BULK_TARGET_BMI[sexKey] * hM * hM;
@@ -182,6 +183,7 @@ function weightNav(profile, weights) {
       nav.diff = Math.round((target - w) * 10) / 10;
       nav.pace = Math.max(0.1, Math.round(w * 0.0025 * 100) / 100); // 週0.25% (脂肪を乗せすぎない)
       nav.weeks = Math.ceil(nav.diff / nav.pace);
+      nav.target = Math.round(target * 10) / 10;
     } else {
       nav.msg = '体重は足りている。急いで増やすより今の体重±1kgをキープして重量を伸ばすのが、脂肪を付けない近道。献立も維持カロリーにしています。';
     }

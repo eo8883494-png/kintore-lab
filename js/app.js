@@ -1852,7 +1852,7 @@ function renderLog() {
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
         <button class="btn small" id="bw-save" style="white-space:nowrap">保存</button>
       </div>
-      ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas>' : ''}
+      ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
   if (hasLogs) {
@@ -1964,7 +1964,7 @@ function renderLog() {
     renderLog();
   });
   const bwc = $('#bw-chart', root);
-  if (bwc) drawLineChart(bwc, S.weights.map(w => ({ label: fmtDate(w.date), value: w.kg })), 'kg');
+  if (bwc) drawWeightChart(bwc, S.weights, S.profile ? weightNav(S.profile, S.weights) : null);
 
   renderPhotoCard($('#photo-card', root));
 

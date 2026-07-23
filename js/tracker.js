@@ -156,6 +156,81 @@ function drawLineChart(canvas, data, unit) {
   ticks.forEach(i => ctx.fillText(data[i].label, x(i), H - 8));
 }
 
+// 体重トレンド + 予測ライン: 実測点・EWMAトレンド線・目標到達の予測(点線)
+function drawWeightChart(canvas, weights, nav) {
+  const { ctx, W, H, ink, dim, line, accent, surface } = chartCtx(canvas);
+  const DAY = 86400000;
+  const pts = (weights || []).map(w => ({ t: new Date(w.date + 'T12:00:00').getTime(), kg: w.kg }))
+    .filter(p => isFinite(p.t) && isFinite(p.kg)).sort((a, b) => a.t - b.t);
+  if (!pts.length) return;
+  const pad = { l: 40, r: 14, t: 16, b: 22 };
+  const pw = W - pad.l - pad.r, ph = H - pad.t - pad.b;
+  const last = pts[pts.length - 1];
+  const hasTarget = nav && (nav.mode === 'cut' || nav.mode === 'bulk') && isFinite(nav.target) && nav.pace > 0;
+
+  let projEnd = null;
+  if (hasTarget) {
+    const weeks = Math.min(Math.abs(last.kg - nav.target) / nav.pace, 78); // 上限1.5年
+    projEnd = { t: last.t + weeks * 7 * DAY, kg: nav.target };
+  }
+  const tMin = pts[0].t;
+  const tMax = projEnd ? projEnd.t : last.t;
+  const tSpan = Math.max(tMax - tMin, DAY);
+  const allKg = pts.map(p => p.kg); if (hasTarget) allKg.push(nav.target);
+  let vMin = Math.min(...allKg), vMax = Math.max(...allKg);
+  if (vMin === vMax) { vMin -= 2; vMax += 2; }
+  const vr = vMax - vMin; vMin -= vr * 0.15; vMax += vr * 0.15;
+  const x = t => pad.l + ((t - tMin) / tSpan) * pw;
+  const y = kg => pad.t + (1 - (kg - vMin) / (vMax - vMin)) * ph;
+
+  ctx.strokeStyle = line; ctx.lineWidth = 1;
+  ctx.fillStyle = dim; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+  for (let i = 0; i <= 3; i++) {
+    const v = vMin + ((vMax - vMin) * i) / 3;
+    ctx.beginPath(); ctx.moveTo(pad.l, y(v)); ctx.lineTo(W - pad.r, y(v)); ctx.stroke();
+    ctx.fillText((Math.round(v * 10) / 10) + 'kg', pad.l - 5, y(v) + 3);
+  }
+
+  if (hasTarget) {
+    ctx.strokeStyle = accent; ctx.globalAlpha = 0.5; ctx.setLineDash([2, 3]); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad.l, y(nav.target)); ctx.lineTo(W - pad.r, y(nav.target)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = accent; ctx.font = '9px sans-serif'; ctx.textAlign = 'left';
+    ctx.fillText('目標 ' + nav.target + 'kg', pad.l + 2, y(nav.target) - 3);
+  }
+
+  // 実測(細線+点)
+  ctx.strokeStyle = dim; ctx.globalAlpha = 0.5; ctx.lineWidth = 1;
+  ctx.beginPath(); pts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(p.kg)) : ctx.moveTo(x(p.t), y(p.kg)); }); ctx.stroke();
+  ctx.globalAlpha = 1; ctx.fillStyle = dim;
+  pts.forEach(p => { ctx.beginPath(); ctx.arc(x(p.t), y(p.kg), 2, 0, Math.PI * 2); ctx.fill(); });
+
+  // EWMAトレンド線(太・アクセント)
+  let tr = pts[0].kg;
+  const trend = pts.map(p => (tr = tr + 0.3 * (p.kg - tr)));
+  ctx.strokeStyle = accent; ctx.lineWidth = 2.5;
+  ctx.beginPath(); pts.forEach((p, i) => { i ? ctx.lineTo(x(p.t), y(trend[i])) : ctx.moveTo(x(p.t), y(trend[i])); }); ctx.stroke();
+
+  // 予測(点線)トレンド最新→目標
+  if (projEnd) {
+    ctx.strokeStyle = accent; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.moveTo(x(last.t), y(trend[trend.length - 1])); ctx.lineTo(x(projEnd.t), y(projEnd.kg)); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+    ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(x(projEnd.t), y(projEnd.kg), 3, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // 最新の実測点 + ラベル
+  ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(x(last.t), y(last.kg), 4, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = surface; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = ink; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText((Math.round(last.kg * 10) / 10) + 'kg', x(last.t) - 6, y(last.kg) - 7);
+
+  ctx.fillStyle = dim; ctx.font = '10px sans-serif';
+  const md = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()}`; };
+  ctx.textAlign = 'left'; ctx.fillText(md(tMin), pad.l, H - 6);
+  ctx.textAlign = 'right'; ctx.fillText(md(projEnd ? projEnd.t : last.t) + (projEnd ? '頃' : ''), W - pad.r, H - 6);
+}
+
 // 棒グラフ (単一系列): data=[{label, value}]
 function drawBarChart(canvas, data, unit) {
   const { ctx, W, H, ink, dim, line, accent } = chartCtx(canvas);
