@@ -39,9 +39,12 @@ function haptic(kind) {
   const H = capPlugin('Haptics'); if (!H) return;
   try {
     if (kind === 'alarm') {
-      // タイマー終了などの強いアラーム: システム振動を3連
-      if (H.vibrate) { H.vibrate({ duration: 400 }); setTimeout(() => { try { H.vibrate({ duration: 400 }); } catch (e) {} }, 520); setTimeout(() => { try { H.vibrate({ duration: 600 }); } catch (e) {} }, 1080); }
-      else if (H.notification) H.notification({ type: 'SUCCESS' });
+      // タイマー終了などの強いアラーム: システム振動を連続(iOSはvibrate強度固定なので回数で強く見せる)
+      if (H.vibrate) {
+        const fire = () => { try { H.vibrate({ duration: 500 }); } catch (e) {} };
+        fire();
+        [430, 860, 1290, 1720].forEach(ms => setTimeout(fire, ms));
+      } else if (H.notification) H.notification({ type: 'SUCCESS' });
     } else if (kind === 'heavy') {
       if (H.vibrate) H.vibrate({ duration: 400 }); else if (H.impact) H.impact({ style: 'HEAVY' });
     } else if (kind === 'success') {
@@ -72,13 +75,15 @@ function refreshKeepAwake() {
 // ===== ローカル通知(トレ通知・端末内で完結・ログイン/サーバー不要) =====
 const LOCAL_REMINDER_ID = 4201;
 function loadLocalReminder() {
-  try { return { enabled: false, hour: 19, ...JSON.parse(localStorage.getItem('kintoreLab.localReminder') || '{}') }; }
-  catch (e) { return { enabled: false, hour: 19 }; }
+  try { return { enabled: false, hour: 19, minute: 0, ...JSON.parse(localStorage.getItem('kintoreLab.localReminder') || '{}') }; }
+  catch (e) { return { enabled: false, hour: 19, minute: 0 }; }
 }
 function saveLocalReminder(r) { try { localStorage.setItem('kintoreLab.localReminder', JSON.stringify(r)); } catch (e) {} }
-async function enableLocalReminder(hour) {
+async function enableLocalReminder(hour, minute) {
   const LN = capPlugin('LocalNotifications');
   if (!LN) { toast('この端末では通知を使えません'); return { ok: false, reason: 'unsupported' }; }
+  const h = Math.max(0, Math.min(23, Number(hour) || 0));
+  const m = Math.max(0, Math.min(59, Number(minute) || 0));
   try {
     const perm = await LN.requestPermissions();
     if (perm && perm.display !== 'granted') { toast('通知が許可されませんでした。設定→筋トレLAB→通知 で許可してください'); return { ok: false, reason: 'denied' }; }
@@ -87,9 +92,9 @@ async function enableLocalReminder(hour) {
       id: LOCAL_REMINDER_ID,
       title: '筋トレLAB 💪',
       body: '今日のトレ、いきましょう。記録もお忘れなく。',
-      schedule: { on: { hour: Number(hour), minute: 0 }, repeats: true, allowWhileIdle: true },
+      schedule: { on: { hour: h, minute: m }, repeats: true, allowWhileIdle: true },
     }] });
-    saveLocalReminder({ enabled: true, hour: Number(hour) });
+    saveLocalReminder({ enabled: true, hour: h, minute: m });
     return { ok: true };
   } catch (e) { console.warn('[local-notif] enable failed', e); toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
 }
@@ -99,31 +104,39 @@ async function disableLocalReminder() {
   const r = loadLocalReminder(); r.enabled = false; saveLocalReminder(r);
   return { ok: true };
 }
-async function setLocalReminderHour(hour) {
+async function setLocalReminderTime(hour, minute) {
   const r = loadLocalReminder();
-  r.hour = Number(hour); saveLocalReminder(r);
-  if (r.enabled) await enableLocalReminder(r.hour); // 有効中なら再スケジュール
+  r.hour = Number(hour); r.minute = Number(minute); saveLocalReminder(r);
+  if (r.enabled) await enableLocalReminder(r.hour, r.minute); // 有効中なら再スケジュール
 }
 function localReminderCardHtml() {
   if (!isNativeApp()) return '';
   const r = loadLocalReminder();
-  const hourOpts = Array.from({ length: 18 }, (_, i) => i + 5)
-    .map(h => `<option value="${h}" ${h === r.hour ? 'selected' : ''}>${h}:00</option>`).join('');
+  const hourOpts = Array.from({ length: 24 }, (_, h) => h)
+    .map(h => `<option value="${h}" ${h === r.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}時</option>`).join('');
+  const minOpts = Array.from({ length: 12 }, (_, i) => i * 5)
+    .map(m => `<option value="${m}" ${m === r.minute ? 'selected' : ''}>${String(m).padStart(2, '0')}分</option>`).join('');
   return `<div class="card"><h2>🔔 トレ通知<span class="tag ${r.enabled ? 'good' : 'none'}" style="font-size:10px">${r.enabled ? 'ON' : 'OFF'}</span></h2>
     <p style="font-size:13.5px;margin-bottom:10px">毎日 設定した時刻に「今日のトレ、いきましょう」と通知します。アプリを閉じていても届きます(この端末内で完結・ログイン不要)。</p>
-    <div class="field"><label>通知する時刻</label><select id="lrm-hour">${hourOpts}</select></div>
+    <div class="grid2">
+      <div class="field"><label>時</label><select id="lrm-hour">${hourOpts}</select></div>
+      <div class="field"><label>分</label><select id="lrm-min">${minOpts}</select></div>
+    </div>
     ${r.enabled ? `<button class="btn ghost" id="lrm-off">通知をOFFにする</button>` : `<button class="btn" id="lrm-on">この端末で通知をONにする</button>`}
     <button class="btn ghost small" id="lrm-test" style="margin-top:8px">テスト(5秒後に通知)</button>
   </div>`;
 }
 function bindLocalReminder(root) {
   const hourSel = $('#lrm-hour', root);
-  if (hourSel) hourSel.addEventListener('change', () => { setLocalReminderHour(Number(hourSel.value)); });
+  const minSel = $('#lrm-min', root);
+  const applyTime = () => setLocalReminderTime(Number(hourSel ? hourSel.value : 19), Number(minSel ? minSel.value : 0));
+  if (hourSel) hourSel.addEventListener('change', applyTime);
+  if (minSel) minSel.addEventListener('change', applyTime);
   const on = $('#lrm-on', root);
   if (on) on.addEventListener('click', async () => {
-    const sel = $('#lrm-hour', root);
-    const h = Number(sel ? sel.value : loadLocalReminder().hour);
-    const res = await enableLocalReminder(h);
+    const h = Number(hourSel ? hourSel.value : loadLocalReminder().hour);
+    const m = Number(minSel ? minSel.value : loadLocalReminder().minute);
+    const res = await enableLocalReminder(h, m);
     if (res.ok) { toast('通知をONにしました🔔'); renderTools(); }
   });
   const off = $('#lrm-off', root);
