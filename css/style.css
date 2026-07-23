@@ -23,6 +23,9 @@ body {
   line-height: 1.6;
   padding-bottom: 76px;
   min-height: 100vh;
+  /* iOS WebView: ダブルタップ拡大を無効化(スクロールは維持) */
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
 }
 button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 input, select, textarea {
