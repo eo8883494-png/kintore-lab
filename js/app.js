@@ -25,6 +25,11 @@ function isNativeApp() {
 // 保存先の呼び方(ネイティブ=アプリ内 / Web=ブラウザ内)。移行期の文言出し分け用
 function storeWord() { return isNativeApp() ? 'アプリ内' : 'ブラウザ内'; }
 
+// Appleサインインは有料Apple Developer Program登録後に「Sign in with Apple」ケイパビリティを付けて解禁する。
+// 登録が済んでボタンを出す準備ができたら true にする(それまでは表示しない=押せない死にボタンを作らない)。
+const APPLE_SIGNIN_READY = false;
+function appleSignInAvailable() { return isNativeApp() && APPLE_SIGNIN_READY; }
+
 // みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
 const SNS_RE = /^https:\/\/(?:www\.|m\.|vm\.)?(?:instagram\.com|youtube\.com|youtu\.be|tiktok\.com|x\.com|twitter\.com|threads\.net)\/[^\s]*$/i;
 function detectPlatform(url) {
@@ -1706,12 +1711,11 @@ function openMenuPublishModal(menu) {
   const c = window.__klCloud;
   if (!c || !c.available) { toast('この環境では公開を利用できません'); return; }
   if (!c.myUid()) {
-    const native = isNativeApp();
     const bg = openModal(`<h2>公開にはログインが必要です</h2>
       <p class="modal-sub">「みんなのメニュー」に公開するには、ログインが必要です(投稿者を識別してスパムを防ぐため)。</p>
       <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px">
         <button class="btn" id="pub-login">Googleでログイン</button>
-        ${native ? '<button class="btn btn-apple" id="pub-login-apple"> Appleでサインイン</button>' : ''}
+        ${appleSignInAvailable() ? '<button class="btn btn-apple" id="pub-login-apple"> Appleでサインイン</button>' : ''}
         <button class="btn ghost" onclick="closeModal()">閉じる</button>
       </div>`);
     $('#pub-login', bg).addEventListener('click', () => { closeModal(); c.signIn(); });
@@ -2386,12 +2390,11 @@ function cloudCardHtml() {
       ${isNativeApp() ? '' : '<p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのままでも届きます。</p>'}
     </div>`;
   }
-  const native = isNativeApp();
   return `<div class="card"><h2>☁️ 端末間同期</h2>
     <p style="font-size:13.5px;margin-bottom:10px">ログインすると、記録・メニュー・体重が<b>スマホとPCなど複数の端末で同期</b>されます。機種変更してもデータが引き継がれます。</p>
     <div style="display:flex;flex-direction:column;gap:8px">
       <button class="btn" id="cloud-signin">Googleでログイン</button>
-      ${native ? '<button class="btn btn-apple" id="cloud-signin-apple"> Appleでサインイン</button>' : ''}
+      ${appleSignInAvailable() ? '<button class="btn btn-apple" id="cloud-signin-apple"> Appleでサインイン</button>' : ''}
     </div>
     <p class="card-note">ログインしなくても全機能そのまま使えます(データはこの端末に保存)。ログインは任意です。</p>
   </div>`;
