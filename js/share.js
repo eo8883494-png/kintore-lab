@@ -177,7 +177,8 @@ function openShareModal(date) {
   const cv = drawShareCard(stats);
   const dataUrl = cv.toDataURL('image/png');
   const caption = shareCaption(stats);
-  const canNativeShare = !!(navigator.canShare && navigator.share);
+  const capShareReady = !!(typeof isNativeApp === 'function' && isNativeApp() && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Share && window.Capacitor.Plugins.Filesystem);
+  const canNativeShare = capShareReady || !!(navigator.canShare && navigator.share);
 
   const bg = openModal(`
     <h2>📸 記録をシェア</h2>
@@ -207,7 +208,18 @@ function openShareModal(date) {
     toast('画像を保存しました');
   });
   const nat = $('#share-native', bg);
-  if (nat) nat.addEventListener('click', () => {
+  if (nat) nat.addEventListener('click', async () => {
+    // ネイティブ: 共有シート(@capacitor/share)で画像+キャプションをLINE/Instagram等へ直接
+    const CapP = window.Capacitor && window.Capacitor.Plugins;
+    const isNat = typeof isNativeApp === 'function' && isNativeApp();
+    if (isNat && CapP && CapP.Share && CapP.Filesystem) {
+      try {
+        const base64 = dataUrl.split(',')[1];
+        const wr = await CapP.Filesystem.writeFile({ path: `kintore-lab-${stats.date}.png`, data: base64, directory: 'CACHE' });
+        await CapP.Share.share({ text: caption, files: [wr.uri] });
+        return;
+      } catch (e) { /* キャンセルや未対応はWeb Shareへフォールバック */ }
+    }
     cv.toBlob(blob => {
       const file = new File([blob], `kintore-lab-${stats.date}.png`, { type: 'image/png' });
       const payload = { files: [file], text: caption };

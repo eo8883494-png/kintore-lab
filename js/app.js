@@ -332,6 +332,41 @@ async function cancelTimerNotif(id) {
   if (LN) { try { await LN.cancel({ notifications: [{ id }] }); } catch (e) {} }
 }
 
+// ===== Live Activity(ロック画面タイマー)+ ホームウィジェット(KLNativeカスタムプラグイン・未導入は安全にno-op) =====
+// ネイティブ実装は native/ios/ のSwift一式(README.md参照)。App Group=group.com.hatarakuai.kintorelab
+function klNative() { return capPlugin('KLNative'); }
+function startTimerActivity(endAt, label, kind) {
+  const N = klNative();
+  if (!N || !N.startTimerActivity) return;
+  try { const p = N.startTimerActivity({ endAt, label: String(label || '休憩'), kind: kind || 'rest' }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+function endTimerActivity() {
+  const N = klNative();
+  if (!N || !N.endTimerActivity) return;
+  try { const p = N.endTimerActivity(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+// ホームウィジェットに今日のメニュー・進捗を書き出す(renderHome時)
+function updateHomeWidget() {
+  const N = klNative();
+  if (!N || !N.updateWidget) return;
+  try {
+    const ctx = todayPlanContext();
+    const today = todayStr();
+    let title = '今日は休息日 😴', sub = '回復も筋トレのうち。タンパク質と睡眠を', done = 0, total = 0;
+    if (ctx.day) {
+      const items = [...ctx.day.items, ...(ctx.carry || [])].filter(i => DB.byId[i.exId]);
+      total = items.length;
+      const dd = S.dayDone[today] || {};
+      const ck = ctxKeyOf(ctx);
+      done = items.filter(i => { const e = ddGet(dd, i.exId); return e && e.src === ck; }).length;
+      title = `今日は「${ctx.day.name}」`;
+      sub = items.slice(0, 3).map(i => DB.byId[i.exId].name).join('・') + (items.length > 3 ? ' など' : '');
+    }
+    const p = N.updateWidget({ title, sub, done, total });
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) {}
+}
+
 // ===== 外部リンク(ネイティブ=OSに委譲しYouTube等のアプリで開く/Web=新規タブ) =====
 async function openExternal(url) {
   const AL = capPlugin('AppLauncher');
@@ -1876,10 +1911,11 @@ function renderHome() {
 
   root.innerHTML = html;
 
-  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正
+  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正 + ホームウィジェット更新
   if (isNativeApp()) {
     updateHealthDisplays();
     refreshHealthToday();
+    updateHomeWidget();
     const sleepRow = $('#sleep-row', root);
     if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
   }
@@ -3388,6 +3424,7 @@ function startTimer() {
   if (t) t.textContent = '⏸ 停止';
   refreshKeepAwake();
   scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ');
+  startTimerActivity(timer.endAt, timer.label || '休憩', 'rest'); // ロック画面Live Activity
   updateTimerDisp();
 }
 function stopTimer() {
@@ -3397,6 +3434,7 @@ function stopTimer() {
   if (t) t.textContent = '▶ スタート';
   refreshKeepAwake();
   cancelTimerNotif(TIMER_NOTIF_ID);
+  endTimerActivity();
   updateTimerDisp();
 }
 function timerAlarm() {
@@ -3529,6 +3567,7 @@ function itStart() {
   // 完了時刻にバックグラウンド通知を予約(ロック中でも「メニュー完了」が届く)
   const restMs = iTimer.phases.slice(iTimer.idx + 1).reduce((a, p) => a + p.sec * 1000, 0);
   scheduleTimerNotif(IT_NOTIF_ID, iTimer.endAt + restMs, '🎉 メニュー完了!', 'インターバルタイマー終了。お疲れさま!');
+  startTimerActivity(iTimer.endAt + restMs, 'インターバル', 'interval'); // ロック画面に全体の残り時間
   itSyncDisp();
 }
 function itPause() {
@@ -3536,6 +3575,7 @@ function itPause() {
   iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
   refreshKeepAwake();
   cancelTimerNotif(IT_NOTIF_ID);
+  endTimerActivity();
   itSyncDisp();
 }
 function itReset() {
@@ -3544,6 +3584,7 @@ function itReset() {
   iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work;
   refreshKeepAwake();
   cancelTimerNotif(IT_NOTIF_ID);
+  endTimerActivity();
   itSyncDisp();
 }
 function itTick() {
@@ -3566,6 +3607,7 @@ function itAdvance(overshootMs) {
     clearInterval(iTimer.iv); iTimer.iv = null;
     iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
     cancelTimerNotif(IT_NOTIF_ID); // 前面で完了 → 予約済み通知は不要
+    endTimerActivity();
     itFinishAlarm();
     if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
     haptic('success');
@@ -3690,5 +3732,5 @@ document.addEventListener('DOMContentLoaded', () => {
   const fabStop = document.getElementById('rt-stop');
   if (fabStop) fabStop.addEventListener('click', () => { stopTimer(); updateRestFab(); });
   const fabAdd = document.getElementById('rt-add');
-  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ'); tickTimer(); } });
+  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ'); startTimerActivity(timer.endAt, timer.label || '休憩', 'rest'); tickTimer(); } });
 });
