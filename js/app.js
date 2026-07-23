@@ -72,7 +72,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -234,6 +234,15 @@ function sanitizeState(s) {
     const mid = Number(s.myToday.id);
     if (out.myMenus.some(m => m.id === mid)) out.myToday = { date: s.myToday.date, id: mid };
   }
+  // マイメニュー削除マーカー(トゥームストーン)
+  if (Array.isArray(s.menuTombstones)) {
+    const seenK = new Set();
+    s.menuTombstones.slice(-200).forEach(t => {
+      if (!t || typeof t.k !== 'string' || !t.k || seenK.has(t.k)) return;
+      seenK.add(t.k);
+      out.menuTombstones.push({ k: t.k.slice(0, 140), at: Math.round(numIn(t.at, 0, 4102444800000, 0)) });
+    });
+  }
   // インターバルタイマーの保存プリセット
   if (Array.isArray(s.timerPresets)) {
     s.timerPresets.slice(0, 30).forEach(t => {
@@ -354,6 +363,23 @@ function customContentKey(e) { return `${e.name}|${e.part}|${e.equipment}`; }
 function logContentKey(l) { return `${l.date}|${l.exId}|${(l.sets || []).map(s => `${s.w || 0}x${s.r || 0}`).join(',')}`; }
 function menuContentKey(m) { return `${m.name}|${m.items.map(i => i.exId).join(',')}`; }
 
+// マイメニュー削除マーカー(トゥームストーン)。union方式のマージは削除を表現できず、
+// クラウド側に残った削除済みメニューが同期で復活する。削除内容キーを記録して復活を防ぐ。
+function tombstoneMenu(m) {
+  if (!m) return;
+  const k = menuContentKey(m);
+  if (!Array.isArray(S.menuTombstones)) S.menuTombstones = [];
+  S.menuTombstones = S.menuTombstones.filter(t => t.k !== k);
+  S.menuTombstones.push({ k, at: Date.now() });
+  if (S.menuTombstones.length > 200) S.menuTombstones = S.menuTombstones.slice(-200);
+}
+// メニュー作成/取り込み時は、同じ内容キーの削除マーカーを解除(再作成を復活扱いにしない)
+function clearMenuTombstone(m) {
+  if (!m || !Array.isArray(S.menuTombstones)) return;
+  const k = menuContentKey(m);
+  S.menuTombstones = S.menuTombstones.filter(t => t.k !== k);
+}
+
 function mergeStates(local, remote) {
   const a = sanitizeState(local), b = sanitizeState(remote);
   const at = Number(local && local._updatedAt) || 0;
@@ -398,6 +424,13 @@ function mergeStates(local, remote) {
   const weights = [...wMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1));
 
   // 4) マイメニュー: remap 後に内容で union、改番。primary の myToday を追従
+  //    削除マーカー(トゥームストーン)を統合し、削除済み内容キーは復活させない(union方式の削除欠陥対策)
+  const tombMap = new Map(); // contentKey -> 最新 at
+  [...(primary.menuTombstones || []), ...(secondary.menuTombstones || [])].forEach(t => {
+    if (!t || typeof t.k !== 'string') return;
+    const at = Number(t.at) || 0;
+    if (!tombMap.has(t.k) || at > tombMap.get(t.k)) tombMap.set(t.k, at);
+  });
   let mid = 1;
   const menuIdMap = new Map(); // contentKey -> new id
   const menuMap = new Map();
@@ -406,6 +439,7 @@ function mergeStates(local, remote) {
   [...primaryMenus, ...secondaryMenus].forEach(m => {
     const k = menuContentKey(m);
     if (menuMap.has(k)) return;
+    if (tombMap.has(k)) return; // 削除済み → 復活させない
     const nm = { id: mid++, name: m.name, items: m.items.map(({ _src, ...it }) => it) };
     if (m.pubId) nm.pubId = m.pubId;
     if (m.pubLink) nm.pubLink = m.pubLink;
@@ -413,6 +447,13 @@ function mergeStates(local, remote) {
     menuMap.set(k, nm); menuIdMap.set(k, nm.id);
   });
   const myMenus = [...menuMap.values()];
+  // 統合したトゥームストーンを出力(180日超は刈り込み・200件上限)
+  const tombCutoff = Date.now() - 180 * 864e5;
+  const menuTombstones = [...tombMap.entries()]
+    .map(([k, at]) => ({ k, at }))
+    .filter(t => t.at > tombCutoff)
+    .sort((x, y) => y.at - x.at)
+    .slice(0, 200);
   let myToday = null;
   if (primary.myToday) {
     const srcMenu = primary.myMenus.find(m => m.id === primary.myToday.id);
@@ -435,7 +476,7 @@ function mergeStates(local, remote) {
   Object.assign(out, {
     profile: primary.profile, focus: primary.focus, exclude: primary.exclude, plan: primary.plan,
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
-    logs, weights, lastW, lastR, customEx: merged, myMenus, myToday, dayDone,
+    logs, weights, lastW, lastR, customEx: merged, myMenus, menuTombstones, myToday, dayDone,
     nextId: nid,
     pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
@@ -1884,7 +1925,9 @@ function importPublicMenu(pm) {
   rebuildDB(S.customEx);
   const mid = S.myMenus.reduce((a, m) => Math.max(a, m.id), 0) + 1;
   const nm = String(pm.name || 'メニュー') + (pm.displayName ? '（' + String(pm.displayName).slice(0, 8) + '）' : '');
-  S.myMenus.push({ id: mid, name: nm.slice(0, 20), items });
+  const newMenu = { id: mid, name: nm.slice(0, 20), items };
+  clearMenuTombstone(newMenu); // 同内容の削除マーカーがあれば解除(再取り込みを削除扱いにしない)
+  S.myMenus.push(newMenu);
   saveState();
   closeModal();
   toast('マイメニューに取り込みました💪');
@@ -2160,6 +2203,7 @@ function renderLog() {
     if (m && m.published && m.pubId && window.__klCloud && window.__klCloud.unpublishMenu) {
       window.__klCloud.unpublishMenu(m.pubId); // 公開中なら公開も取り消す(片付け)
     }
+    if (m) tombstoneMenu(m); // 削除マーカーを記録(クラウド同期でも復活しないように)
     S.myMenus = S.myMenus.filter(m => m.id !== id);
     if (S.myToday && S.myToday.id === id) S.myToday = null;
     saveState();
@@ -2326,7 +2370,9 @@ function openMyMenuModal() {
     }).filter(Boolean);
     if (!items.length) { toast('種目が見つかりませんでした。選び直してください'); return; }
     const newId2 = S.myMenus.reduce((m, x) => Math.max(m, x.id), 0) + 1;
-    S.myMenus.push({ id: newId2, name: name.slice(0, 20), items });
+    const newMenu2 = { id: newId2, name: name.slice(0, 20), items };
+    clearMenuTombstone(newMenu2); // 同内容の削除マーカーがあれば解除
+    S.myMenus.push(newMenu2);
     saveState();
     closeModal();
     toast(`マイメニュー「${name}」を保存しました`);

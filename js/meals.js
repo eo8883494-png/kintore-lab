@@ -380,9 +380,11 @@ function renderMeals() {
   if (bc) {
     const sign = v => (v >= 0 ? '+' : '') + v;
     html += `<div class="card"><h2>🧬 体組成の推定<span class="sub">この${bc.days}日</span></h2>
-      <p style="font-size:13.5px;line-height:1.7">体重 <b>${sign(bc.change)}kg</b> の内訳(推定):
+      <p style="font-size:13.5px">体重 <b>${sign(bc.change)}kg</b> の内訳(推定)</p>
+      <div class="bc-breakdown">
         <span class="chip" style="border-color:var(--warn);color:var(--warn)">脂肪 ${sign(bc.fat)}kg</span>
-        <span class="chip grow">筋肉 ${sign(bc.muscle)}kg</span></p>
+        <span class="chip grow">筋肉 ${sign(bc.muscle)}kg</span>
+      </div>
       <p class="card-note">${bc.cut ? '筋トレ+タンパク質を続けていれば、落ちた体重の大半は脂肪で筋肉はほぼ守れます。' : 'トレ歴が浅いほど増えた体重に筋肉が占める割合が高くなります。'}トレ歴(${SCIENCE.levels ? '' : ''}レベル)から按分した目安で、実測ではありません。体重を継続記録するほど精度が上がります。</p></div>`;
   }
 
