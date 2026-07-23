@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -259,6 +259,15 @@ function sanitizeState(s) {
       if (Object.keys(m).length) out.setCount[dt] = m;
     });
   }
+  // アクティブレスト実施記録(日付→moveId→true)
+  if (s.recoveryDone && typeof s.recoveryDone === 'object') {
+    Object.keys(s.recoveryDone).forEach(dt => {
+      if (!DATE_RE.test(dt) || !s.recoveryDone[dt] || typeof s.recoveryDone[dt] !== 'object') return;
+      const m = {};
+      Object.keys(s.recoveryDone[dt]).forEach(k => { if (s.recoveryDone[dt][k]) m[k.slice(0, 40)] = true; });
+      if (Object.keys(m).length) out.recoveryDone[dt] = m;
+    });
+  }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
 }
@@ -404,6 +413,10 @@ function mergeStates(local, remote) {
   const sc = {};
   [secondary.setCount, primary.setCount].forEach(src => { if (src) Object.keys(src).forEach(dt => { sc[dt] = { ...(sc[dt] || {}), ...src[dt] }; }); });
   out.setCount = sc;
+  // アクティブレスト実施記録: 日付ごとに union
+  const rd = {};
+  [secondary.recoveryDone, primary.recoveryDone].forEach(src => { if (src) Object.keys(src).forEach(dt => { rd[dt] = { ...(rd[dt] || {}), ...src[dt] }; }); });
+  out.recoveryDone = rd;
   return out;
 }
 
@@ -812,11 +825,53 @@ function activeRestCardHtml() {
   const goal = S.profile ? S.profile.goal : 'hyp';
   const routine = buildRecoveryRoutine(todayStr(), goal);
   if (!routine.length) return '';
-  const rows = routine.map(m => `<details class="acc"><summary><span class="tag low" style="font-size:10px">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.name)} <span style="color:var(--ink-dim,#9aa3ad);font-weight:600;font-size:12px">${esc(m.amount)}</span></summary><div class="acc-body">${esc(m.cue)}</div></details>`).join('');
-  return `<div class="card"><h2>🧘 アクティブレスト<span class="sub">休養日メニュー</span></h2>
-    <p style="font-size:13px;margin-bottom:8px">休むだけより、低強度で姿勢・柔軟・可動性を整えると回復が進みます。各項目をタップでやり方。<b>痛みが出たら中止</b>。</p>
+  const today = todayStr();
+  const doneMap = S.recoveryDone[today] || {};
+  const doneCount = routine.filter(m => doneMap[m.id]).length;
+  const rows = routine.map(m => {
+    const done = !!doneMap[m.id];
+    return `
+      <div class="today-ex ${done ? 'done' : ''}" data-rc="${m.id}">
+        <input type="checkbox" class="rc-chk" data-rc="${m.id}" ${done ? 'checked' : ''}>
+        <div class="info" data-rc-open="${m.id}">
+          <div class="nm">${esc(m.name)}</div>
+          <div class="meta"><span class="tag low" style="font-size:10px">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.area)} / ${esc(m.amount)}</div>
+        </div>
+        <span class="unit" style="font-size:16px">›</span>
+      </div>`;
+  }).join('');
+  return `<div class="card"><h2>🧘 アクティブレスト<span class="sub">${doneCount}/${routine.length} 実施</span></h2>
+    <p style="font-size:13px;margin-bottom:8px">休むだけより、低強度で姿勢・柔軟・可動性を整えると回復が進みます。<b>項目をタップでやり方と動画</b>、チェックで実施記録。<b>痛みが出たら中止</b>。</p>
     ${rows}
-    <p class="card-note">日替わりで内容が変わります。全部で5〜10分ほど。ツール…ではなくプラン画面の⚙️オプションでON/OFFできます。</p></div>`;
+    <p class="card-note">日替わりで内容が変わります。全部で5〜10分ほど。プラン画面の⚙️オプションでON/OFFできます。</p></div>`;
+}
+
+// アクティブレストの実施記録トグル
+function toggleRecoveryDone(id, checked) {
+  const today = todayStr();
+  if (!S.recoveryDone[today]) S.recoveryDone[today] = {};
+  if (checked) S.recoveryDone[today][id] = true;
+  else delete S.recoveryDone[today][id];
+  saveState();
+  if (currentView() === 'home') renderHome();
+}
+
+// アクティブレスト種目の詳細モーダル(やり方・動画・実施記録)
+function openRecoveryModal(id) {
+  const m = (typeof RECOVERY_MOVES !== 'undefined') ? RECOVERY_MOVES.find(x => x.id === id) : null;
+  if (!m) return;
+  const today = todayStr();
+  const done = !!(S.recoveryDone[today] && S.recoveryDone[today][id]);
+  const bg = openModal(`
+    <h2>${esc(m.name)}</h2>
+    <p class="modal-sub"><span class="tag low">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.area)} / 目安 ${esc(m.amount)}</p>
+    <div class="field"><label>やり方</label><p style="font-size:13.5px;line-height:1.7">${esc(m.cue)}</p></div>
+    <div class="field"><label>ポイント</label><p style="font-size:13px;color:var(--ink-dim)">反動をつけずゆっくり、呼吸を止めない。<b style="color:var(--warn)">痛みが出たら中止</b>。休養日の回復を助ける低強度メニューです。</p></div>
+    <a class="btn ghost" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
+       href="https://www.youtube.com/results?search_query=${encodeURIComponent(m.name + ' やり方')}">🎬 やり方の動画を見る (YouTube)</a>
+    <button class="btn" id="rc-done-btn">${done ? '✓ 実施済み(取り消す)' : '実施した'}</button>
+    <button class="btn ghost" onclick="closeModal()" style="margin-top:8px">閉じる</button>`);
+  $('#rc-done-btn', bg).addEventListener('click', () => { toggleRecoveryDone(id, !done); closeModal(); });
 }
 
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
@@ -961,6 +1016,12 @@ function renderHome() {
   });
   $all('[data-open-ex]', root).forEach(el => {
     el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0));
+  });
+  $all('.rc-chk', root).forEach(chk => {
+    chk.addEventListener('change', () => toggleRecoveryDone(chk.dataset.rc, chk.checked));
+  });
+  $all('[data-rc-open]', root).forEach(el => {
+    el.addEventListener('click', () => openRecoveryModal(el.dataset.rcOpen));
   });
   $all('.ex-tmr', root).forEach(btn => {
     btn.addEventListener('click', e => {
