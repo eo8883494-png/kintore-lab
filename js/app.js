@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -236,6 +236,10 @@ function sanitizeState(s) {
         setRest: Math.round(numIn(t.setRest, 0, 3600, 60)),
       });
     });
+  }
+  // 生理周期(女性・任意): 最終月経開始日 + 周期日数
+  if (s.cycle && typeof s.cycle === 'object' && typeof s.cycle.start === 'string' && DATE_RE.test(s.cycle.start)) {
+    out.cycle = { start: s.cycle.start, length: Math.round(numIn(s.cycle.length, 20, 45, 28)) };
   }
   // 食事の手動PFC目標(設定時のみ・カロリーはP/F/Cから導出)
   if (s.mealTargets && typeof s.mealTargets === 'object' && s.mealTargets.custom) {
@@ -414,6 +418,7 @@ function mergeStates(local, remote) {
   [...primary.timerPresets, ...secondary.timerPresets].forEach(t => { const k = JSON.stringify(t); if (!tpMap.has(k)) tpMap.set(k, t); });
   out.timerPresets = [...tpMap.values()].slice(0, 30);
   out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
+  out.cycle = primary.cycle || secondary.cycle; // 生理周期はprimary優先
   // 公開プロフィール(表示名・アイコン・画像・アピール・リンク)を引き継ぐ(mergeで消さない)
   out.publicName = primary.publicName || secondary.publicName || '';
   out.publicIcon = primary.publicIcon || secondary.publicIcon || '';
@@ -852,6 +857,73 @@ function timingCardHtml() {
   </div>`;
 }
 
+// 生理周期のフェーズ判定(女性・任意)
+function cyclePhase(cycle, dateStr) {
+  if (!cycle || !cycle.start) return null;
+  const len = cycle.length || 28;
+  const t0 = new Date(cycle.start + 'T12:00:00').getTime();
+  const t1 = new Date((dateStr || todayStr()) + 'T12:00:00').getTime();
+  if (!isFinite(t0) || !isFinite(t1)) return null;
+  const daysSince = Math.floor((t1 - t0) / 86400000);
+  const day = ((daysSince % len) + len) % len + 1; // 1..len
+  const mid = Math.round(len / 2);
+  let phase, label, training, nutrition;
+  if (day <= 5) {
+    phase = 'menstruation'; label = '月経期';
+    training = 'だるい日は軽め〜中強度でOK。無理は禁物、休んでも後で取り返せます。';
+    nutrition = '鉄分(赤身肉・レバー・ほうれん草)を意識。鉄が失われやすい時期です。';
+  } else if (day < mid - 1) {
+    phase = 'follicular'; label = '卵胞期';
+    training = 'エストロゲンが上がり体調・筋力が伸びやすい時期。高重量・自己ベスト狙いに最適。';
+    nutrition = 'しっかり食べてトレに燃料を。強化・増量を狙うならこの時期が主戦場。';
+  } else if (day <= mid + 1) {
+    phase = 'ovulation'; label = '排卵期';
+    training = '筋力がピーク。ただし関節がゆるみやすいので、フォームは丁寧に無理しすぎない。';
+    nutrition = '通常どおりでOK。水分をしっかり摂る。';
+  } else {
+    phase = 'luteal'; label = '黄体期';
+    training = 'だるさ・重さが出やすい。強度は維持中心で「こなす」意識。追い込みは無理せず。';
+    nutrition = '食欲・むくみが出やすい時期。⚠️体重が水分で1〜2kg増えても脂肪ではないので気にしないで。タンパク質と炭水化物はしっかり。';
+  }
+  return { day, len, phase, label, training, nutrition };
+}
+function cycleCardHtml() {
+  if (!S.profile || S.profile.sex !== 'f') return '';
+  const cp = cyclePhase(S.cycle, todayStr());
+  if (!cp) {
+    return `<div class="card"><h2>🌙 生理周期ナビ<span class="sub">女性向け・任意</span></h2>
+      <p style="font-size:13px;margin-bottom:8px">生理周期に合わせて、トレの強度と栄養の狙いどきが分かります。体重が周期で増減するのも見分けられます(端末内にのみ保存)。</p>
+      <button class="btn ghost" id="cycle-setup">周期を設定する</button></div>`;
+  }
+  return `<div class="card"><h2>🌙 生理周期ナビ<span class="sub">${cp.label}・${cp.day}日目</span></h2>
+    <div class="field"><label>🏋️ トレの狙い</label><p style="font-size:13.5px;line-height:1.7">${esc(cp.training)}</p></div>
+    <div class="field"><label>🍚 栄養</label><p style="font-size:13.5px;line-height:1.7">${esc(cp.nutrition)}</p></div>
+    <button class="btn ghost small" id="cycle-setup">周期を更新</button>
+    <p class="card-note">${cp.len}日周期での目安。次の生理が来たら開始日を更新すると精度が上がります。個人差があるので体調優先で。</p></div>`;
+}
+function openCycleSetup() {
+  const c = S.cycle || { start: todayStr(), length: 28 };
+  const bg = openModal(`
+    <h2>生理周期の設定</h2>
+    <p class="modal-sub">直近の生理開始日と、平均的な周期日数を入れてください(だいたいでOK)。この情報は端末内にのみ保存され、外部に送信されません。</p>
+    <div class="field"><label>直近の生理開始日</label><input type="date" id="cyc-start" value="${esc(c.start)}" max="${todayStr()}"></div>
+    <div class="field"><label>周期の長さ(日)</label><input type="number" id="cyc-len" value="${c.length || 28}" min="20" max="45"></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+      <button class="btn" id="cyc-save">保存</button>
+    </div>
+    ${S.cycle ? '<button class="btn ghost small" id="cyc-clear" style="margin-top:10px;width:100%;color:var(--ink-dim)">周期ナビをやめる</button>' : ''}`);
+  $('#cyc-save', bg).addEventListener('click', () => {
+    const start = $('#cyc-start', bg).value;
+    if (!start) { toast('開始日を入れてください'); return; }
+    const length = Math.max(20, Math.min(45, Math.round(Number($('#cyc-len', bg).value) || 28)));
+    S.cycle = { start, length };
+    saveState(); closeModal(); toast('周期を設定しました'); renderHome();
+  });
+  const clr = $('#cyc-clear', bg);
+  if (clr) clr.addEventListener('click', () => { S.cycle = null; saveState(); closeModal(); toast('周期ナビをオフにしました'); renderHome(); });
+}
+
 // dayDoneエントリの正規化: 旧形式(数値)は plan コンテキスト扱い
 function ddGet(dayMap, exId) {
   const v = dayMap && dayMap[exId];
@@ -1088,11 +1160,14 @@ function renderHome() {
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
   html += `<div class="card tip-card"><h2>💡 今日の筋知識</h2><p style="font-size:13.5px">${esc(tipList[tipIdx])}</p></div>`;
   html += timingCardHtml();
+  html += cycleCardHtml();
 
   root.innerHTML = html;
 
   const setup = $('#home-setup', root);
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
+  const cycleBtn = $('#cycle-setup', root);
+  if (cycleBtn) cycleBtn.addEventListener('click', openCycleSetup);
 
   const swapDo = $('#swap-do', root);
   if (swapDo) swapDo.addEventListener('click', () => {
