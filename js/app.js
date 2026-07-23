@@ -30,6 +30,35 @@ function storeWord() { return isNativeApp() ? 'アプリ内' : 'ブラウザ内'
 const APPLE_SIGNIN_READY = false;
 function appleSignInAvailable() { return isNativeApp() && APPLE_SIGNIN_READY; }
 
+// ===== ネイティブ機能ヘルパー(プラグイン未導入/Webでは安全にno-op) =====
+function capPlugin(name) { return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins[name]) || null; }
+// 触覚フィードバック: kind = 'light' | 'medium' | 'heavy' | 'success'
+function haptic(kind) {
+  if (!isNativeApp()) return;
+  const H = capPlugin('Haptics'); if (!H) return;
+  try {
+    if (kind === 'success' && H.notification) H.notification({ type: 'SUCCESS' });
+    else if (kind === 'light' && H.impact) H.impact({ style: 'LIGHT' });
+    else if (kind === 'heavy' && H.impact) H.impact({ style: 'HEAVY' });
+    else if (H.impact) H.impact({ style: 'MEDIUM' });
+  } catch (e) {}
+}
+// 画面スリープ防止: トレ中(いずれかのタイマー稼働中)は画面を消さない
+let _keepAwakeOn = false;
+function keepAwake(on) {
+  if (!isNativeApp()) return;
+  const K = capPlugin('KeepAwake'); if (!K) return;
+  try {
+    if (on && !_keepAwakeOn) { K.keepAwake(); _keepAwakeOn = true; }
+    else if (!on && _keepAwakeOn) { K.allowSleep(); _keepAwakeOn = false; }
+  } catch (e) {}
+}
+// 休憩タイマー or インターバルタイマーのどちらかが動いていれば画面ON維持
+function refreshKeepAwake() {
+  const active = !!((typeof timer !== 'undefined' && timer && timer.iv) || (typeof iTimer !== 'undefined' && iTimer && iTimer.iv));
+  keepAwake(active);
+}
+
 // みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
 const SNS_RE = /^https:\/\/(?:www\.|m\.|vm\.)?(?:instagram\.com|youtube\.com|youtu\.be|tiktok\.com|x\.com|twitter\.com|threads\.net)\/[^\s]*$/i;
 function detectPlatform(url) {
@@ -1385,7 +1414,7 @@ function setExerciseProgress(exId, newCount) {
   const de = ddGet(S.dayDone[today], exId);
   const wasDone = !!(de && de.src === ck);
   // 満了 → 記録(自動チェック)。満了未満へ戻す → 記録解除。どちらも toggleDone が再描画する
-  if (newCount >= total && !wasDone) { saveState(); toggleDone(exId, true); return; }
+  if (newCount >= total && !wasDone) { haptic('success'); saveState(); toggleDone(exId, true); return; }
   if (newCount < total && wasDone) {
     toggleDone(exId, false); // 記録解除(この中でsetCountも消える)
     // 1セットだけ戻した進捗は残す(0リセットしない)
@@ -1394,6 +1423,7 @@ function setExerciseProgress(exId, newCount) {
   }
   // 途中のセット完了(増加時のみ)は休憩タイマーを出す
   if (newCount > prev && newCount < total) {
+    haptic('light');
     const ex = DB.byId[exId];
     startRestTimer(Number(item.rest) || 90, (ex ? ex.name : '') + ' の休憩');
     toast(`⏱ ${newCount}/${total}セット完了・休憩${Math.round(Number(item.rest) || 90)}秒`);
@@ -2683,6 +2713,7 @@ function startTimer() {
   timer.iv = setInterval(tickTimer, 500);
   const t = $('#timer-toggle');
   if (t) t.textContent = '⏸ 停止';
+  refreshKeepAwake();
   updateTimerDisp();
 }
 function stopTimer() {
@@ -2690,6 +2721,7 @@ function stopTimer() {
   timer.iv = null;
   const t = $('#timer-toggle');
   if (t) t.textContent = '▶ スタート';
+  refreshKeepAwake();
   updateTimerDisp();
 }
 function timerAlarm() {
@@ -2707,6 +2739,7 @@ function timerAlarm() {
     });
   } catch (e) { /* 音が出せない環境は無視 */ }
   if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+  haptic('heavy');
   toast('⏱️ 休憩終了!次のセット!');
 }
 
@@ -2810,17 +2843,20 @@ function itStart() {
   }
   iTimer.endAt = Date.now() + iTimer.sec * 1000;
   iTimer.iv = setInterval(itTick, 200);
+  refreshKeepAwake();
   itSyncDisp();
 }
 function itPause() {
   clearInterval(iTimer.iv); iTimer.iv = null;
   iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
+  refreshKeepAwake();
   itSyncDisp();
 }
 function itReset() {
   clearInterval(iTimer.iv); iTimer.iv = null;
   iTimer.phases = []; iTimer.idx = 0; iTimer.lastBeep = -1;
   iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work;
+  refreshKeepAwake();
   itSyncDisp();
 }
 function itTick() {
@@ -2838,6 +2874,8 @@ function itAdvance() {
     iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
     itFinishAlarm();
     if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+    haptic('success');
+    refreshKeepAwake();
     itSyncDisp();
     return;
   }
@@ -2846,6 +2884,7 @@ function itAdvance() {
   const p = iTimer.phases[next];
   itBeep(p.type === 'work' ? 880 : 520, 0.18);
   if (navigator.vibrate) navigator.vibrate(p.type === 'work' ? [120, 60, 120] : [200]);
+  haptic(p.type === 'work' ? 'heavy' : 'light');
   itSyncDisp();
 }
 function itBeep(freq, dur) {
