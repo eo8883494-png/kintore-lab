@@ -1166,21 +1166,25 @@ function renderHome() {
       const rir = doneLog && doneLog.sets[0] ? doneLog.sets[0].rir : undefined; // 完了後のキツさ(RIR)
       return `
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
-          <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
-          <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${planCtx ? ` data-di="${ctx.idx}" data-ii="${idx}"` : ''}>
-            <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
-            <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
-            <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
-            ${po && po.hint && !done ? (deloadActive && po.up
-              ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
-              : `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>`) : ''}
-            ${done ? (rir == null
-              ? `<div class="rir-pick" data-ex="${it.exId}">今日のキツさ: <button class="rirb" data-rir="3">楽</button><button class="rirb" data-rir="1">普通</button><button class="rirb" data-rir="0">限界</button></div>`
-              : `<div class="rir-label">キツさ: ${rirLabel(rir)}</div>`) : ''}
+          <div class="ex-top">
+            <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
+            <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${planCtx ? ` data-di="${ctx.idx}" data-ii="${idx}"` : ''}>
+              <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
+              <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
+              <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
+              ${po && po.hint && !done ? (deloadActive && po.up
+                ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
+                : `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>`) : ''}
+              ${done ? (rir == null
+                ? `<div class="rir-pick" data-ex="${it.exId}">今日のキツさ: <button class="rirb" data-rir="3">楽</button><button class="rirb" data-rir="1">普通</button><button class="rirb" data-rir="0">限界</button></div>`
+                : `<div class="rir-label">キツさ: ${rirLabel(rir)}</div>`) : ''}
+            </div>
           </div>
-          ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${wVal}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
-          <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1"><span class="unit">${rUnit}</span>
-          <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱</button>
+          <div class="ex-ctrl">
+            ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${wVal}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
+            <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1"><span class="unit">${rUnit}</span>
+            <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱ 休憩</button>
+          </div>
         </div>`;
     };
 
@@ -1190,7 +1194,7 @@ function renderHome() {
       ctx.day.items.forEach((it, i) => { html += exRow(it, false, i); });
       ctx.carry.forEach(it => { html += exRow(it, true); });
       if (!ctx.myMenu && ctx.idx >= 0) html += `<div style="padding:8px 0 2px"><button class="btn ghost small" id="home-add-ex" data-di="${ctx.idx}" style="width:100%">＋ 種目を追加</button></div>`;
-      html += `<p class="card-note">チェックすると記録に自動保存。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}${ctx.myMenu ? ' <button class="btn small ghost" id="mymenu-undo">通常メニューに戻す</button>' : ''}</p></div>`;
+      html += `<p class="card-note">⭕を1つずつタップ=1セットずつ記録、全部埋まると自動で完了。まとめて終わったら左のチェックでもOK。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}${ctx.myMenu ? ' <button class="btn small ghost" id="mymenu-undo">通常メニューに戻す</button>' : ''}</p></div>`;
     } else {
       const dow = new Date().getDay();
       const nextDays = S.plan.days.map((d, i) => ({ ...d, idx: i, diff: (d.weekday - dow + 7) % 7 || 7 })).sort((a, b) => a.diff - b.diff);
