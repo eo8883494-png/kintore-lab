@@ -113,6 +113,7 @@ function localReminderCardHtml() {
     <p style="font-size:13.5px;margin-bottom:10px">毎日 設定した時刻に「今日のトレ、いきましょう」と通知します。アプリを閉じていても届きます(この端末内で完結・ログイン不要)。</p>
     <div class="field"><label>通知する時刻</label><select id="lrm-hour">${hourOpts}</select></div>
     ${r.enabled ? `<button class="btn ghost" id="lrm-off">通知をOFFにする</button>` : `<button class="btn" id="lrm-on">この端末で通知をONにする</button>`}
+    <button class="btn ghost small" id="lrm-test" style="margin-top:8px">テスト(5秒後に通知)</button>
   </div>`;
 }
 function bindLocalReminder(root) {
@@ -127,6 +128,17 @@ function bindLocalReminder(root) {
   });
   const off = $('#lrm-off', root);
   if (off) off.addEventListener('click', async () => { await disableLocalReminder(); toast('通知をOFFにしました'); renderTools(); });
+  const test = $('#lrm-test', root);
+  if (test) test.addEventListener('click', async () => {
+    const LN = capPlugin('LocalNotifications');
+    if (!LN) { toast('この端末では通知を使えません'); return; }
+    try {
+      const perm = await LN.requestPermissions();
+      if (perm && perm.display !== 'granted') { toast('通知が許可されていません。設定→筋トレLAB→通知 で許可を'); return; }
+      await LN.schedule({ notifications: [{ id: LOCAL_REMINDER_ID + 1, title: '筋トレLAB 💪', body: 'テスト通知です。届いていればOK!', schedule: { at: new Date(Date.now() + 5000) } }] });
+      toast('5秒後にテスト通知を出します(アプリを閉じてもOK)');
+    } catch (e) { console.warn('[local-notif] test failed', e); toast('テスト通知に失敗しました'); }
+  });
 }
 
 // みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
