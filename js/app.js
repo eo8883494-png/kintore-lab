@@ -72,6 +72,53 @@ function refreshKeepAwake() {
   keepAwake(active);
 }
 
+// ===== HealthKit(Apple Health)連携: 体重の自動取込(iOSネイティブ・@perfood/capacitor-healthkit) =====
+function healthKitPlugin() { return capPlugin('CapacitorHealthkit'); }
+function hkToKg(value, unitName) {
+  const v = Number(value);
+  if (!isFinite(v)) return NaN;
+  const u = String(unitName || '').toLowerCase();
+  if (u === 'g' || u === 'gram') return v / 1000;
+  if (u === 'lb' || u === 'lbs' || u === 'pound' || u === 'pounds') return v * 0.45359237;
+  if (u === 'st' || u === 'stone') return v * 6.35029318;
+  return v; // 'kg' / 空 → kg扱い
+}
+async function importHealthWeight() {
+  const HK = healthKitPlugin();
+  if (!HK) { toast('この端末ではApple Healthを使えません'); return; }
+  try {
+    try { await HK.requestAuthorization({ all: [], read: ['weight'], write: [] }); }
+    catch (e) { console.warn('[healthkit] auth denied', e); toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
+    const end = new Date();
+    const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
+    const res = await HK.queryHKitSampleType({ sampleName: 'weight', startDate: start.toISOString(), endDate: end.toISOString(), limit: 0 });
+    const rows = (res && res.resultData) || [];
+    if (!rows.length) { toast('Apple Healthに体重データが見つかりませんでした'); return; }
+    // 日付ごとに最新サンプルを採用
+    const byDate = new Map();
+    rows.forEach(r => {
+      const kg = hkToKg(r.value, r.unitName);
+      if (!(kg > 20 && kg < 400)) return;
+      const iso = String(r.endDate || r.startDate || '');
+      const d = iso.slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return;
+      const prev = byDate.get(d);
+      if (!prev || iso > prev.iso) byDate.set(d, { kg: Math.round(kg * 10) / 10, iso });
+    });
+    let added = 0, updated = 0;
+    byDate.forEach((v, d) => {
+      const ex = S.weights.find(w => w.date === d);
+      if (ex) { if (ex.kg !== v.kg) { ex.kg = v.kg; updated++; } }
+      else { S.weights.push({ date: d, kg: v.kg }); added++; }
+    });
+    S.weights.sort((a, b) => (a.date < b.date ? -1 : 1));
+    saveState();
+    haptic('success');
+    toast(`Apple Healthから取り込みました(新規${added}件・更新${updated}件)`);
+    if (typeof renderLog === 'function') renderLog();
+  } catch (e) { console.warn('[healthkit] import failed', e); toast('取り込みに失敗しました'); }
+}
+
 // ===== ローカル通知(トレ通知・端末内で完結・ログイン/サーバー不要) =====
 const LOCAL_REMINDER_ID = 4201;
 function loadLocalReminder() {
@@ -2290,6 +2337,7 @@ function renderLog() {
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
         <button class="btn small" id="bw-save" style="white-space:nowrap">保存</button>
       </div>
+      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthから体重を取り込む</button>' : ''}
       ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
@@ -2342,6 +2390,8 @@ function renderLog() {
   if (browseBtn) browseBtn.addEventListener('click', openPublicGalleryModal);
 
   // 体重
+  const hkw = $('#hk-weight', root);
+  if (hkw) hkw.addEventListener('click', importHealthWeight);
   $('#bw-save', root).addEventListener('click', () => {
     const v = Number($('#bw-input', root).value);
     if (!v || v < 20) { toast('体重を入力してください'); return; }
