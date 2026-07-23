@@ -116,7 +116,7 @@ async function renderPhotoCard(container) {
         <figcaption>${p.type === 'goal' ? '🎯目標' : fmtDate(p.date)}</figcaption>
         <button class="photo-del" data-del-photo="${p.id}">✕</button>
       </figure>`).join('') + `</div>
-    <p class="card-note">写真は端末内(このブラウザ)にのみ保存。エクスポートには含まれないので機種変更時は個別に保存を。</p>`;
+    <p class="card-note">写真は端末内(${typeof storeWord === 'function' ? storeWord() : 'この端末'})にのみ保存。エクスポートには含まれないので機種変更時は個別に保存を。</p>`;
   }
 
   container.innerHTML = html;

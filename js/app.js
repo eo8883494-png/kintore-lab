@@ -18,6 +18,13 @@ function rebuildDB(customList) {
 rebuildDB();
 const EQUIP_NAMES = { bodyweight: '自重', dumbbell: 'ダンベル', barbell: 'バーベル', machine: 'マシン', cable: 'ケーブル' };
 
+// ネイティブアプリ(Capacitor/iOS)で動作中か。Webブラウザでは常にfalse。Web→アプリ移行期のUI出し分けに使う
+function isNativeApp() {
+  return !!(typeof window !== 'undefined' && window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+}
+// 保存先の呼び方(ネイティブ=アプリ内 / Web=ブラウザ内)。移行期の文言出し分け用
+function storeWord() { return isNativeApp() ? 'アプリ内' : 'ブラウザ内'; }
+
 // みんなのメニューに貼れるSNSリンク(主要SNS限定・フィッシング/スパム防止。Firebaseルールでも同等に検証)
 const SNS_RE = /^https:\/\/(?:www\.|m\.|vm\.)?(?:instagram\.com|youtube\.com|youtu\.be|tiktok\.com|x\.com|twitter\.com|threads\.net)\/[^\s]*$/i;
 function detectPlatform(url) {
@@ -2421,14 +2428,13 @@ function cloudCardHtml() {
       <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。</p>
     </div>
     <div class="card"><h2>🔔 トレ通知<span class="tag ${rm.enabled ? 'good' : 'none'}" style="font-size:10px">${rm.enabled ? 'ON' : 'OFF'}</span></h2>
-      ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。ブラウザ(またはスマホの設定アプリ)でこのサイトの通知を許可してください。</p>` : ''}
+      ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。${isNativeApp() ? 'スマホの設定→通知' : 'ブラウザ(またはスマホの設定アプリ)'}で通知を許可してください。</p>` : ''}
       <p style="font-size:13.5px;margin-bottom:10px">トレの日の設定時刻に「今日は○○の日💪」を通知します。アプリを閉じていても届きます。</p>
       <div class="field"><label>通知する時刻</label><select id="rm-hour" ${denied ? 'disabled' : ''}>${hourOpts}</select></div>
       ${rm.enabled
         ? `<button class="btn ghost" id="rm-off">通知をOFFにする</button>`
         : `<button class="btn" id="rm-on" ${denied ? 'disabled' : ''}>この端末で通知をONにする</button>`}
-      <p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのま
-まONでOK。</p>
+      ${isNativeApp() ? '' : '<p class="card-note">📱 iPhoneはSafariの共有ボタン→「ホーム画面に追加」でアプリ化してからONにしてください(iOS 16.4以降)。Androidはそのままでも届きます。</p>'}
     </div>`;
   }
   return `<div class="card"><h2>☁️ 端末間同期</h2>
@@ -2572,7 +2578,7 @@ function renderTools() {
         <button class="btn ghost" id="import-data">インポート</button>
       </div>
       <button class="btn danger" id="reset-data">全データ削除</button>
-      <p class="card-note">データはこの端末のブラウザ内にのみ保存されています。機種変更前にエクスポートを。</p>
+      <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。機種変更前にエクスポートを。</p>
     </div>
 
     <p class="card-note" style="text-align:center;padding:0 8px 8px">
