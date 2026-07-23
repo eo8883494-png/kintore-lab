@@ -186,6 +186,8 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .today-ex .sd { width: 19px; height: 19px; border-radius: 50%; border: 2px solid var(--line); box-sizing: border-box; cursor: pointer; flex: 0 0 auto; transition: background 0.12s, border-color 0.12s; }
 .today-ex .sd.on { background: var(--accent); border-color: var(--accent); }
 .today-ex .sdlabel { font-size: 11px; color: var(--ink-dim); font-weight: 700; margin-left: 3px; }
+.today-ex .po-hint { font-size: 11px; color: var(--ink-dim); margin-top: 4px; line-height: 1.4; }
+.today-ex .po-hint.up { color: var(--accent); font-weight: 700; }
 .today-ex.done .sdlabel { color: var(--accent); }
 .today-ex .ex-tmr {
   flex: 0 0 32px; width: 32px; height: 32px; border-radius: 9px;
