@@ -1184,6 +1184,23 @@ function exSearchName(ex) {
 
 // ===== 種目詳細モーダル =====
 // restSec を渡すと「この種目の休憩タイマー」ボタンを表示する
+// ウォームアップセット提案: 前回のメイン重量(lastW)から逓増(2.5kg刻み)。自重種目・記録なしは非表示
+function warmupHtml(ex) {
+  if (!ex || ex.equipment === 'bodyweight') return '';
+  const main = Number(S.lastW[ex.id]) || 0;
+  if (!(main > 0)) return '';
+  const r25 = kg => Math.max(2.5, Math.round(kg / 2.5) * 2.5);
+  const steps = [
+    ['50%', r25(main * 0.5), '8回'],
+    ['70%', r25(main * 0.7), '5回'],
+    ['85%', r25(main * 0.85), '3回'],
+  ].filter(([, w2], i, arr) => w2 < main && (i === 0 || w2 > arr[i - 1][1])); // メイン未満&逓増のみ
+  if (!steps.length) return '';
+  return `<div class="field"><label>ウォームアップ(前回 ${main}kg 基準)</label>
+    <p style="font-size:13px">${steps.map(([p, w2, r2]) => `<span class="chip">${p} ${w2}kg×${r2}</span>`).join(' → ')} → 本番</p>
+    <p class="card-note" style="margin-top:4px">軽い重量から神経系を起こすとメインの挙上が安定し、ケガ予防にも。休憩は各30〜60秒でOK。</p></div>`;
+}
+
 function openExerciseModal(exId, restSec, planRef) {
   const ex = DB.byId[exId];
   if (!ex) return;
@@ -1199,6 +1216,7 @@ function openExerciseModal(exId, restSec, planRef) {
       <tr><td>${esc(ex.repHyp)}</td><td>${esc(ex.repStr)}</td><td>${esc(ex.repEnd)}</td></tr></table>
     </div>
     ${ex.equipment !== 'bodyweight' ? '<div class="field"><label>重量の決め方</label><p style="font-size:12.5px;color:var(--ink-dim)">指定回数の下限がフォームを保ってギリギリできる重さが適正。迷ったら軽めで始めて、毎回2.5%(または最小プレート1枚)ずつ足す。</p></div>' : ''}
+    ${warmupHtml(ex)}
     ${restSec ? `<button class="btn" id="ex-timer" style="margin-bottom:10px">⏱ 休憩タイマー ${Math.round(restSec)}秒 スタート</button>` : ''}
     <a class="btn ${restSec ? 'ghost' : ''}" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
        href="https://www.youtube.com/results?search_query=${encodeURIComponent(exSearchName(ex) + ' フォーム やり方')}">🎬 フォーム動画を見る (YouTube)</a>
@@ -1563,6 +1581,25 @@ function renderHome() {
 
   html += healthTodayCardHtml(); // 歩数+睡眠カード(ネイティブ+同期済みのみ・空文字なら非表示)
 
+  // 週間ボリューム(今週 vs 先週)。どちらかに記録がある時だけ表示
+  {
+    const volThis = weekVolume(S.logs);
+    const volLast = weekVolume(S.logs, dateAdd(todayStr(), -7));
+    if (volThis > 0 || volLast > 0) {
+      const delta = volLast > 0 ? Math.round((volThis - volLast) / volLast * 100) : null;
+      const deltaHtml = delta == null ? '<span class="sub">先週の記録なし</span>'
+        : delta >= 0 ? `<span style="color:var(--accent);font-weight:800">先週比 +${delta}%</span>`
+        : `<span style="color:var(--ink-dim);font-weight:700">先週比 ${delta}%</span>`;
+      html += `<div class="card"><h2>📊 今週のボリューム</h2>
+        <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
+          <div><span class="big">${volThis.toLocaleString()}</span><small> kg</small></div>
+          <div>${deltaHtml}</div>
+        </div>
+        <p class="card-note">ボリューム=重量×回数の合計。先週より少しでも増えていれば成長のエンジン(漸進性過負荷)が回っています。</p>
+      </div>`;
+    }
+  }
+
   const ctx0 = todayPlanContext();
   if (!S.profile && !ctx0.myMenu) {
     html += `<div class="card"><div class="empty"><span class="big-emoji">💪</span>まずはプロフィール設定から。<br>30秒であなた専用メニューを作ります。</div>
@@ -1835,8 +1872,19 @@ function toggleDone(exId, checked) {
     if (!S.setCount[today]) S.setCount[today] = {};
     S.setCount[today][ck + '|' + exId] = item.sets; // ドット表示を満了に同期
     saveState();
+    // PR(自己ベスト)判定: 推定1RMが過去最高を超えたら祝う(重量記録がある種目のみ)
+    let prMsg = '';
+    if (w > 0 && r > 0) {
+      const prevBest = bestE1rmBefore(S.logs, exId, today);
+      const nowE = epley1RM(w, r);
+      if (prevBest != null && nowE > prevBest + 0.01) {
+        const ex = DB.byId[exId];
+        prMsg = `🏆 自己ベスト更新!${ex ? ex.name : ''} 推定1RM ${Math.round(nowE * 10) / 10}kg`;
+        haptic('success');
+      }
+    }
     const remaining = allItems.filter(i => DB.byId[i.exId] && !doneInCtx(i)).length;
-    toast(remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`);
+    toast(prMsg || (remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`));
     if (remaining === 0) setTimeout(() => { if (!$('#modal-bg')) openShareModal(today); }, 900); // 完遂したらシェアを提案 (別モーダル表示中は邪魔しない)
   } else {
     const e = ddGet(S.dayDone[today], exId);
@@ -2950,6 +2998,15 @@ function renderTools() {
       <div id="rm-out"></div>
     </div>
 
+    <div class="card"><h2>🏗️ プレート計算機</h2>
+      <p class="card-note" style="margin-top:-2px">目標重量にするには左右に何を付ければいいか。ジムで迷わない。</p>
+      <div class="grid2">
+        <div class="field"><label>目標重量 kg</label><input type="number" id="pl-target" placeholder="60" step="0.5"></div>
+        <div class="field"><label>バーの重さ</label><select id="pl-bar"><option value="20">20kg(オリンピック)</option><option value="15">15kg</option><option value="10">10kg</option><option value="0">0kg(ダンベル等)</option></select></div>
+      </div>
+      <div id="pl-out"></div>
+    </div>
+
     <div class="card"><h2>🍖 タンパク質 & カロリー</h2>
       ${p ? `<div class="tool-result">
         <div>1日のタンパク質目標 <span class="big">${Math.round(p.w * (SCIENCE.proteinPerKg[p.goal] || 1.8))}g</span></div>
@@ -3022,6 +3079,35 @@ function renderTools() {
   };
   $('#rm-w', root).addEventListener('input', rmCalc);
   $('#rm-r', root).addEventListener('input', rmCalc);
+
+  // プレート計算機: 目標重量 → 片側に付けるプレート(標準プレートで貪欲法)
+  const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
+  const plCalc = () => {
+    const target = Number($('#pl-target', root).value);
+    const bar = Number($('#pl-bar', root).value);
+    const out = $('#pl-out', root);
+    if (!out) return;
+    if (!target) { out.innerHTML = ''; return; }
+    if (target < bar) { out.innerHTML = `<p class="card-note" style="color:var(--warn)">目標がバー(${bar}kg)より軽いです。バーだけで始めましょう。</p>`; return; }
+    let side = (target - bar) / 2;
+    const used = [];
+    let rem = side;
+    PLATES.forEach(p2 => {
+      const n = Math.floor(rem / p2 + 1e-9);
+      if (n > 0) { used.push([p2, n]); rem = Math.round((rem - n * p2) * 100) / 100; }
+    });
+    const achieved = bar + (side - rem) * 2;
+    const chips = used.length
+      ? used.map(([p2, n]) => `<span class="chip">${p2}kg × ${n}</span>`).join(' ')
+      : '<span class="chip">プレートなし(バーのみ)</span>';
+    out.innerHTML = `<div class="tool-result">
+      <div style="margin-bottom:6px">片側に: ${chips}</div>
+      <div>合計 <span class="big">${(Math.round(achieved * 100) / 100)}<small>kg</small></span>${rem > 0.01 ? `<small style="color:var(--ink-dim)">(最小1.25kg刻みのため目標-${Math.round(rem * 2 * 100) / 100}kg)</small>` : ''}</div>
+    </div>`;
+  };
+  const plT = $('#pl-target', root), plB = $('#pl-bar', root);
+  if (plT) plT.addEventListener('input', plCalc);
+  if (plB) plB.addEventListener('change', plCalc);
 
   // FFMI
   // FFMI: 体脂肪率を自動推定して即算出(測定値の入力があれば優先)

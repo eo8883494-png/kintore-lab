@@ -60,6 +60,33 @@ function thisWeekDays(logs, base) {
   return count;
 }
 
+// 指定日より前の推定1RM自己ベスト(PR判定用)。記録が無ければ null
+function bestE1rmBefore(logs, exId, beforeDate) {
+  let best = null;
+  logs.filter(l => l.exId === exId && l.date < beforeDate).forEach(l => {
+    (l.sets || []).forEach(s => {
+      if (!s.w || !s.r) return;
+      const e = epley1RM(s.w, s.r);
+      if (best == null || e > best) best = e;
+    });
+  });
+  return best;
+}
+
+// 週の総ボリューム(kg)= Σ 重量×回数。基準日の週(月曜始まり)
+function weekVolume(logs, base) {
+  const baseDate = base || todayStr();
+  const dow = (new Date(baseDate + 'T12:00:00').getDay() + 6) % 7;
+  const monday = dateAdd(baseDate, -dow);
+  const days = new Set(Array.from({ length: 7 }, (_, i) => dateAdd(monday, i)));
+  let vol = 0;
+  logs.forEach(l => {
+    if (!days.has(l.date)) return;
+    (l.sets || []).forEach(s => { if (s.w > 0 && s.r > 0) vol += s.w * s.r; });
+  });
+  return Math.round(vol);
+}
+
 // 種目ごとの推定1RM推移 [{date, e1rm, top}]
 function e1rmHistory(logs, exId) {
   const byDate = {};
