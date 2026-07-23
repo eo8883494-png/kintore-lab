@@ -282,6 +282,27 @@ function healthTodayCardHtml() {
   </div>`;
 }
 
+// ===== 外部リンク(ネイティブ=OSに委譲しYouTube等のアプリで開く/Web=新規タブ) =====
+async function openExternal(url) {
+  const AL = capPlugin('AppLauncher');
+  if (isNativeApp() && AL) {
+    try { const r = await AL.openUrl({ url }); if (!r || r.completed !== false) return; } catch (e) {}
+  }
+  try { window.open(url, '_blank', 'noopener'); } catch (e) {}
+}
+// YouTube検索: アプリがあればYouTubeアプリで、無ければWebで開く
+async function openYouTubeSearch(query) {
+  const q = encodeURIComponent(query);
+  const AL = capPlugin('AppLauncher');
+  if (isNativeApp() && AL) {
+    try {
+      const r = await AL.openUrl({ url: 'youtube://www.youtube.com/results?search_query=' + q });
+      if (r && r.completed) return; // YouTubeアプリで開けた
+    } catch (e) { /* アプリ未インストール → Webへフォールバック */ }
+  }
+  openExternal('https://www.youtube.com/results?search_query=' + q);
+}
+
 // ===== ローカル通知(トレ通知・端末内で完結・ログイン/サーバー不要) =====
 const LOCAL_REMINDER_ID = 4201;
 function loadLocalReminder() {
@@ -1218,12 +1239,13 @@ function openExerciseModal(exId, restSec, planRef) {
     ${ex.equipment !== 'bodyweight' ? '<div class="field"><label>重量の決め方</label><p style="font-size:12.5px;color:var(--ink-dim)">指定回数の下限がフォームを保ってギリギリできる重さが適正。迷ったら軽めで始めて、毎回2.5%(または最小プレート1枚)ずつ足す。</p></div>' : ''}
     ${warmupHtml(ex)}
     ${restSec ? `<button class="btn" id="ex-timer" style="margin-bottom:10px">⏱ 休憩タイマー ${Math.round(restSec)}秒 スタート</button>` : ''}
-    <a class="btn ${restSec ? 'ghost' : ''}" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
-       href="https://www.youtube.com/results?search_query=${encodeURIComponent(exSearchName(ex) + ' フォーム やり方')}">🎬 フォーム動画を見る (YouTube)</a>
+    <button class="btn ${restSec ? 'ghost' : ''}" id="ex-yt" style="margin-bottom:10px">🎬 フォーム動画を見る (YouTube)</button>
     ${canEdit ? '<button class="btn ghost" id="ex-swap" style="margin-bottom:10px">🔄 別の種目に変える</button>' : ''}
     <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
   const sw = $('#ex-swap', bg);
   if (sw) sw.addEventListener('click', () => { closeModal(); openPlanExercisePicker(planRef.di, planRef.ii); });
+  const yt = $('#ex-yt', bg);
+  if (yt) yt.addEventListener('click', () => openYouTubeSearch(exSearchName(ex) + ' フォーム やり方'));
   const tb = $('#ex-timer', bg);
   if (tb) tb.addEventListener('click', () => {
     startRestTimer(restSec, ex.name + ' の休憩');
@@ -1554,11 +1576,12 @@ function openRecoveryModal(id) {
     <p class="modal-sub"><span class="tag low">${esc(RECOVERY_CAT_LABEL[m.cat] || '')}</span> ${esc(m.area)} / 目安 ${esc(m.amount)}</p>
     <div class="field"><label>やり方</label><p style="font-size:13.5px;line-height:1.7">${esc(m.cue)}</p></div>
     <div class="field"><label>ポイント</label><p style="font-size:13px;color:var(--ink-dim)">反動をつけずゆっくり、呼吸を止めない。<b style="color:var(--warn)">痛みが出たら中止</b>。休養日の回復を助ける低強度メニューです。</p></div>
-    <a class="btn ghost" style="margin-bottom:10px;text-decoration:none" target="_blank" rel="noopener"
-       href="https://www.youtube.com/results?search_query=${encodeURIComponent(m.name + ' やり方')}">🎬 やり方の動画を見る (YouTube)</a>
+    <button class="btn ghost" id="rc-yt" style="margin-bottom:10px">🎬 やり方の動画を見る (YouTube)</button>
     <button class="btn" id="rc-done-btn">${done ? '✓ 実施済み(取り消す)' : '実施した'}</button>
     <button class="btn ghost" onclick="closeModal()" style="margin-top:8px">閉じる</button>`);
   $('#rc-done-btn', bg).addEventListener('click', () => { toggleRecoveryDone(id, !done); closeModal(); });
+  const rcYt = $('#rc-yt', bg);
+  if (rcYt) rcYt.addEventListener('click', () => openYouTubeSearch(m.name + ' やり方'));
 }
 
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
@@ -3450,6 +3473,17 @@ document.addEventListener('visibilitychange', () => {
   refreshFromStorage();
   if (isNativeApp()) updateHealthDisplays();
 });
+
+// ネイティブ: 外部リンク(target=_blank)はOSに委譲(YouTube/Instagram等は対応アプリで開く)
+document.addEventListener('click', e => {
+  if (!isNativeApp()) return;
+  const a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
+  if (!a) return;
+  const href = a.getAttribute('href') || '';
+  if (!/^https?:\/\//i.test(href)) return;
+  e.preventDefault();
+  openExternal(href);
+}, true);
 
 // ===== 起動 =====
 document.addEventListener('DOMContentLoaded', () => {
