@@ -907,7 +907,8 @@ function renderHome() {
   const root = $('#view-home');
   const today = todayStr();
   homeDate = today;
-  const target = S.profile ? S.profile.days : 3;
+  // 週の目標日数は「実際にトレする日数」= プランの日数(除外で日が減ってもここに追従)。プラン未作成時はprofile.days
+  const target = S.plan ? Math.max(1, S.plan.days.length) : (S.profile ? S.profile.days : 3);
   const weekStreak = calcWeekStreak(S.logs, target);
   const weekDone = thisWeekDays(S.logs);
 
@@ -1865,7 +1866,7 @@ function renderLog() {
         <div class="field"><select id="vol-part"><option value="">全部位</option>${SCIENCE.parts.map(p => `<option value="${p.key}" ${logUiState.volPart === p.key ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
         <canvas class="chart" id="vol-chart"></canvas>
       </div>
-      <div class="card"><h2>🗓️ トレーニングカレンダー<span class="sub">直近12週</span></h2><div id="cal-heat"></div></div>`;
+      <div class="card"><h2>🗓️ トレーニングカレンダー</h2><div id="cal-heat"></div></div>`;
   }
 
   html += `<div class="card"><h2>📷 体型フォト<span class="sub">ビフォーアフター</span></h2><div id="photo-card"><p class="card-note">読み込み中...</p></div></div>`;

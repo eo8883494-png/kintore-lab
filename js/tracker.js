@@ -179,7 +179,7 @@ function drawBarChart(canvas, data, unit) {
     const h = (d.value / vMax) * ph;
     const yy = pad.t + ph - h;
     ctx.fillStyle = accent;
-    if (h > 0) roundTopRect(ctx, cx - bw / 2, yy, bw, h, 4);
+    if (h > 0 && bw > 0) roundTopRect(ctx, cx - bw / 2, yy, bw, h, 4);
     ctx.fillStyle = dim; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText(d.label, cx, H - 8);
     if (d.value > 0) {
@@ -191,7 +191,7 @@ function drawBarChart(canvas, data, unit) {
 
 // 上端だけ角丸の矩形 (ベースラインは直角のまま)
 function roundTopRect(ctx, x, y, w, h, r) {
-  const rr = Math.min(r, h, w / 2);
+  const rr = Math.max(0, Math.min(r, h, w / 2)); // 負の半径(arcTo例外)を防ぐ
   ctx.beginPath();
   ctx.moveTo(x, y + h);
   ctx.lineTo(x, y + rr);
@@ -204,22 +204,39 @@ function roundTopRect(ctx, x, y, w, h, r) {
 }
 
 // ===== カレンダーヒート (直近12週) =====
+let calMonthOffset = 0; // 0=今月, -1=先月 …
 function renderCalendarHeat(container, logs) {
   const dates = new Set(logs.map(l => l.date));
-  const now = todayStr();
-  const dow = (new Date().getDay() + 6) % 7;
-  const thisMonday = dateAdd(now, -dow);
-  let html = '<div class="cal-grid">';
-  for (let w = 11; w >= 0; w--) {
-    html += '<div class="cal-col">';
-    for (let d = 0; d < 7; d++) {
-      const date = dateAdd(thisMonday, -7 * w + d);
-      const future = date > now;
-      const active = dates.has(date);
-      html += `<div class="cal-cell${active ? ' on' : ''}${future ? ' future' : ''}" title="${fmtDate(date)}${active ? ' トレ済' : ''}"></div>`;
-    }
-    html += '</div>';
+  const todayS = todayStr();
+  const nowD = new Date(todayS + 'T12:00:00');
+  const base = new Date(nowD.getFullYear(), nowD.getMonth() + calMonthOffset, 1);
+  const year = base.getFullYear(), month = base.getMonth(); // 0-11
+  const pad2 = n => String(n).padStart(2, '0');
+  const ymd = d => `${year}-${pad2(month + 1)}-${pad2(d)}`;
+  const firstDow = (new Date(year, month, 1).getDay() + 6) % 7; // 月曜始まり
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  let trained = 0;
+  for (let d = 1; d <= daysInMonth; d++) if (dates.has(ymd(d))) trained++;
+
+  let html = `<div class="cal-head">
+    <button class="cal-nav" data-cal="-1" aria-label="前の月">‹</button>
+    <span class="cal-title">${year}年${month + 1}月 <small>${trained}日トレ</small></span>
+    <button class="cal-nav" data-cal="1" aria-label="次の月" ${calMonthOffset >= 0 ? 'disabled' : ''}>›</button>
+  </div>
+  <div class="cal-month">`;
+  ['月', '火', '水', '木', '金', '土', '日'].forEach(w => { html += `<div class="cal-wd">${w}</div>`; });
+  for (let i = 0; i < firstDow; i++) html += '<div class="cal-day empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const ds = ymd(d);
+    const cls = (dates.has(ds) ? ' on' : '') + (ds === todayS ? ' today' : '') + (ds > todayS ? ' future' : '');
+    html += `<div class="cal-day${cls}">${d}</div>`;
   }
-  html += '</div>';
+  html += '</div><p class="card-note" style="margin-top:8px">緑の日=トレした日。今日は枠で表示。‹ ›で月を移動できます。</p>';
   container.innerHTML = html;
+  container.querySelectorAll('.cal-nav').forEach(b => b.addEventListener('click', () => {
+    const delta = Number(b.dataset.cal);
+    if (delta > 0 && calMonthOffset >= 0) return; // 未来の月へは行かない
+    calMonthOffset += delta;
+    renderCalendarHeat(container, logs);
+  }));
 }
