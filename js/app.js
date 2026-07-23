@@ -83,17 +83,32 @@ function hkToKg(value, unitName) {
   if (u === 'st' || u === 'stone') return v * 6.35029318;
   return v; // 'kg' / 空 → kg扱い
 }
+// 今日の歩数を取得(取れなければ null)。perfoodのsampleName文字列が環境依存で不確実なため複数試す
+async function queryTodaySteps(HK) {
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  for (const name of ['stepCount', 'steps']) {
+    try {
+      const r = await HK.queryHKitSampleType({ sampleName: name, startDate: startOfDay.toISOString(), endDate: now.toISOString(), limit: 0 });
+      const rows = (r && r.resultData) || [];
+      if (rows.length) {
+        const total = rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+        if (total > 0) return Math.round(total);
+      }
+    } catch (e) { /* この文字列は非対応 → 次を試す */ }
+  }
+  return null;
+}
 async function importHealthWeight() {
   const HK = healthKitPlugin();
   if (!HK) { toast('この端末ではApple Healthを使えません'); return; }
   try {
-    try { await HK.requestAuthorization({ all: [], read: ['weight'], write: [] }); }
+    try { await HK.requestAuthorization({ all: [], read: ['weight', 'steps'], write: [] }); }
     catch (e) { console.warn('[healthkit] auth denied', e); toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
     const res = await HK.queryHKitSampleType({ sampleName: 'weight', startDate: start.toISOString(), endDate: end.toISOString(), limit: 0 });
     const rows = (res && res.resultData) || [];
-    if (!rows.length) { toast('Apple Healthに体重データが見つかりませんでした'); return; }
     // 日付ごとに最新サンプルを採用
     const byDate = new Map();
     rows.forEach(r => {
@@ -114,8 +129,13 @@ async function importHealthWeight() {
     S.weights.sort((a, b) => (a.date < b.date ? -1 : 1));
     saveState();
     haptic('success');
-    toast(`Apple Healthから取り込みました(新規${added}件・更新${updated}件)`);
-    if (typeof renderLog === 'function') renderLog();
+    // 先に体重反映で再描画 → その後に歩数を表示欄へ(再描画でDOMが作り直されるため順序が重要)
+    if (typeof renderLog === 'function' && (added || updated)) renderLog();
+    const steps = await queryTodaySteps(HK);
+    const stepEl = document.getElementById('hk-steps');
+    if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
+    if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
+    else toast(steps != null ? `今日の歩数: ${steps.toLocaleString()}歩(体重データは未登録)` : 'Apple Healthにデータが見つかりませんでした');
   } catch (e) { console.warn('[healthkit] import failed', e); toast('取り込みに失敗しました'); }
 }
 
@@ -2337,7 +2357,7 @@ function renderLog() {
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
         <button class="btn small" id="bw-save" style="white-space:nowrap">保存</button>
       </div>
-      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthから体重を取り込む</button>' : ''}
+      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthと同期(体重・歩数)</button><div id="hk-steps" class="card-note" style="margin-top:6px"></div>' : ''}
       ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
