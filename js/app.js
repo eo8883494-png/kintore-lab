@@ -310,6 +310,28 @@ function healthTodayCardHtml() {
   </div>`;
 }
 
+// ===== タイマー終了のバックグラウンド通知(iOSはロック/バックグラウンド中にWebの音が鳴らないため) =====
+const TIMER_NOTIF_ID = 4210;   // 休憩タイマー
+const IT_NOTIF_ID = 4211;      // インターバルタイマー完了
+async function scheduleTimerNotif(id, atMs, title, body) {
+  if (!isNativeApp()) return;
+  const LN = capPlugin('LocalNotifications');
+  if (!LN) return;
+  try {
+    let perm = LN.checkPermissions ? await LN.checkPermissions() : null;
+    if (perm && perm.display === 'prompt' && LN.requestPermissions) perm = await LN.requestPermissions(); // 初回のみ文脈内で許可を求める
+    if (perm && perm.display !== 'granted') return;
+    await LN.cancel({ notifications: [{ id }] });
+    if (atMs - Date.now() < 1500) return; // 直後すぎる場合は通知不要(前面アラームが鳴る)
+    await LN.schedule({ notifications: [{ id, title, body, schedule: { at: new Date(atMs + 500) } }] });
+  } catch (e) { /* 通知不可でもタイマー自体は動く */ }
+}
+async function cancelTimerNotif(id) {
+  if (!isNativeApp()) return;
+  const LN = capPlugin('LocalNotifications');
+  if (LN) { try { await LN.cancel({ notifications: [{ id }] }); } catch (e) {} }
+}
+
 // ===== 外部リンク(ネイティブ=OSに委譲しYouTube等のアプリで開く/Web=新規タブ) =====
 async function openExternal(url) {
   const AL = capPlugin('AppLauncher');
@@ -3365,6 +3387,7 @@ function startTimer() {
   const t = $('#timer-toggle');
   if (t) t.textContent = '⏸ 停止';
   refreshKeepAwake();
+  scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ');
   updateTimerDisp();
 }
 function stopTimer() {
@@ -3373,6 +3396,7 @@ function stopTimer() {
   const t = $('#timer-toggle');
   if (t) t.textContent = '▶ スタート';
   refreshKeepAwake();
+  cancelTimerNotif(TIMER_NOTIF_ID);
   updateTimerDisp();
 }
 function timerAlarm() {
@@ -3502,12 +3526,16 @@ function itStart() {
   iTimer.endAt = Date.now() + iTimer.sec * 1000;
   iTimer.iv = setInterval(itTick, 200);
   refreshKeepAwake();
+  // 完了時刻にバックグラウンド通知を予約(ロック中でも「メニュー完了」が届く)
+  const restMs = iTimer.phases.slice(iTimer.idx + 1).reduce((a, p) => a + p.sec * 1000, 0);
+  scheduleTimerNotif(IT_NOTIF_ID, iTimer.endAt + restMs, '🎉 メニュー完了!', 'インターバルタイマー終了。お疲れさま!');
   itSyncDisp();
 }
 function itPause() {
   clearInterval(iTimer.iv); iTimer.iv = null;
   iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
   refreshKeepAwake();
+  cancelTimerNotif(IT_NOTIF_ID);
   itSyncDisp();
 }
 function itReset() {
@@ -3515,6 +3543,7 @@ function itReset() {
   iTimer.phases = []; iTimer.idx = 0; iTimer.lastBeep = -1;
   iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work;
   refreshKeepAwake();
+  cancelTimerNotif(IT_NOTIF_ID);
   itSyncDisp();
 }
 function itTick() {
@@ -3536,6 +3565,7 @@ function itAdvance(overshootMs) {
   if (next >= iTimer.phases.length) {
     clearInterval(iTimer.iv); iTimer.iv = null;
     iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
+    cancelTimerNotif(IT_NOTIF_ID); // 前面で完了 → 予約済み通知は不要
     itFinishAlarm();
     if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
     haptic('success');
@@ -3660,5 +3690,5 @@ document.addEventListener('DOMContentLoaded', () => {
   const fabStop = document.getElementById('rt-stop');
   if (fabStop) fabStop.addEventListener('click', () => { stopTimer(); updateRestFab(); });
   const fabAdd = document.getElementById('rt-add');
-  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; tickTimer(); } });
+  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ'); tickTimer(); } });
 });
