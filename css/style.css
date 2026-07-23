@@ -235,6 +235,8 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 
 canvas.chart { width: 100%; height: 180px; display: block; }
 
+.tool-sec { font-size: 12px; font-weight: 800; color: var(--ink-dim); letter-spacing: 0.03em; margin: 20px 4px 8px; }
+.tool-sec:first-child { margin-top: 2px; }
 .wcups { display: flex; flex-wrap: wrap; gap: 3px; font-size: 20px; line-height: 1.3; }
 .wcup { opacity: 0.3; }
 .wcup.on { opacity: 1; }

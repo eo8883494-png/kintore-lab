@@ -2498,8 +2498,10 @@ function renderTools() {
   const p = S.profile;
 
   root.innerHTML = `
+    <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
+    <div class="tool-sec">タイマー</div>
     <div class="card"><h2>⏱️ 休憩タイマー</h2>
       <div class="timer-display" id="timer-disp">${fmtTimer(timer.sec)}</div>
       <div class="timer-btns">
@@ -2517,6 +2519,7 @@ function renderTools() {
 
     ${itCardHtml()}
 
+    <div class="tool-sec">計算ツール</div>
     <div class="card"><h2>🏋️ 1RM計算機</h2>
       <div class="grid2">
         <div class="field"><label>重量 kg</label><input type="number" id="rm-w" placeholder="60" step="0.5"></div>
@@ -2542,6 +2545,7 @@ function renderTools() {
       <div id="ffmi-out"></div>
     </div>
 
+    <div class="tool-sec">学ぶ</div>
     <div class="card"><h2>🔋 超回復ガイド</h2>
       <table class="recov-table">${SCIENCE.parts.map(pt => `<tr><td>${esc(pt.name)}</td><td>${pt.recoveryH}時間</td></tr>`).join('')}</table>
       <p class="card-note">同じ部位はこの時間を空けるのが目安。ホーム画面で自動追跡しています。</p>
@@ -2553,6 +2557,7 @@ function renderTools() {
       <details class="acc"><summary>3. 回復 — 筋肉は寝てる間に育つ</summary><div class="acc-body">睡眠不足は筋合成を大きく下げることが繰り返し報告されている。同部位は48〜72時間空ける。2ヶ月に1回は軽い週(ディロード)を入れると停滞を破れる。</div></details>
     </div>
 
+    <div class="tool-sec">その他</div>
     <div class="card"><h2>💬 フィードバック</h2>
       <p style="font-size:13px;margin-bottom:10px">「ここが使いにくい」「この種目を入れろ」大歓迎。ガチ勢のツッコミほど改善に効きます。</p>
       <div style="display:flex;gap:8px">
