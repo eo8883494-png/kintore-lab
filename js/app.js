@@ -60,7 +60,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -259,6 +259,15 @@ function sanitizeState(s) {
       if (Object.keys(m).length) out.setCount[dt] = m;
     });
   }
+  // 食事ログ(日付→[{id,qty}])
+  if (s.foodLog && typeof s.foodLog === 'object') {
+    Object.keys(s.foodLog).forEach(dt => {
+      if (!DATE_RE.test(dt) || !Array.isArray(s.foodLog[dt])) return;
+      const arr = s.foodLog[dt].slice(0, 60).map(it => (it && typeof it.id === 'string')
+        ? { id: it.id.slice(0, 60), qty: numIn(it.qty, 0.1, 50, 1) } : null).filter(Boolean);
+      if (arr.length) out.foodLog[dt] = arr;
+    });
+  }
   // アクティブレスト実施記録(日付→moveId→true)
   if (s.recoveryDone && typeof s.recoveryDone === 'object') {
     Object.keys(s.recoveryDone).forEach(dt => {
@@ -417,6 +426,10 @@ function mergeStates(local, remote) {
   const rd = {};
   [secondary.recoveryDone, primary.recoveryDone].forEach(src => { if (src) Object.keys(src).forEach(dt => { rd[dt] = { ...(rd[dt] || {}), ...src[dt] }; }); });
   out.recoveryDone = rd;
+  // 食事ログ: 日付ごとにprimary優先(その日の記録は端末単位で持つ)
+  const fl = {};
+  [secondary.foodLog, primary.foodLog].forEach(src => { if (src) Object.keys(src).forEach(dt => { fl[dt] = src[dt]; }); });
+  out.foodLog = fl;
   return out;
 }
 

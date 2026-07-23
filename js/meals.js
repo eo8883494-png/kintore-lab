@@ -13,6 +13,18 @@ function findFood(key) {
   return FOODS.find(f => f.id === key) || FOODS.find(f => f.name.indexOf(key) >= 0) || null;
 }
 
+// 食事ログ用
+const FOOD_BY_ID = {};
+FOODS.forEach(f => { FOOD_BY_ID[f.id] = f; });
+const FOOD_CAT_LABEL = { protein: 'タンパク質', carb: '主食・炭水化物', fatveg: '脂質・野菜・果物', snack: '間食・コンビニ' };
+function foodLogTotals(date) {
+  const list = (typeof S !== 'undefined' && S.foodLog && S.foodLog[date]) || [];
+  return list.reduce((a, it) => {
+    const f = FOOD_BY_ID[it.id]; if (!f) return a;
+    return { kcal: a.kcal + f.kcal * it.qty, p: a.p + f.p * it.qty, f: a.f + f.f * it.qty, c: a.c + f.c * it.qty };
+  }, { kcal: 0, p: 0, f: 0, c: 0 });
+}
+
 // ===== 目標計算 =====
 // 体重ナビと献立が必ず同じ方針になるよう、閾値は共有定数で持つ
 const RECOMP_BMI = 20.5;               // これ以下は減量させない(リコンプへ)
@@ -257,6 +269,39 @@ function renderMeals() {
     </div>
     <button class="btn ghost" id="meals-shuffle" style="margin-bottom:14px">🔀 別のパターンにする</button>`;
 
+  // 🍽️ 食べたものを記録(実測 vs 目標)
+  const flDate = todayStr();
+  const flTot = foodLogTotals(flDate);
+  const flList = (S.foodLog && S.foodLog[flDate]) || [];
+  const flBar = (label, val, tgt) => {
+    const pct = tgt > 0 ? Math.min(100, (val / tgt) * 100) : 0;
+    return `<div class="vol-row"><span class="nm">${label}</span><span class="bar"><i style="width:${pct}%"></i></span><span class="val">${Math.round(val)}<small style="color:var(--ink-dim)"> /${Math.round(tgt)}</small></span></div>`;
+  };
+  const flItems = flList.length ? flList.map((it, i) => {
+    const f = FOOD_BY_ID[it.id]; if (!f) return '';
+    return `<div class="meal-item"><div class="mi-info"><div class="nm">${esc(f.name)} <b class="amt">×${it.qty}</b></div><div class="meta">${esc(f.per)}</div></div>
+      <div class="mi-macros">${g(f.kcal * it.qty)}kcal<small>P${Math.round(f.p * it.qty * 10) / 10}g</small></div>
+      <button class="del fl-del" data-i="${i}" style="margin-left:6px">🗑</button></div>`;
+  }).join('') : '<p class="card-note">下から食べたものを追加すると、目標との差(残りカロリー・P)が一目で分かります。</p>';
+  const flOpts = Object.keys(FOOD_CAT_LABEL).map(cat => {
+    const items = FOODS.filter(f => f.cat === cat);
+    if (!items.length) return '';
+    return `<optgroup label="${FOOD_CAT_LABEL[cat]}">${items.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${esc(f.per)}・${g(f.kcal)}kcal）</option>`).join('')}</optgroup>`;
+  }).join('');
+  html += `<div class="card"><h2>🍽️ 食べたものを記録<span class="sub">今日の実測 vs 目標</span></h2>
+    ${flBar('kcal', flTot.kcal, t.kcal)}
+    ${flBar('P', flTot.p, t.p)}
+    ${flBar('F', flTot.f, t.f)}
+    ${flBar('C', flTot.c, t.c)}
+    <div id="fl-items" style="margin-top:8px">${flItems}</div>
+    <div style="display:flex;gap:6px;margin-top:10px">
+      <select id="fl-food" style="flex:1;min-width:0">${flOpts}</select>
+      <input type="number" id="fl-qty" value="1" min="0.5" step="0.5" style="width:52px;text-align:right">
+      <button class="btn small" id="fl-add">追加</button>
+    </div>
+    <p class="card-note">数量は「1食あたりの単位(表示中)」の個数。例: ご飯100gを1.5なら150g。</p>
+  </div>`;
+
   // 体重ナビ
   const nav = weightNav(S.profile, S.weights);
   html += `<div class="card"><h2>⚖️ 体重ナビ<span class="sub">現在${S.profile.w}kg / BMI ${nav.bmi}</span></h2>`;
@@ -356,6 +401,22 @@ function renderMeals() {
     toast(`目標を約${Math.abs(nav.suggestKcal)}kcal${nav.suggestKcal < 0 ? '下げ' : '上げ'}ました`);
     renderMeals();
   });
+  // 食事ログ 追加/削除
+  const flAdd = $('#fl-add', root);
+  if (flAdd) flAdd.addEventListener('click', () => {
+    const id = $('#fl-food', root).value;
+    const qty = Math.max(0.5, Math.round((Number($('#fl-qty', root).value) || 1) * 2) / 2);
+    if (!id || !FOOD_BY_ID[id]) return;
+    const dt = todayStr();
+    if (!S.foodLog[dt]) S.foodLog[dt] = [];
+    if (S.foodLog[dt].length >= 60) { toast('記録は1日60件までです'); return; }
+    S.foodLog[dt].push({ id, qty });
+    saveState(); renderMeals();
+  });
+  $all('.fl-del', root).forEach(b => b.addEventListener('click', () => {
+    const dt = todayStr(), i = Number(b.dataset.i);
+    if (S.foodLog[dt]) { S.foodLog[dt].splice(i, 1); if (!S.foodLog[dt].length) delete S.foodLog[dt]; saveState(); renderMeals(); }
+  }));
 }
 
 // 食事: PFC目標を自分で設定(カロリーはP/F/Cから導出)
