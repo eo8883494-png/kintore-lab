@@ -939,6 +939,45 @@ function openModal(html) {
 }
 function closeModal() { const m = $('#modal-bg'); if (m) m.remove(); }
 
+// ===== ペイウォール(サブスク課金画面のUI・RevenueCat接続は有料Apple Developer登録後) =====
+const PRO_PRICE_TEXT = '月額 ¥680';        // 仮価格。App Store Connectの商品確定後に差し替え
+const PRO_TRIAL_TEXT = '最初の1週間は無料';
+function openPaywall() {
+  const benefits = [
+    ['📊', '詳細分析の全解放', '効率シミュレーターの部位別・期間別の深掘り'],
+    ['♾️', 'マイメニュー無制限', 'ルーティンを好きなだけ保存・公開'],
+    ['📈', '高度なトラッキング', '体組成の詳細推定・停滞検知・自動カロリー調整'],
+    ['🍽️', 'フル食事プラン', 'PFC最適化・食事ログ・献立の細かい調整'],
+    ['🚫', '広告なし', '集中を邪魔しない'],
+    ['☁️', '全端末クラウド同期', '機種変更でもデータ引き継ぎ'],
+  ];
+  const bg = openModal(`<div class="paywall">
+    <button class="pw-close" onclick="closeModal()" aria-label="閉じる">×</button>
+    <div class="pw-hero">
+      <div class="pw-badge">PRO</div>
+      <h2 class="pw-title">筋トレLAB <span>Pro</span></h2>
+      <p class="pw-sub">科学的に、もっと効率よく。全機能を解放。</p>
+    </div>
+    <ul class="pw-benefits">
+      ${benefits.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
+    </ul>
+    <div class="pw-price">
+      <div class="pw-trial">🎁 ${PRO_TRIAL_TEXT}</div>
+      <div class="pw-amount">${PRO_PRICE_TEXT}<small>トライアル終了後・いつでも解約可能</small></div>
+    </div>
+    <button class="btn pw-cta" id="pw-start">1週間無料で始める</button>
+    <button class="btn ghost small" id="pw-restore" style="margin-top:8px;width:100%">購入を復元</button>
+    <p class="pw-legal">トライアル終了の24時間前までに解約すれば料金はかかりません。お支払いはApp Store経由。<a href="privacy.html" target="_blank">プライバシー</a>・利用規約に同意の上ご登録ください。</p>
+  </div>`);
+  $('#pw-start', bg).addEventListener('click', () => {
+    // TODO: RevenueCat Purchases.purchasePackage → entitlement 'pro' → S.pro=true(既存isPro機構)
+    toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)');
+  });
+  $('#pw-restore', bg).addEventListener('click', () => {
+    toast('購入の復元はApp Store対応後に有効化されます(準備中)');
+  });
+}
+
 // セグメントボタン生成
 function segHtml(name, options, current, extraCls) {
   return `<div class="seg ${extraCls || ''}" data-seg="${name}">` +
@@ -2857,6 +2896,10 @@ function renderTools() {
   const p = S.profile;
 
   root.innerHTML = `
+    <div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
+      <p class="card-note" style="margin-top:-2px">詳細分析・無制限マイメニュー・広告なし・全端末同期。<b style="color:var(--accent)">最初の1週間無料</b>。</p>
+      <button class="btn" id="open-paywall">Proを見る</button>
+    </div>
     <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
@@ -2928,6 +2971,8 @@ function renderTools() {
 
   bindCloudCard(root);
   bindLocalReminder(root);
+  const pwBtn = $('#open-paywall', root);
+  if (pwBtn) pwBtn.addEventListener('click', openPaywall);
 
   // タイマー
   $all('[data-t]', root).forEach(b => b.addEventListener('click', () => {
