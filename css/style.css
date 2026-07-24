@@ -267,6 +267,13 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .recov-cell.ready .st, .recov-cell.fresh .st { color: var(--accent); }
 .recov-cell.almost .st { color: var(--warn); }
 .recov-cell.resting .st { color: var(--danger); }
+/* 筋肉痛の記録(セルタップ)。表示は回復状態より優先 */
+.recov-cell { cursor: pointer; }
+.recov-cell:active { transform: scale(0.96); }
+.recov-cell.sore1 { border: 1px solid var(--warn); }
+.recov-cell.sore1 .st { color: var(--warn); }
+.recov-cell.sore2 { border: 1px solid var(--danger); background: rgba(241, 96, 78, 0.12); }
+.recov-cell.sore2 .st { color: var(--danger); }
 
 .tip-card { background: linear-gradient(135deg, rgba(200,241,78,0.08), rgba(78,217,241,0.06)); }
 

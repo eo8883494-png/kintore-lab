@@ -564,7 +564,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -813,6 +813,16 @@ function sanitizeState(s) {
       const m = {};
       Object.keys(s.recoveryDone[dt]).forEach(k => { if (s.recoveryDone[dt][k]) m[k.slice(0, 40)] = true; });
       if (Object.keys(m).length) out.recoveryDone[dt] = m;
+    });
+  }
+  // 筋肉痛の記録(部位→{date, level:1軽い|2強い})
+  if (s.soreness && typeof s.soreness === 'object') {
+    Object.keys(s.soreness).forEach(pt => {
+      if (!SCIENCE.partMap[pt]) return;
+      const v = s.soreness[pt];
+      if (!v || typeof v !== 'object' || typeof v.date !== 'string' || !DATE_RE.test(v.date)) return;
+      const lv = Math.round(numIn(v.level, 1, 2, 1));
+      out.soreness[pt] = { date: v.date, level: lv };
     });
   }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
@@ -1068,6 +1078,17 @@ function mergeStates(local, remote) {
   const rd = {};
   [secondary.recoveryDone, primary.recoveryDone].forEach(src => { if (src) Object.keys(src).forEach(dt => { rd[dt] = { ...(rd[dt] || {}), ...src[dt] }; }); });
   out.recoveryDone = rd;
+  // 筋肉痛: 部位ごとに新しい日付を採用(同日ならレベルが高い方)
+  const so = {};
+  [secondary.soreness, primary.soreness].forEach(src => {
+    if (!src) return;
+    Object.keys(src).forEach(pt => {
+      const v = src[pt];
+      const cur = so[pt];
+      if (!cur || v.date > cur.date || (v.date === cur.date && v.level > cur.level)) so[pt] = { ...v };
+    });
+  });
+  out.soreness = so;
   // 食事ログ: 日付ごとにprimary優先(その日の記録は端末単位で持つ)
   const fl = {};
   [secondary.foodLog, primary.foodLog].forEach(src => { if (src) Object.keys(src).forEach(dt => { fl[dt] = src[dt]; }); });
@@ -1816,6 +1837,52 @@ function openRecoveryModal(id) {
   if (rcYt) rcYt.addEventListener('click', () => openYouTubeSearch(m.name + ' やり方'));
 }
 
+// ===== 筋肉痛の記録と「やっていいか」判定 =====
+// 記録日とその翌日まで有効(それ以降は自動失効)。level: 1=軽い 2=強い
+function sorenessLevel(part) {
+  const s = S.soreness && S.soreness[part];
+  if (!s) return 0;
+  if (s.date < dateAdd(todayStr(), -1)) return 0;
+  return Number(s.level) || 0;
+}
+// 回復マップのセルをタップ: なし → 😣軽い → 🥵強い → なし
+function cycleSoreness(part) {
+  if (!SCIENCE.partMap[part]) return;
+  if (!S.soreness) S.soreness = {};
+  const next = (sorenessLevel(part) + 1) % 3;
+  if (next === 0) delete S.soreness[part];
+  else S.soreness[part] = { date: todayStr(), level: next };
+  saveState();
+  haptic('light');
+  const nm = SCIENCE.partMap[part].name;
+  toast(next === 0 ? `${nm}: 筋肉痛なしに戻しました` : next === 1 ? `😣 ${nm}: 軽い筋肉痛を記録` : `🥵 ${nm}: 強い筋肉痛を記録`);
+  renderHome();
+}
+// 今日のメニューの部位に筋肉痛があれば「やっていいか」ガイドを出す
+function sorenessAdviceHtml(ctx) {
+  if (!ctx || !ctx.day) return '';
+  const parts = [];
+  [...ctx.day.items, ...(ctx.carry || [])].forEach(i => {
+    const ex = DB.byId[i.exId];
+    if (ex && !parts.includes(ex.part)) parts.push(ex.part);
+  });
+  const strong = parts.filter(p2 => sorenessLevel(p2) === 2);
+  const light = parts.filter(p2 => sorenessLevel(p2) === 1 && !strong.includes(p2));
+  if (!strong.length && !light.length) return '';
+  const nm = arr => arr.map(p2 => SCIENCE.partMap[p2].name).join('・');
+  let html = '';
+  if (strong.length) {
+    html += `<div class="card" style="border-color:var(--danger)"><h2>🥵 ${esc(nm(strong))}が強い筋肉痛</h2>
+      <p style="font-size:13px;line-height:1.7">今日の${esc(nm(strong))}の種目は<b>休むか大幅に軽く</b>が正解。強い筋肉痛のまま高強度で行うとフォームが崩れて怪我リスクが上がり、筋肥大にもプラスになりません。回復してから全力でやる方が伸びます。</p>
+      <p class="card-note">軽い有酸素・ストレッチ(アクティブレスト)は血流を促して回復を早めます。痛みが4〜5日以上続くなら強度の上げすぎのサインです。</p></div>`;
+  }
+  if (light.length) {
+    html += `<div class="card" style="border-color:var(--warn)"><h2>😣 ${esc(nm(light))}が軽い筋肉痛</h2>
+      <p style="font-size:13px;line-height:1.7"><b>やってOK</b>です(軽い筋肉痛は筋肥大を妨げません)。ウォームアップをいつもより厚めにして、重量は前回と同じか少し軽めから。動き出すと楽になることが多いです。</p></div>`;
+  }
+  return html;
+}
+
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
 let homeCarry = [];   // renderHome時点の積み残しスナップショット (表示とチェック処理の一致保証)
 function renderHome() {
@@ -1879,6 +1946,8 @@ function renderHome() {
           <button class="btn small ghost" id="swap-skip">流す</button>
         </div></div>`;
     }
+
+    html += sorenessAdviceHtml(ctx); // 筋肉痛×今日の部位の「やっていいか」ガイド
 
     homeCarry = ctx.carry; // チェック処理と表示のズレを防ぐスナップショット
     const curCtxKey = ctxKeyOf(ctx); // 通常プランとマイメニューでチェック状態を分離
@@ -1945,12 +2014,17 @@ function renderHome() {
       html += activeRestCardHtml();
     }
 
-    // 回復マップ
+    // 回復マップ(タップで筋肉痛を記録: なし→😣軽い→🥵強い)
     const recov = recoveryStatus(S.logs, DB.byId);
     const stLabel = { fresh: '未実施', ready: '回復済', almost: 'もう少し', resting: '回復中' };
-    html += `<div class="card"><h2>🔋 部位の回復状態</h2><div class="recov-grid">` +
-      recov.map(r => `<div class="recov-cell ${r.state}"><div class="nm">${esc(r.name)}</div><div class="st">${r.state === 'resting' || r.state === 'almost' ? `あと${r.remainH}h` : stLabel[r.state]}</div></div>`).join('') +
-      `</div><p class="card-note">記録から超回復(48〜72時間)の目安を計算。「回復済」の部位が狙い目。</p></div>`;
+    html += `<div class="card"><h2>🔋 部位の回復状態<span class="sub">タップで筋肉痛を記録</span></h2><div class="recov-grid">` +
+      recov.map(r => {
+        const so2 = sorenessLevel(r.part);
+        const soreCls = so2 === 2 ? ' sore2' : so2 === 1 ? ' sore1' : '';
+        const st = so2 === 2 ? '🥵 強い筋肉痛' : so2 === 1 ? '😣 軽い筋肉痛' : (r.state === 'resting' || r.state === 'almost' ? `あと${r.remainH}h` : stLabel[r.state]);
+        return `<div class="recov-cell ${r.state}${soreCls}" data-sore-part="${r.part}"><div class="nm">${esc(r.name)}</div><div class="st">${st}</div></div>`;
+      }).join('') +
+      `</div><p class="card-note">記録から超回復(48〜72時間)の目安を計算。「回復済」の部位が狙い目。実際に筋肉痛の部位はセルをタップして記録すると、今日やっていいかをホームで判定します。</p></div>`;
   }
 
   html += infoCards; // 閲覧系(今日のカラダ・週間ボリューム)はメニューの下
@@ -1979,6 +2053,8 @@ function renderHome() {
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
   const cycleBtn = $('#cycle-setup', root);
   if (cycleBtn) cycleBtn.addEventListener('click', openCycleSetup);
+  // 回復マップのセルタップ = 筋肉痛の記録トグル
+  $all('[data-sore-part]', root).forEach(cell => cell.addEventListener('click', () => cycleSoreness(cell.dataset.sorePart)));
 
   const swapDo = $('#swap-do', root);
   if (swapDo) swapDo.addEventListener('click', () => {
