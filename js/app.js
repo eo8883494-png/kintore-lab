@@ -687,7 +687,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -936,6 +936,17 @@ function sanitizeState(s) {
       const m = {};
       Object.keys(s.recoveryDone[dt]).forEach(k => { if (s.recoveryDone[dt][k]) m[k.slice(0, 40)] = true; });
       if (Object.keys(m).length) out.recoveryDone[dt] = m;
+    });
+  }
+  // カード表示カスタマイズ(画面→{order[], hidden[]})
+  if (s.cardPrefs && typeof s.cardPrefs === 'object') {
+    Object.keys(s.cardPrefs).forEach(sc => {
+      if (!/^[a-z]{1,12}$/.test(sc)) return;
+      const v = s.cardPrefs[sc];
+      if (!v || typeof v !== 'object') return;
+      const clean = a => Array.isArray(a) ? [...new Set(a.filter(x => typeof x === 'string' && x.length <= 20))].slice(0, 30) : [];
+      const order = clean(v.order), hidden = clean(v.hidden);
+      if (order.length || hidden.length) out.cardPrefs[sc] = { order, hidden };
     });
   }
   // 実績バッジ(id→解除日)
@@ -1237,6 +1248,8 @@ function mergeStates(local, remote) {
   const rd = {};
   [secondary.recoveryDone, primary.recoveryDone].forEach(src => { if (src) Object.keys(src).forEach(dt => { rd[dt] = { ...(rd[dt] || {}), ...src[dt] }; }); });
   out.recoveryDone = rd;
+  // カード表示カスタマイズ: 画面ごとにprimary優先
+  out.cardPrefs = { ...secondary.cardPrefs, ...primary.cardPrefs };
   // 実績バッジ: union(先に取った日付=古い方を維持)
   const bg2 = {};
   [primary.badges, secondary.badges].forEach(src => {
@@ -2237,6 +2250,68 @@ function openGoalModal(exId) {
   if (gd) gd.addEventListener('click', () => { delete S.exGoals[exId]; saveState(); closeModal(); toast('目標を削除しました'); renderLog(); });
 }
 
+// ===== カードのカスタマイズ(表示/非表示・並び替え) =====
+function cardPrefFor(screen) {
+  const p = (S.cardPrefs || {})[screen];
+  return { order: (p && Array.isArray(p.order)) ? p.order : [], hidden: new Set((p && Array.isArray(p.hidden)) ? p.hidden : []) };
+}
+// cards=[{id,name,html}] → ユーザー設定(順序・非表示)を適用したhtml
+function arrangeCards(screen, cards) {
+  const pref = cardPrefFor(screen);
+  const pos = id => { const i = pref.order.indexOf(id); return i < 0 ? 500 : i; };
+  return cards
+    .map((c, i) => ({ ...c, _i: i }))
+    .filter(c => c.html && !pref.hidden.has(c.id))
+    .sort((a, b) => (pos(a.id) - pos(b.id)) || (a._i - b._i))
+    .map(c => c.html).join('');
+}
+function customizeBtnHtml(screen) {
+  return `<div style="text-align:center;margin:2px 0 10px"><button class="btn ghost small card-customize" data-screen="${screen}">⚙️ カードの表示・並び替え</button></div>`;
+}
+function bindCustomize(root, catalog, screen) {
+  $all('.card-customize', root).forEach(b => b.addEventListener('click', () => openCardCustomize(screen, catalog)));
+}
+function openCardCustomize(screen, catalog) {
+  const pref = cardPrefFor(screen);
+  const pos = id => { const i = pref.order.indexOf(id); return i < 0 ? 500 : i; };
+  const list = catalog.map((c, i) => ({ ...c, hidden: pref.hidden.has(c.id), _i: i }))
+    .sort((a, b) => (pos(a.id) - pos(b.id)) || (a._i - b._i));
+  const bg = openModal(`<h2>⚙️ カードの表示・並び替え</h2>
+    <p class="modal-sub">👁で表示/非表示・↑↓で並び替え。いつでも初期に戻せます。</p>
+    <div id="cc-list" style="max-height:52vh;overflow:auto"></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button class="btn ghost" id="cc-reset">初期に戻す</button>
+      <button class="btn" id="cc-save">保存</button>
+    </div>`);
+  const listEl = $('#cc-list', bg);
+  const draw = () => {
+    listEl.innerHTML = list.map((c, i) => `
+      <div class="cc-row ${c.hidden ? 'off' : ''}">
+        <button type="button" class="cc-eye" data-i="${i}">${c.hidden ? '🙈' : '👁'}</button>
+        <span class="cc-name">${esc(c.name)}</span>
+        <button type="button" class="cc-mv" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="cc-mv" data-i="${i}" data-d="1" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+      </div>`).join('');
+    $all('.cc-eye', listEl).forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.i); list[i].hidden = !list[i].hidden; draw(); }));
+    $all('.cc-mv', listEl).forEach(b => b.addEventListener('click', () => {
+      const i = Number(b.dataset.i), j = i + Number(b.dataset.d);
+      if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      draw();
+    }));
+  };
+  draw();
+  $('#cc-save', bg).addEventListener('click', () => {
+    if (!S.cardPrefs) S.cardPrefs = {};
+    S.cardPrefs[screen] = { order: list.map(c => c.id), hidden: list.filter(c => c.hidden).map(c => c.id) };
+    saveState(); closeModal(); route(); toast('表示設定を保存しました');
+  });
+  $('#cc-reset', bg).addEventListener('click', () => {
+    if (S.cardPrefs) delete S.cardPrefs[screen];
+    saveState(); closeModal(); route(); toast('初期配置に戻しました');
+  });
+}
+
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
 let homeCarry = [];   // renderHome時点の積み残しスナップショット (表示とチェック処理の一致保証)
 function renderHome() {
@@ -2257,9 +2332,10 @@ function renderHome() {
 
   checkBadges(); // 実績の新規解除チェック(解除済みは再発火しない)
 
-  // 閲覧系カード(先週まとめ・今日のカラダ・週間ボリューム)は「今日のメニュー」(操作系)の下に置く
-  // — ジムで開いた瞬間に記録UIが最上部に来るように(情報の優先度 = 操作 > 閲覧)
-  let infoCards = weeklyReportCardHtml() + healthTodayCardHtml();
+  // 閲覧系カードは「今日のメニュー」(操作系)の下に置き、⚙️で表示/非表示・並び替え可能
+  const wrHtml = weeklyReportCardHtml();
+  const healthHtml = healthTodayCardHtml();
+  let volHtml = '';
   {
     const volThis = weekVolume(S.logs);
     const volLast = weekVolume(S.logs, dateAdd(todayStr(), -7));
@@ -2277,7 +2353,7 @@ function renderHome() {
             : '<b style="color:var(--danger)">🔴 急増しすぎ</b> — 怪我リスク。今週は抑えるかディロードを'
           }<span style="color:var(--ink-dim);font-size:11.5px">(直近7日÷月平均 = ${lr.ratio})</span></p>`
         : '';
-      infoCards += `<div class="card"><h2>📊 今週のボリューム</h2>
+      volHtml = `<div class="card"><h2>📊 今週のボリューム</h2>
         <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
           <div><span class="big">${volThis.toLocaleString()}</span><small> kg</small></div>
           <div>${deltaHtml}</div>
@@ -2287,6 +2363,7 @@ function renderHome() {
       </div>`;
     }
   }
+  let recovHtml = '';
 
   const ctx0 = todayPlanContext();
   if (!S.profile && !ctx0.myMenu) {
@@ -2398,7 +2475,7 @@ function renderHome() {
     // 回復マップ(タップで筋肉痛を記録: なし→😣軽い→🥵強い)
     const recov = recoveryStatus(S.logs, DB.byId);
     const stLabel = { fresh: '未実施', ready: '回復済', almost: 'もう少し', resting: '回復中' };
-    html += `<div class="card"><h2>🔋 部位の回復状態<span class="sub">タップで筋肉痛を記録</span></h2><div class="recov-grid">` +
+    recovHtml = `<div class="card"><h2>🔋 部位の回復状態<span class="sub">タップで筋肉痛を記録</span></h2><div class="recov-grid">` +
       recov.map(r => {
         const so2 = sorenessLevel(r.part);
         const soreCls = so2 === 2 ? ' sore2' : so2 === 1 ? ' sore1' : '';
@@ -2408,15 +2485,21 @@ function renderHome() {
       `</div><p class="card-note">記録から超回復(48〜72時間)の目安を計算。「回復済」の部位が狙い目。実際に筋肉痛の部位はセルをタップして記録すると、今日やっていいかをホームで判定します。</p></div>`;
   }
 
-  html += infoCards; // 閲覧系(今日のカラダ・週間ボリューム)はメニューの下
-
-  // 今日のヒント (日替わり・未成年にはカフェイン系を出さない)
+  // 閲覧系カード群(⚙️で表示/非表示・並び替え)。今日のヒントは日替わり・未成年にはカフェイン系を出さない
   const tipList = S.profile && S.profile.age < 18 ? TIPS.filter(t => t.indexOf('カフェイン') < 0) : TIPS;
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
-  html += deloadCardHtml();
-  html += `<div class="card tip-card"><h2>💡 今日の筋知識</h2><p style="font-size:13.5px">${esc(tipList[tipIdx])}</p></div>`;
-  html += timingCardHtml();
-  html += cycleCardHtml();
+  const homeCards = [
+    { id: 'wreport', name: '先週のまとめ', html: wrHtml },
+    { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
+    { id: 'vol', name: '今週のボリューム・負荷バランス', html: volHtml },
+    { id: 'recov', name: '部位の回復状態', html: recovHtml },
+    { id: 'deload', name: 'ディロード提案', html: deloadCardHtml() },
+    { id: 'tip', name: '今日の筋知識', html: `<div class="card tip-card"><h2>💡 今日の筋知識</h2><p style="font-size:13.5px">${esc(tipList[tipIdx])}</p></div>` },
+    { id: 'timing', name: 'タイミング豆知識', html: timingCardHtml() },
+    { id: 'cycle', name: '生理周期ナビ', html: cycleCardHtml() },
+  ];
+  html += arrangeCards('home', homeCards);
+  html += customizeBtnHtml('home');
 
   root.innerHTML = html;
 
@@ -2436,6 +2519,7 @@ function renderHome() {
   const cycleBtn = $('#cycle-setup', root);
   if (cycleBtn) cycleBtn.addEventListener('click', openCycleSetup);
   // 回復マップのセルタップ = 筋肉痛の記録トグル / 外す・軽めボタン
+  bindCustomize(root, homeCards.map(c => ({ id: c.id, name: c.name })), 'home');
   $all('[data-sore-part]', root).forEach(cell => cell.addEventListener('click', () => cycleSoreness(cell.dataset.sorePart)));
   $all('.sore-adj', root).forEach(b => b.addEventListener('click', () => addSoreAdjust(String(b.dataset.parts || '').split(',').filter(Boolean), b.dataset.mode)));
   $all('.sore-skip-undo', root).forEach(b => b.addEventListener('click', clearSoreSkip));
@@ -3465,8 +3549,7 @@ function renderLog() {
   const root = $('#view-log');
   const hasLogs = S.logs.length > 0;
 
-  let html = `
-
+  const cMymenu = `
     <div class="card"><h2>📝 マイメニュー<span class="sub">自分のルーティンを保存</span></h2>
       <div id="mymenu-list">${S.myMenus.length ? S.myMenus.map(m => `
         <div class="log-entry"><div style="flex:1;min-width:0"><div class="nm">${esc(m.name)}${m.published ? '<span class="tag good" style="font-size:9px;margin-left:6px">公開中</span>' : ''}</div>
@@ -3476,13 +3559,15 @@ function renderLog() {
           <button class="del" data-mm-del="${m.id}">🗑</button></div>`).join('')
         : '<p class="card-note">よくやる自分の組み合わせを保存すると、ホームでワンタップ実行&チェック記録できます。DBにない種目も「オリジナル種目」として追加OK。</p>'}</div>
       <button class="btn ghost" id="mymenu-new">+ 新しいマイメニュー</button>
-    </div>
+    </div>`;
 
+  const cGallery = `
     <div class="card"><h2>🌐 みんなのメニュー<span class="sub">参考にする</span></h2>
       <p class="card-note">他の人が公開したマイメニューを見て参考にできます。自分のメニューを公開すると、InstagramなどのSNSリンクも一緒に載せられます(トレ動画の宣伝に)。</p>
       <button class="btn ghost" id="browse-public">みんなのメニューを見る</button>
-    </div>
+    </div>`;
 
+  const cWeight = `
     <div class="card"><h2>⚖️ 体重記録</h2>
       <div style="display:flex;gap:8px">
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
@@ -3492,30 +3577,39 @@ function renderLog() {
       ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
-  if (hasLogs) {
-    html += `
+  const cGrowth = hasLogs ? `
       <div class="card"><h2>📈 種目の成長 (推定1RM)</h2>
         <div class="field">${exerciseSelectHtml('chart-ex', logUiState.chartEx, true)}</div>
         <canvas class="chart" id="e1rm-chart"></canvas>
         <p class="card-note">推定1RM = 重量×(1+回数÷30)。重量か回数が増えれば右肩上がりになります。</p>
         <div id="goal-row" style="margin-top:8px"></div>
-      </div>
+      </div>` : '';
+  const cVolc = hasLogs ? `
       <div class="card"><h2>📊 週間ボリューム (総セット数)</h2>
         <div class="field"><select id="vol-part"><option value="">全部位</option>${SCIENCE.parts.map(p => `<option value="${p.key}" ${logUiState.volPart === p.key ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
         <canvas class="chart" id="vol-chart"></canvas>
-      </div>
-      <div class="card"><h2>🗓️ トレーニングカレンダー</h2><div id="cal-heat"></div></div>`;
-  }
+      </div>` : '';
+  const cCal = hasLogs ? `<div class="card"><h2>🗓️ トレーニングカレンダー</h2><div id="cal-heat"></div></div>` : '';
+  const cPhoto = `<div class="card"><h2>📷 体型フォト<span class="sub">ビフォーアフター</span></h2><div id="photo-card"><p class="card-note">読み込み中...</p></div></div>`;
+  const cHistory = `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームのチェック or 上のフォームから記録できます。</div>'}</div></div>`;
 
-  html += badgeCardHtml();
-  html += `<div class="card"><h2>📷 体型フォト<span class="sub">ビフォーアフター</span></h2><div id="photo-card"><p class="card-note">読み込み中...</p></div></div>`;
+  const logCards = [
+    { id: 'mymenu', name: 'マイメニュー', html: cMymenu },
+    { id: 'gallery', name: 'みんなのメニュー', html: cGallery },
+    { id: 'weight', name: '体重記録', html: cWeight },
+    { id: 'growth', name: '種目の成長(推定1RM)', html: cGrowth },
+    { id: 'volchart', name: '週間ボリューム(セット数)', html: cVolc },
+    { id: 'calendar', name: 'トレーニングカレンダー', html: cCal },
+    { id: 'badges', name: '実績バッジ', html: badgeCardHtml() },
+    { id: 'photo', name: '体型フォト', html: cPhoto },
+    { id: 'history', name: '履歴', html: cHistory },
+  ];
+  root.innerHTML = arrangeCards('log', logCards) + customizeBtnHtml('log');
+  bindCustomize(root, logCards.map(c => ({ id: c.id, name: c.name })), 'log');
 
-  html += `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームのチェック or 上のフォームから記録できます。</div>'}</div></div>`;
-
-  root.innerHTML = html;
-
-  // マイメニュー
-  $('#mymenu-new', root).addEventListener('click', () => openMyMenuModal());
+  // マイメニュー(カード非表示時はバインドしない)
+  const mmNew = $('#mymenu-new', root);
+  if (mmNew) mmNew.addEventListener('click', () => openMyMenuModal());
   $all('[data-mm-run]', root).forEach(btn => btn.addEventListener('click', () => {
     S.myToday = { date: todayStr(), id: Number(btn.dataset.mmRun) };
     saveState();
@@ -3545,7 +3639,8 @@ function renderLog() {
   // 体重
   const hkw = $('#hk-weight', root);
   if (hkw) hkw.addEventListener('click', importHealthWeight);
-  $('#bw-save', root).addEventListener('click', () => {
+  const bwSave = $('#bw-save', root);
+  if (bwSave) bwSave.addEventListener('click', () => {
     const v = Number($('#bw-input', root).value);
     if (!v || v < 20) { toast('体重を入力してください'); return; }
     S.weights = S.weights.filter(w => w.date !== todayStr());
@@ -3563,9 +3658,10 @@ function renderLog() {
 
   renderPhotoCard($('#photo-card', root));
 
-  // チャート
+  // チャート(各カードは非表示にできるので要素の有無でガード)
   if (hasLogs) {
     const chartEx = $('#chart-ex', root);
+    if (chartEx) {
     if (!logUiState.chartEx || !S.logs.some(l => l.exId === logUiState.chartEx)) logUiState.chartEx = chartEx.value;
     chartEx.value = logUiState.chartEx;
     const drawE1 = () => {
@@ -3615,23 +3711,24 @@ function renderLog() {
     chartEx.addEventListener('change', () => { logUiState.chartEx = chartEx.value; drawE1(); renderGoal(); });
     drawE1();
     renderGoal();
+    }
 
     const volSel = $('#vol-part', root);
     const drawVol = () => {
       const c = $('#vol-chart', root);
       if (c) drawBarChart(c, weeklyVolume(S.logs, DB.byId, logUiState.volPart || null).map(w => ({ label: w.label, value: w.sets })));
     };
-    volSel.addEventListener('change', () => { logUiState.volPart = volSel.value; drawVol(); });
-    drawVol();
+    if (volSel) { volSel.addEventListener('change', () => { logUiState.volPart = volSel.value; drawVol(); }); drawVol(); }
 
-    renderCalendarHeat($('#cal-heat', root), S.logs);
+    const calEl = $('#cal-heat', root);
+    if (calEl) renderCalendarHeat(calEl, S.logs);
 
     // 履歴リスト
     const byDate = {};
     S.logs.forEach(l => { (byDate[l.date] = byDate[l.date] || []).push(l); });
     const dates = Object.keys(byDate).sort().reverse().slice(0, 30);
     const list = $('#log-list', root);
-    list.innerHTML = dates.map(d => `
+    if (list) list.innerHTML = dates.map(d => `
       <div class="log-day"><div class="log-day-head">${fmtDate(d)}<button class="share-day" data-share="${d}" title="この日の記録をシェア">📸</button></div>
       ${byDate[d].map(l => {
         const ex = DB.byId[l.exId];
