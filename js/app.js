@@ -116,12 +116,12 @@ async function queryTodaySteps(H) {
   } catch (e) { console.warn('[health] read steps failed', e); }
   return null;
 }
-async function importHealthWeight() {
+async function importHealthWeight(silent) {
   const H = healthPlugin();
-  if (!H) { toast('この端末ではApple Healthを使えません'); return; }
+  if (!H) { if (!silent) toast('この端末ではApple Healthを使えません'); return; }
   try {
     try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
-    catch (e) { console.warn('[health] auth denied', e); toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
+    catch (e) { console.warn('[health] auth denied', e); if (!silent) toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
     let rows = [];
@@ -154,9 +154,10 @@ async function importHealthWeight() {
     const hp = loadHealthPref(); hp.autoSteps = true; saveHealthPref(hp); // 以後ホームに歩数・睡眠を表示
     const stepEl = document.getElementById('hk-steps');
     if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
+    if (silent) return; // 自動同期時はトーストを出さない(静かに反映)
     if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
     else toast(steps != null ? `今日の歩数: ${steps.toLocaleString()}歩(体重データは未登録)` : 'Apple Healthにデータが見つかりませんでした');
-  } catch (e) { console.warn('[health] import failed', e); toast('取り込みに失敗しました'); }
+  } catch (e) { console.warn('[health] import failed', e); if (!silent) toast('取り込みに失敗しました'); }
 }
 // アプリで入力した体重を Apple Health / Health Connect にも書き込む(双方向)。失敗しても無害
 async function writeHealthWeight(kg, dateStr) {
@@ -345,6 +346,15 @@ function endTimerActivity() {
   if (!N || !N.endTimerActivity) return;
   try { const p = N.endTimerActivity(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
 }
+// 進行中のLive Activityを更新(フェーズ切替用)。update未対応の旧ビルドでは開始し直しにフォールバック
+function updateTimerActivityNative(endAt, label) {
+  const N = klNative();
+  if (!N) return;
+  try {
+    if (N.updateTimerActivity) { const p = N.updateTimerActivity({ endAt, label: String(label || '') }); if (p && p.catch) p.catch(() => {}); }
+    else startTimerActivity(endAt, label, 'interval');
+  } catch (e) {}
+}
 // ホームウィジェットに今日のメニュー・進捗を書き出す(renderHome時)
 function updateHomeWidget() {
   const N = klNative();
@@ -393,6 +403,46 @@ function updateWatchData() {
     if (p && p.catch) p.catch(() => {});
   } catch (e) {}
 }
+// ===== レビュー依頼(SKStoreReviewController・KLNative経由) =====
+// メニュー完遂の"気分のいい瞬間"に、3回目・10回目・25回目だけ標準レビューダイアログを出す(60日クールダウン・Apple側でも年3回制限)
+function maybeRequestReview() {
+  const N = klNative();
+  if (!N || !N.requestReview) return false;
+  let st = {};
+  try { st = JSON.parse(localStorage.getItem('kintoreLab.review') || '{}'); } catch (e) {}
+  st.count = (Number(st.count) || 0) + 1;
+  const should = [3, 10, 25].includes(st.count) && !(st.at && Date.now() - st.at < 60 * 864e5);
+  if (should) st.at = Date.now();
+  try { localStorage.setItem('kintoreLab.review', JSON.stringify(st)); } catch (e) {}
+  if (should) {
+    setTimeout(() => { try { const p = N.requestReview(); if (p && p.catch) p.catch(() => {}); } catch (e) {} }, 1200);
+    return true;
+  }
+  return false;
+}
+
+// ===== アプリアイコンのバッジ(トレ日で未消化なら1・KLNative経由・設定でOFF可) =====
+function updateAppBadge() {
+  const N = klNative();
+  if (!N || !N.setBadge) return;
+  let n = 0;
+  let on = true;
+  try { on = localStorage.getItem('kintoreLab.badge') !== 'off'; } catch (e) {}
+  if (on) {
+    try {
+      const ctx = todayPlanContext();
+      if (ctx.day) {
+        const items = adjustItemsForSoreness([...ctx.day.items, ...(ctx.carry || [])]).filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId));
+        const dd = S.dayDone[todayStr()] || {};
+        const ck = ctxKeyOf(ctx);
+        const remaining = items.filter(i => { const e = ddGet(dd, i.exId); return !(e && e.src === ck); }).length;
+        n = remaining > 0 ? 1 : 0;
+      }
+    } catch (e) {}
+  }
+  try { const p = N.setBadge({ count: n }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+}
+
 function initWatchBridge() {
   const W = capPlugin('KLWatch');
   if (!W || !W.addListener) return;
@@ -435,35 +485,55 @@ function loadLocalReminder() {
   catch (e) { return { enabled: false, hour: 19, minute: 0 }; }
 }
 function saveLocalReminder(r) { try { localStorage.setItem('kintoreLab.localReminder', JSON.stringify(r)); } catch (e) {} }
+// 曜日別通知ID(JS getDay 0=日 → 4230..4236)。LOCAL_REMINDER_IDは旧・毎日通知(プラン未作成時のフォールバック)
+const WEEKDAY_REMINDER_IDS = [4230, 4231, 4232, 4233, 4234, 4235, 4236];
 // 世代カウンタ: ON/OFF/時刻変更の非同期処理が交錯した時、古い処理が新しい状態を上書きしないように
 let reminderGen = 0;
-async function enableLocalReminder(hour, minute) {
+async function cancelAllReminderNotifs(LN) {
+  try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }, ...WEEKDAY_REMINDER_IDS.map(id => ({ id }))] }); } catch (e) {}
+}
+async function enableLocalReminder(hour, minute, silent) {
   const LN = capPlugin('LocalNotifications');
-  if (!LN) { toast('この端末では通知を使えません'); return { ok: false, reason: 'unsupported' }; }
+  if (!LN) { if (!silent) toast('この端末では通知を使えません'); return { ok: false, reason: 'unsupported' }; }
   const gen = ++reminderGen;
   const h = Math.max(0, Math.min(23, Number(hour) || 0));
   const m = Math.max(0, Math.min(59, Number(minute) || 0));
   try {
     const perm = await LN.requestPermissions();
     if (gen !== reminderGen) return { ok: false, reason: 'superseded' };
-    if (perm && perm.display !== 'granted') { toast('通知が許可されませんでした。設定→筋トレLAB→通知 で許可してください'); return { ok: false, reason: 'denied' }; }
-    await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] });
+    if (perm && perm.display !== 'granted') { if (!silent) toast('通知が許可されませんでした。設定→筋トレLAB→通知 で許可してください'); return { ok: false, reason: 'denied' }; }
+    await cancelAllReminderNotifs(LN);
     if (gen !== reminderGen) return { ok: false, reason: 'superseded' };
-    await LN.schedule({ notifications: [{
-      id: LOCAL_REMINDER_ID,
-      title: '筋トレLAB 💪',
-      body: '今日のトレ、いきましょう。記録もお忘れなく。',
-      schedule: { on: { hour: h, minute: m }, repeats: true, allowWhileIdle: true },
-    }] });
-    if (gen !== reminderGen) { try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] }); } catch (e) {} return { ok: false, reason: 'superseded' }; }
+    // プランがあれば「トレの日だけ」曜日連動で通知(メニュー名入り)。無ければ毎日
+    const planDays = (S.plan && Array.isArray(S.plan.days) && S.plan.days.length) ? S.plan.days : null;
+    const notifications = planDays
+      ? planDays.map(d => ({
+          id: WEEKDAY_REMINDER_IDS[(d.weekday % 7 + 7) % 7],
+          title: '筋トレLAB 💪',
+          body: `今日は「${d.name}」の日。いきましょう!`,
+          schedule: { on: { weekday: ((d.weekday % 7 + 7) % 7) + 1, hour: h, minute: m }, repeats: true, allowWhileIdle: true },
+        }))
+      : [{
+          id: LOCAL_REMINDER_ID,
+          title: '筋トレLAB 💪',
+          body: '今日のトレ、いきましょう。記録もお忘れなく。',
+          schedule: { on: { hour: h, minute: m }, repeats: true, allowWhileIdle: true },
+        }];
+    await LN.schedule({ notifications });
+    if (gen !== reminderGen) { await cancelAllReminderNotifs(LN); return { ok: false, reason: 'superseded' }; }
     saveLocalReminder({ enabled: true, hour: h, minute: m });
     return { ok: true };
-  } catch (e) { console.warn('[local-notif] enable failed', e); toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
+  } catch (e) { console.warn('[local-notif] enable failed', e); if (!silent) toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
+}
+// 起動時: 通知ON中ならプランの現状に合わせて静かに再スケジュール(プラン変更の追従)
+function refreshReminderSchedule() {
+  const r = loadLocalReminder();
+  if (r.enabled) enableLocalReminder(r.hour, r.minute, true);
 }
 async function disableLocalReminder() {
   ++reminderGen; // 走行中のenableを無効化
   const LN = capPlugin('LocalNotifications');
-  if (LN) { try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }] }); } catch (e) {} }
+  if (LN) await cancelAllReminderNotifs(LN);
   const r = loadLocalReminder(); r.enabled = false; saveLocalReminder(r);
   return { ok: true };
 }
@@ -484,14 +554,16 @@ function localReminderCardHtml() {
     .map(h => `<option value="${h}" ${h === r.hour ? 'selected' : ''}>${String(h).padStart(2, '0')}時</option>`).join('');
   const minOpts = Array.from({ length: 12 }, (_, i) => i * 5)
     .map(m => `<option value="${m}" ${m === r.minute ? 'selected' : ''}>${String(m).padStart(2, '0')}分</option>`).join('');
+  const badgeOn = (() => { try { return localStorage.getItem('kintoreLab.badge') !== 'off'; } catch (e) { return true; } })();
   return `<div class="card"><h2>🔔 トレ通知<span class="tag ${r.enabled ? 'good' : 'none'}" style="font-size:10px">${r.enabled ? 'ON' : 'OFF'}</span></h2>
-    <p style="font-size:13.5px;margin-bottom:10px">毎日 設定した時刻に「今日のトレ、いきましょう」と通知します。アプリを閉じていても届きます(この端末内で完結・ログイン不要)。</p>
+    <p style="font-size:13.5px;margin-bottom:10px">${S.plan ? '<b>トレの日だけ</b>、設定した時刻に「今日は◯◯の日💪」と通知します' : '毎日 設定した時刻に通知します(プランを作るとトレの日だけに)'}。アプリを閉じていても届きます(端末内で完結・ログイン不要)。</p>
     <div class="grid2">
       <div class="field"><label>時</label><select id="lrm-hour">${hourOpts}</select></div>
       <div class="field"><label>分</label><select id="lrm-min">${minOpts}</select></div>
     </div>
     ${r.enabled ? `<button class="btn ghost" id="lrm-off">通知をOFFにする</button>` : `<button class="btn" id="lrm-on">この端末で通知をONにする</button>`}
     <button class="btn ghost small" id="lrm-test" style="margin-top:8px">テスト(5秒後に通知)</button>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-size:13px"><input type="checkbox" id="badge-toggle" ${badgeOn ? 'checked' : ''}> トレ未消化の日はアイコンにバッジを表示</label>
   </div>`;
 }
 function bindLocalReminder(root) {
@@ -509,6 +581,11 @@ function bindLocalReminder(root) {
   });
   const off = $('#lrm-off', root);
   if (off) off.addEventListener('click', async () => { await disableLocalReminder(); toast('通知をOFFにしました'); renderTools(); });
+  const badgeT = $('#badge-toggle', root);
+  if (badgeT) badgeT.addEventListener('change', () => {
+    try { localStorage.setItem('kintoreLab.badge', badgeT.checked ? 'on' : 'off'); } catch (e) {}
+    updateAppBadge();
+  });
   const test = $('#lrm-test', root);
   if (test) test.addEventListener('click', async () => {
     const LN = capPlugin('LocalNotifications');
@@ -2134,12 +2211,13 @@ function renderHome() {
 
   root.innerHTML = html;
 
-  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正 + ウィジェット/Watch更新
+  // カードがあれば、描画後に最新の歩数・睡眠を埋める + 睡眠タップで修正 + ウィジェット/Watch/バッジ更新
   if (isNativeApp()) {
     updateHealthDisplays();
     refreshHealthToday();
     updateHomeWidget();
     updateWatchData();
+    updateAppBadge();
     const sleepRow = $('#sleep-row', root);
     if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
   }
@@ -2325,7 +2403,10 @@ function toggleDone(exId, checked) {
     }
     const remaining = allItems.filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId) && !doneInCtx(i)).length; // 外した種目は完遂判定から除外
     toast(prMsg || (remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`));
-    if (remaining === 0) setTimeout(() => { if (!$('#modal-bg')) openShareModal(today); }, 900); // 完遂したらシェアを提案 (別モーダル表示中は邪魔しない)
+    if (remaining === 0) {
+      const reviewing = maybeRequestReview(); // 3/10/25回目の完遂でApp Storeレビュー依頼(その回はシェア提案を出さない)
+      if (!reviewing) setTimeout(() => { if (!$('#modal-bg')) openShareModal(today); }, 900); // 完遂したらシェアを提案 (別モーダル表示中は邪魔しない)
+    }
   } else {
     const e = ddGet(S.dayDone[today], exId);
     // 現在のコンテキストで作った記録だけを消す (別セッションの記録は触らない)
@@ -3903,8 +3984,14 @@ function itStart() {
   // 完了時刻にバックグラウンド通知を予約(ロック中でも「メニュー完了」が届く)
   const restMs = iTimer.phases.slice(iTimer.idx + 1).reduce((a, p) => a + p.sec * 1000, 0);
   scheduleTimerNotif(IT_NOTIF_ID, iTimer.endAt + restMs, '🎉 メニュー完了!', 'インターバルタイマー終了。お疲れさま!');
-  startTimerActivity(iTimer.endAt + restMs, 'インターバル', 'interval'); // ロック画面に全体の残り時間
+  startTimerActivity(iTimer.endAt, itActivityLabel(), 'interval'); // ロック画面に現在フェーズの残り時間
   itSyncDisp();
+}
+// Live Activity用の現在フェーズ表示名(例: トレーニング 3/8)
+function itActivityLabel() {
+  const p = iTimer.phases[iTimer.idx];
+  if (!p) return 'インターバル';
+  return p.rep ? `${p.label} ${p.rep}/${itCfg.reps}` : p.label;
 }
 function itPause() {
   clearInterval(iTimer.iv); iTimer.iv = null;
@@ -3959,6 +4046,7 @@ function itAdvance(overshootMs) {
   itBeep(p.type === 'work' ? 880 : 520, 0.18);
   if (navigator.vibrate) navigator.vibrate(p.type === 'work' ? [120, 60, 120] : [200]);
   haptic(p.type === 'work' ? 'heavy' : 'light');
+  updateTimerActivityNative(iTimer.endAt, itActivityLabel()); // ロック画面のフェーズ表示を更新
   itSyncDisp();
 }
 function itBeep(freq, dur) {
@@ -4039,7 +4127,7 @@ function refreshFromStorage() {
 }
 window.addEventListener('storage', e => { if (e.key === LS_KEY) refreshFromStorage(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { markActive(); return; } // 離脱時刻を記録(睡眠推定の起点)
+  if (document.hidden) { markActive(); if (isNativeApp()) updateAppBadge(); return; } // 離脱時刻を記録+バッジ更新
   if (timer.iv) tickTimer(); // ロック中に満了したタイマーは復帰直後に鳴らす
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
@@ -4063,6 +4151,13 @@ document.addEventListener('DOMContentLoaded', () => {
   detectSleepFromGap();               // 起動時: 前回操作からの無操作ギャップを睡眠推定(朝の起床時)
   setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
   initWatchBridge();                  // Apple Watchからのセット完了を受ける(未組み込みはno-op)
+  if (isNativeApp()) {
+    // 起動から少し遅らせて: 通知をプランに追従して再スケジュール + Apple Health自動同期(一度同期した人のみ・静かに)
+    setTimeout(() => {
+      refreshReminderSchedule();
+      if (loadHealthPref().autoSteps) importHealthWeight(true);
+    }, 1500);
+  }
   route();
   if (!S.profile) openProfileWizard(true);
   // 浮遊レストタイマーのボタン (静的要素なので一度だけ束縛)

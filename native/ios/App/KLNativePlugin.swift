@@ -5,9 +5,56 @@ import Foundation
 import Capacitor
 import ActivityKit
 import WidgetKit
+import StoreKit
+import UserNotifications
 
 @objc(KLNativePlugin)
 public class KLNativePlugin: CAPPlugin {
+
+    // App Storeの標準レビューダイアログを要求(Apple側で年3回まで表示制御される)
+    @objc func requestReview(_ call: CAPPluginCall) {
+        DispatchQueue.main.async {
+            if let scene = UIApplication.shared.connectedScenes.first(where: { $0.activationState == .foregroundActive }) as? UIWindowScene {
+                if #available(iOS 14.0, *) {
+                    SKStoreReviewController.requestReview(in: scene)
+                }
+            }
+            call.resolve()
+        }
+    }
+
+    // アプリアイコンのバッジ数を設定(0でクリア)
+    @objc func setBadge(_ call: CAPPluginCall) {
+        let n = call.getInt("count") ?? 0
+        DispatchQueue.main.async {
+            if #available(iOS 16.0, *) {
+                UNUserNotificationCenter.current().setBadgeCount(n) { _ in }
+            } else {
+                UIApplication.shared.applicationIconBadgeNumber = n
+            }
+            call.resolve()
+        }
+    }
+
+    // 進行中のLive Activityを更新(インターバルのフェーズ切替表示用)
+    @objc func updateTimerActivity(_ call: CAPPluginCall) {
+        guard #available(iOS 16.1, *) else { call.resolve(); return }
+        let endMs = call.getDouble("endAt") ?? 0
+        let label = call.getString("label") ?? ""
+        guard endMs > 0 else { call.resolve(); return }
+        let end = Date(timeIntervalSince1970: endMs / 1000)
+        Task {
+            let state = KLTimerAttributes.ContentState(endDate: end, label: label)
+            for a in Activity<KLTimerAttributes>.activities {
+                if #available(iOS 16.2, *) {
+                    await a.update(ActivityContent(state: state, staleDate: end.addingTimeInterval(60)))
+                } else {
+                    await a.update(using: state)
+                }
+            }
+            call.resolve()
+        }
+    }
 
     // タイマーのLive Activityを開始(既存があれば終了してから)
     @objc func startTimerActivity(_ call: CAPPluginCall) {

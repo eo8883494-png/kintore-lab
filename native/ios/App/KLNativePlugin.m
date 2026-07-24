@@ -5,5 +5,8 @@
 CAP_PLUGIN(KLNativePlugin, "KLNative",
   CAP_PLUGIN_METHOD(startTimerActivity, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(endTimerActivity, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(updateTimerActivity, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(updateWidget, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(requestReview, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(setBadge, CAPPluginReturnPromise);
 )

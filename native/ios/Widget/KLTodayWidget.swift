@@ -32,10 +32,43 @@ struct KLTodayProvider: TimelineProvider {
 }
 
 struct KLTodayWidgetView: View {
+    @Environment(\.widgetFamily) var family
     var entry: KLTodayEntry
     private let accent = Color(red: 0.78, green: 0.95, blue: 0.31)
 
     var body: some View {
+        switch family {
+        case .accessoryCircular: circularView
+        case .accessoryRectangular: rectangularView
+        default: fullView
+        }
+    }
+
+    // ロック画面(丸): 進捗リング
+    private var circularView: some View {
+        Gauge(value: Double(min(entry.done, max(entry.total, 1))), in: 0...Double(max(entry.total, 1))) {
+            Text("💪")
+        } currentValueLabel: {
+            Text(entry.total > 0 ? "\(entry.done)/\(entry.total)" : "–")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+        }
+        .gaugeStyle(.accessoryCircular)
+        .klAccessoryBackground()
+    }
+
+    // ロック画面(横長): メニュー名+進捗
+    private var rectangularView: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(entry.title).font(.headline).lineLimit(1)
+            Text(entry.total > 0 ? "進捗 \(entry.done)/\(entry.total)\(entry.done >= entry.total ? " 完遂🎉" : "")" : entry.sub)
+                .font(.caption2)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .klAccessoryBackground()
+    }
+
+    private var fullView: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("筋トレLAB 🧪")
                 .font(.caption2)
@@ -81,6 +114,14 @@ extension View {
             self.background(Color(red: 0.055, green: 0.063, blue: 0.075))
         }
     }
+    // ロック画面ウィジェット用(背景はシステム任せ=透明)
+    @ViewBuilder func klAccessoryBackground() -> some View {
+        if #available(iOSApplicationExtension 17.0, *) {
+            self.containerBackground(for: .widget) { Color.clear }
+        } else {
+            self
+        }
+    }
 }
 
 struct KLTodayWidget: Widget {
@@ -90,6 +131,6 @@ struct KLTodayWidget: Widget {
         }
         .configurationDisplayName("今日のメニュー")
         .description("今日のトレーニングと進捗をひと目で。")
-        .supportedFamilies([.systemSmall, .systemMedium])
+        .supportedFamilies([.systemSmall, .systemMedium, .accessoryCircular, .accessoryRectangular])
     }
 }
