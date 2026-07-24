@@ -354,7 +354,7 @@ function updateHomeWidget() {
     const today = todayStr();
     let title = '今日は休息日 😴', sub = '回復も筋トレのうち。タンパク質と睡眠を', done = 0, total = 0;
     if (ctx.day) {
-      const items = [...ctx.day.items, ...(ctx.carry || [])].filter(i => DB.byId[i.exId]);
+      const items = adjustItemsForSoreness([...ctx.day.items, ...(ctx.carry || [])]).filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId));
       total = items.length;
       const dd = S.dayDone[today] || {};
       const ck = ctxKeyOf(ctx);
@@ -381,7 +381,7 @@ function updateWatchData() {
       const dd = S.dayDone[today] || {};
       payload = {
         title: ctx.day.name,
-        items: [...ctx.day.items, ...(ctx.carry || [])].filter(i => DB.byId[i.exId]).map(i => {
+        items: adjustItemsForSoreness([...ctx.day.items, ...(ctx.carry || [])]).filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId)).map(i => {
           const e = ddGet(dd, i.exId);
           const done = !!(e && e.src === ck);
           const cnt = done ? i.sets : ((S.setCount[today] || {})[ck + '|' + i.exId] || 0);
@@ -564,7 +564,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -824,6 +824,12 @@ function sanitizeState(s) {
       const lv = Math.round(numIn(v.level, 1, 2, 1));
       out.soreness[pt] = { date: v.date, level: lv };
     });
+  }
+  // 筋肉痛による当日のメニュー調整({date, skip:[part], light:[part]})
+  if (s.soreSkip && typeof s.soreSkip === 'object' && typeof s.soreSkip.date === 'string' && DATE_RE.test(s.soreSkip.date)) {
+    const clean = a => Array.isArray(a) ? [...new Set(a.filter(p2 => SCIENCE.partMap[p2]))].slice(0, 10) : [];
+    const skip = clean(s.soreSkip.skip), light = clean(s.soreSkip.light).filter(p2 => !skip.includes(p2));
+    if (skip.length || light.length) out.soreSkip = { date: s.soreSkip.date, skip, light };
   }
   out.pro = !!s.pro; // Pro購入フラグ(買い切り解除。一度trueなら維持=mergeでsticky-true)
   return out;
@@ -1089,6 +1095,16 @@ function mergeStates(local, remote) {
     });
   });
   out.soreness = so;
+  // 当日のメニュー調整: 今日の分だけ有効・両方今日ならunion(skipがlightより優先)
+  {
+    const arr = [primary.soreSkip, secondary.soreSkip].filter(x => x && x.date === today);
+    if (!arr.length) out.soreSkip = null;
+    else {
+      const skip = [...new Set(arr.flatMap(x => Array.isArray(x.skip) ? x.skip : []))];
+      const light = [...new Set(arr.flatMap(x => Array.isArray(x.light) ? x.light : []))].filter(p2 => !skip.includes(p2));
+      out.soreSkip = (skip.length || light.length) ? { date: today, skip, light } : null;
+    }
+  }
   // 食事ログ: 日付ごとにprimary優先(その日の記録は端末単位で持つ)
   const fl = {};
   [secondary.foodLog, primary.foodLog].forEach(src => { if (src) Object.keys(src).forEach(dt => { fl[dt] = src[dt]; }); });
@@ -1858,7 +1874,56 @@ function cycleSoreness(part) {
   toast(next === 0 ? `${nm}: 筋肉痛なしに戻しました` : next === 1 ? `😣 ${nm}: 軽い筋肉痛を記録` : `🥵 ${nm}: 強い筋肉痛を記録`);
   renderHome();
 }
-// 今日のメニューの部位に筋肉痛があれば「やっていいか」ガイドを出す
+// 「筋肉痛の部位を今日は外す/軽くする」= 当日のメニュー調整。
+// 強い筋肉痛が続いている部位のみ有効(筋肉痛の解除 or 翌日で自動復帰)。
+// S.soreSkip = { date, skip:[part], light:[part] }
+function soreSkipParts() {
+  const sk = S.soreSkip;
+  if (!sk || sk.date !== todayStr() || !Array.isArray(sk.skip)) return [];
+  return sk.skip.filter(p2 => sorenessLevel(p2) === 2);
+}
+function soreLightParts() {
+  const sk = S.soreSkip;
+  if (!sk || sk.date !== todayStr() || !Array.isArray(sk.light)) return [];
+  const skip = soreSkipParts();
+  return sk.light.filter(p2 => sorenessLevel(p2) === 2 && !skip.includes(p2));
+}
+function isSoreSkipped(exId) {
+  const ex = DB.byId[exId];
+  return !!ex && soreSkipParts().includes(ex.part);
+}
+// 軽めモードの部位はセット数を半分(切り上げ・最低1)にした調整済みitemを返す(表示と記録の両方で使う)
+function adjustItemsForSoreness(items) {
+  const light = soreLightParts();
+  if (!light.length) return items;
+  return items.map(it => {
+    const ex = DB.byId[it.exId];
+    if (ex && light.includes(ex.part)) return { ...it, sets: Math.max(1, Math.ceil(it.sets / 2)), _light: true };
+    return it;
+  });
+}
+function addSoreAdjust(parts, mode) {
+  const today = todayStr();
+  const cur = (S.soreSkip && S.soreSkip.date === today) ? S.soreSkip : { date: today, skip: [], light: [] };
+  const skip = new Set(Array.isArray(cur.skip) ? cur.skip : []);
+  const light = new Set(Array.isArray(cur.light) ? cur.light : []);
+  parts.filter(p2 => SCIENCE.partMap[p2]).forEach(p2 => {
+    if (mode === 'skip') { skip.add(p2); light.delete(p2); }
+    else { light.add(p2); skip.delete(p2); }
+  });
+  S.soreSkip = { date: today, skip: [...skip], light: [...light] };
+  saveState();
+  haptic('light');
+  toast(mode === 'skip' ? '今日のメニューから外しました(明日は自動で戻ります)' : '今日は軽めメニューにしました(セット半分・重量も軽めに)');
+  renderHome();
+}
+function clearSoreSkip() {
+  S.soreSkip = null;
+  saveState();
+  toast('メニューを元に戻しました');
+  renderHome();
+}
+// 今日のメニューの部位に筋肉痛があれば「やっていいか」ガイド+メニュー調整ボタンを出す
 function sorenessAdviceHtml(ctx) {
   if (!ctx || !ctx.day) return '';
   const parts = [];
@@ -1872,9 +1937,24 @@ function sorenessAdviceHtml(ctx) {
   const nm = arr => arr.map(p2 => SCIENCE.partMap[p2].name).join('・');
   let html = '';
   if (strong.length) {
+    const skipA = soreSkipParts(), lightA = soreLightParts();
+    const notAdj = strong.filter(p2 => !skipA.includes(p2) && !lightA.includes(p2));
+    let action = '';
+    if (notAdj.length) {
+      action = `<div style="display:flex;gap:8px;margin-top:6px">
+        <button class="btn small sore-adj" data-mode="skip" data-parts="${notAdj.join(',')}" style="flex:1">🛌 今日は外す</button>
+        <button class="btn small ghost sore-adj" data-mode="light" data-parts="${notAdj.join(',')}" style="flex:1">🪶 軽めにする</button>
+      </div>`;
+    } else {
+      const st = [];
+      if (skipA.length) st.push(`🛌 ${nm(strong.filter(p2 => skipA.includes(p2)))}は今日お休み`);
+      if (lightA.length) st.push(`🪶 ${nm(strong.filter(p2 => lightA.includes(p2)))}は軽めメニュー`);
+      action = `<p style="font-size:13px;color:var(--accent)">✓ ${esc(st.join(' / '))}(明日自動で戻ります) <button class="btn small ghost sore-skip-undo" style="padding:6px 10px">元に戻す</button></p>`;
+    }
     html += `<div class="card" style="border-color:var(--danger)"><h2>🥵 ${esc(nm(strong))}が強い筋肉痛</h2>
-      <p style="font-size:13px;line-height:1.7">今日の${esc(nm(strong))}の種目は<b>休むか大幅に軽く</b>が正解。強い筋肉痛のまま高強度で行うとフォームが崩れて怪我リスクが上がり、筋肥大にもプラスになりません。回復してから全力でやる方が伸びます。</p>
-      <p class="card-note">軽い有酸素・ストレッチ(アクティブレスト)は血流を促して回復を早めます。痛みが4〜5日以上続くなら強度の上げすぎのサインです。</p></div>`;
+      <p style="font-size:13px;line-height:1.7">今日の${esc(nm(strong))}の種目は<b>休むか大幅に軽く</b>が正解。強い筋肉痛のまま高強度で行うとフォームが崩れて怪我リスクが上がり、筋肥大にもプラスになりません。</p>
+      ${action}
+      <p class="card-note" style="margin-top:8px">軽い有酸素・ストレッチ(アクティブレスト)は血流を促して回復を早めます。痛みが4〜5日以上続くなら強度の上げすぎのサインです。</p></div>`;
   }
   if (light.length) {
     html += `<div class="card" style="border-color:var(--warn)"><h2>😣 ${esc(nm(light))}が軽い筋肉痛</h2>
@@ -1978,9 +2058,9 @@ function renderHome() {
             <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
             <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${planCtx ? ` data-di="${ctx.idx}" data-ii="${idx}"` : ''}>
               <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
-              <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
+              <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it._light ? '<b style="color:var(--accent2)">🪶軽め</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
               <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
-              ${po && po.hint && !done ? (deloadActive && po.up
+              ${it._light && !done ? `<div class="po-hint">🪶 筋肉痛のため軽め推奨: 重量は前回の6割くらいで丁寧に</div>` : po && po.hint && !done ? (deloadActive && po.up
                 ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
                 : `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>`) : ''}
               ${done ? (rir == null
@@ -1997,10 +2077,25 @@ function renderHome() {
     };
 
     if (ctx.day) {
-      const burn = S.profile ? sessionBurn([...ctx.day.items, ...ctx.carry], DB.byId, S.profile.w) : 0;
-      html += `<div class="card"><h2>🏋️ 今日は「${esc(ctx.day.name)}」${ctx.swapped ? '<span class="tag high" style="font-size:10px">振替</span>' : ''}${ctx.myMenu ? '<span class="tag low" style="font-size:10px">マイ</span>' : ''}<span class="sub">約${ctx.day.minutes}分 / 約${burn}kcal</span></h2>`;
-      ctx.day.items.forEach((it, i) => { html += exRow(it, false, i); });
-      ctx.carry.forEach(it => { html += exRow(it, true); });
+      // 筋肉痛調整: 「外す」部位の種目は非表示・「軽め」部位はセット半分(明日自動復帰・戻すボタンあり)
+      const adjPlan = adjustItemsForSoreness(ctx.day.items);
+      const adjCarry = adjustItemsForSoreness(ctx.carry);
+      const visPlan = adjPlan.filter(it => !isSoreSkipped(it.exId));
+      const visCarry = adjCarry.filter(it => !isSoreSkipped(it.exId));
+      const skippedCount = (adjPlan.length - visPlan.length) + (adjCarry.length - visCarry.length);
+      const lightCount = [...visPlan, ...visCarry].filter(it => it._light).length;
+      const minutes = (skippedCount > 0 || lightCount > 0) ? dayMinutes(visPlan) : ctx.day.minutes;
+      const burn = S.profile ? sessionBurn([...visPlan, ...visCarry], DB.byId, S.profile.w) : 0;
+      html += `<div class="card"><h2>🏋️ 今日は「${esc(ctx.day.name)}」${ctx.swapped ? '<span class="tag high" style="font-size:10px">振替</span>' : ''}${ctx.myMenu ? '<span class="tag low" style="font-size:10px">マイ</span>' : ''}<span class="sub">約${minutes}分 / 約${burn}kcal</span></h2>`;
+      if (skippedCount > 0 || lightCount > 0) {
+        const parts2 = [];
+        if (skippedCount > 0) parts2.push(`🛌 ${skippedCount}種目お休み`);
+        if (lightCount > 0) parts2.push(`🪶 ${lightCount}種目軽め`);
+        html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:12.5px;color:var(--ink-dim)">筋肉痛調整: ${parts2.join(' / ')}</span><button class="btn small ghost sore-skip-undo" style="padding:6px 10px">戻す</button></div>`;
+      }
+      if (!visPlan.length && !visCarry.length) html += `<div class="empty" style="padding:14px 0"><span class="big-emoji">🛌</span>今日の種目はすべて筋肉痛のためお休み。<br>回復も筋トレのうち。アクティブレストとタンパク質を。</div>`;
+      adjPlan.forEach((it, i) => { if (!isSoreSkipped(it.exId)) html += exRow(it, false, i); });
+      adjCarry.forEach(it => { if (!isSoreSkipped(it.exId)) html += exRow(it, true); });
       if (!ctx.myMenu && ctx.idx >= 0) html += `<div style="padding:8px 0 2px"><button class="btn ghost small" id="home-add-ex" data-di="${ctx.idx}" style="width:100%">＋ 種目を追加</button></div>`;
       html += `<p class="card-note">⭕を1つずつタップ=1セットずつ記録、全部埋まると自動で完了。まとめて終わったら左のチェックでもOK。種目名タップでフォーム解説と動画。◆は優先部位。重量は「指定回数がギリギリできる重さ」、わからない日は軽めでOK・次回ちょい足し。${ctx.carry.length ? '⏳は前回やり残した分(回復済みの部位のみ提案)。' : ''}${ctx.swapped ? ' <button class="btn small ghost" id="swap-undo">振替をやめる</button>' : ''}${ctx.myMenu ? ' <button class="btn small ghost" id="mymenu-undo">通常メニューに戻す</button>' : ''}</p></div>`;
     } else {
@@ -2053,8 +2148,10 @@ function renderHome() {
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
   const cycleBtn = $('#cycle-setup', root);
   if (cycleBtn) cycleBtn.addEventListener('click', openCycleSetup);
-  // 回復マップのセルタップ = 筋肉痛の記録トグル
+  // 回復マップのセルタップ = 筋肉痛の記録トグル / 外す・軽めボタン
   $all('[data-sore-part]', root).forEach(cell => cell.addEventListener('click', () => cycleSoreness(cell.dataset.sorePart)));
+  $all('.sore-adj', root).forEach(b => b.addEventListener('click', () => addSoreAdjust(String(b.dataset.parts || '').split(',').filter(Boolean), b.dataset.mode)));
+  $all('.sore-skip-undo', root).forEach(b => b.addEventListener('click', clearSoreSkip));
 
   const swapDo = $('#swap-do', root);
   if (swapDo) swapDo.addEventListener('click', () => {
@@ -2147,7 +2244,7 @@ function setExerciseProgress(exId, newCount) {
   if (homeDate !== today) { renderHome(); return; }
   const ctx = todayPlanContext();
   const ck = ctxKeyOf(ctx);
-  const allItems = ctx.day ? [...ctx.day.items, ...homeCarry] : [];
+  const allItems = ctx.day ? adjustItemsForSoreness([...ctx.day.items, ...homeCarry]) : []; // 軽めモードはセット数も記録も半分で一致させる
   const item = allItems.find(i => i.exId === exId);
   if (!item) return;
   const total = item.sets;
@@ -2183,7 +2280,7 @@ function toggleDone(exId, checked) {
   if (!S.dayDone[today]) S.dayDone[today] = {};
   const ctx = todayPlanContext();
   const ck = ctxKeyOf(ctx);
-  const allItems = ctx.day ? [...ctx.day.items, ...homeCarry] : [];
+  const allItems = ctx.day ? adjustItemsForSoreness([...ctx.day.items, ...homeCarry]) : []; // 軽めモードはセット数も記録も半分で一致させる
   const item = allItems.find(i => i.exId === exId);
   const doneInCtx = i => { const e = ddGet(S.dayDone[today], i.exId); return e && e.src === ck; };
   if (checked && item) {
@@ -2226,7 +2323,7 @@ function toggleDone(exId, checked) {
         haptic('success');
       }
     }
-    const remaining = allItems.filter(i => DB.byId[i.exId] && !doneInCtx(i)).length;
+    const remaining = allItems.filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId) && !doneInCtx(i)).length; // 外した種目は完遂判定から除外
     toast(prMsg || (remaining === 0 ? '🎉 今日のメニュー完遂!ナイスワーク!' : `記録しました(残り${remaining}種目)`));
     if (remaining === 0) setTimeout(() => { if (!$('#modal-bg')) openShareModal(today); }, 900); // 完遂したらシェアを提案 (別モーダル表示中は邪魔しない)
   } else {
