@@ -1472,7 +1472,7 @@ function bindPaywall(bg) {
       const r = await B.purchase(pwPlan);
       if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); }
       else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す */ }
-      else { toast('購入を完了できませんでした。時間をおいて再度お試しください'); }
+      else { toast('購入失敗: ' + ((r && r.error) || '不明')); }
     } finally { start.disabled = false; start.textContent = orig; }
   });
   const restore = $('#pw-restore', bg);
