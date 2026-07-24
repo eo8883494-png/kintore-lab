@@ -11,7 +11,20 @@ import CoreSpotlight
 import UniformTypeIdentifiers
 
 @objc(KLNativePlugin)
-public class KLNativePlugin: CAPPlugin {
+public class KLNativePlugin: CAPPlugin, CAPBridgedPlugin {
+    // Capacitor 6/7 はこの準拠が無いとプラグインを認識・登録しない(.mのCAP_PLUGINだけでは不足)
+    public let identifier = "KLNativePlugin"
+    public let jsName = "KLNative"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "startTimerActivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "endTimerActivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "updateTimerActivity", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "updateWidget", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestReview", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setBadge", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "consumePendingAction", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "indexSpotlight", returnType: CAPPluginReturnPromise)
+    ]
 
     // App Storeの標準レビューダイアログを要求(Apple側で年3回まで表示制御される)
     @objc func requestReview(_ call: CAPPluginCall) {

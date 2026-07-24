@@ -7,7 +7,13 @@ import Capacitor
 import WatchConnectivity
 
 @objc(KLWatchPlugin)
-public class KLWatchPlugin: CAPPlugin, WCSessionDelegate {
+public class KLWatchPlugin: CAPPlugin, CAPBridgedPlugin, WCSessionDelegate {
+    // Capacitor 6/7 の登録に必須
+    public let identifier = "KLWatchPlugin"
+    public let jsName = "KLWatch"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "updateWatchData", returnType: CAPPluginReturnPromise)
+    ]
 
     public override func load() {
         if WCSession.isSupported() {
