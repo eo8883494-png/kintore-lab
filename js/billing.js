@@ -51,7 +51,12 @@
   function entitledFrom(customerInfo) {
     try {
       const act = customerInfo && customerInfo.entitlements && customerInfo.entitlements.active;
-      return !!(act && act[ENTITLEMENT_ID]);
+      if (!act) return false;
+      // 'pro' を優先。ただし本アプリはPro単一ティア(全商品が同じProを付与)なので、
+      // Entitlement識別子が何であれ(例: RevenueCatで「筋トレLAB Pro」と命名)、
+      // 有効なEntitlementが1つでもあればPro扱いにして取りこぼしを防ぐ。
+      if (act[ENTITLEMENT_ID]) return true;
+      return Object.keys(act).length > 0;
     } catch (e) { return false; }
   }
 
