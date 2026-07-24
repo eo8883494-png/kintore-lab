@@ -527,8 +527,9 @@ function saveLocalReminder(r) { try { localStorage.setItem('kintoreLab.localRemi
 const WEEKDAY_REMINDER_IDS = [4230, 4231, 4232, 4233, 4234, 4235, 4236];
 // 世代カウンタ: ON/OFF/時刻変更の非同期処理が交錯した時、古い処理が新しい状態を上書きしないように
 let reminderGen = 0;
+const WEEKLY_REPORT_ID = 4240; // 月曜朝の「先週のまとめ」通知
 async function cancelAllReminderNotifs(LN) {
-  try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }, ...WEEKDAY_REMINDER_IDS.map(id => ({ id }))] }); } catch (e) {}
+  try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }, { id: WEEKLY_REPORT_ID }, ...WEEKDAY_REMINDER_IDS.map(id => ({ id }))] }); } catch (e) {}
 }
 async function enableLocalReminder(hour, minute, silent) {
   const LN = capPlugin('LocalNotifications');
@@ -557,6 +558,13 @@ async function enableLocalReminder(hour, minute, silent) {
           body: '今日のトレ、いきましょう。記録もお忘れなく。',
           schedule: { on: { hour: h, minute: m }, repeats: true, allowWhileIdle: true },
         }];
+    // 月曜8:00「先週のまとめ」も一緒に予約(トレ通知ONの人だけ)
+    notifications.push({
+      id: WEEKLY_REPORT_ID,
+      title: '📊 先週のまとめができました',
+      body: '先週のトレ日数・ボリューム・自己ベストを振り返ろう',
+      schedule: { on: { weekday: 2, hour: 8, minute: 0 }, repeats: true, allowWhileIdle: true },
+    });
     await LN.schedule({ notifications });
     if (gen !== reminderGen) { await cancelAllReminderNotifs(LN); return { ok: false, reason: 'superseded' }; }
     saveLocalReminder({ enabled: true, hour: h, minute: m });
@@ -679,7 +687,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -928,6 +936,36 @@ function sanitizeState(s) {
       const m = {};
       Object.keys(s.recoveryDone[dt]).forEach(k => { if (s.recoveryDone[dt][k]) m[k.slice(0, 40)] = true; });
       if (Object.keys(m).length) out.recoveryDone[dt] = m;
+    });
+  }
+  // 実績バッジ(id→解除日)
+  if (s.badges && typeof s.badges === 'object') {
+    Object.keys(s.badges).forEach(id => {
+      const d = s.badges[id];
+      if (typeof id === 'string' && id.length <= 30 && typeof d === 'string' && DATE_RE.test(d)) out.badges[id.slice(0, 30)] = d;
+    });
+  }
+  // 種目の目標1RM(exId→{target})
+  if (s.exGoals && typeof s.exGoals === 'object') {
+    Object.keys(s.exGoals).forEach(ex => {
+      const g = s.exGoals[ex];
+      if (!g || typeof g !== 'object') return;
+      const t = numIn(g.target, 1, 1000, 0);
+      if (t > 0) out.exGoals[ex.slice(0, 60)] = { target: Math.round(t * 10) / 10 };
+    });
+  }
+  // セット別の実施記録(日付→ctx|exId→[{w,r}])
+  if (s.setDetail && typeof s.setDetail === 'object') {
+    Object.keys(s.setDetail).forEach(dt => {
+      if (!DATE_RE.test(dt) || !s.setDetail[dt] || typeof s.setDetail[dt] !== 'object') return;
+      const m = {};
+      Object.keys(s.setDetail[dt]).forEach(k => {
+        const arr = s.setDetail[dt][k];
+        if (!Array.isArray(arr)) return;
+        const clean = arr.slice(0, 10).map(x => (x && typeof x === 'object') ? { w: numIn(x.w, 0, 1000, 0), r: Math.round(numIn(x.r, 0, 999, 0)) } : null).filter(Boolean);
+        if (clean.length) m[k.slice(0, 100)] = clean;
+      });
+      if (Object.keys(m).length) out.setDetail[dt] = m;
     });
   }
   // 筋肉痛の記録(部位→{date, level:1軽い|2強い})
@@ -1199,6 +1237,31 @@ function mergeStates(local, remote) {
   const rd = {};
   [secondary.recoveryDone, primary.recoveryDone].forEach(src => { if (src) Object.keys(src).forEach(dt => { rd[dt] = { ...(rd[dt] || {}), ...src[dt] }; }); });
   out.recoveryDone = rd;
+  // 実績バッジ: union(先に取った日付=古い方を維持)
+  const bg2 = {};
+  [primary.badges, secondary.badges].forEach(src => {
+    if (!src) return;
+    Object.keys(src).forEach(id => { if (!bg2[id] || src[id] < bg2[id]) bg2[id] = src[id]; });
+  });
+  out.badges = bg2;
+  // 種目の目標1RM: union(primary優先)
+  out.exGoals = { ...secondary.exGoals, ...primary.exGoals };
+  // セット別記録: 日付ごとにunion(primary優先)。キーの'menu:旧ID|exId'は新ID空間へ変換
+  const sd = {};
+  [['s', secondary.setDetail], ['p', primary.setDetail]].forEach(([side, src]) => {
+    if (!src) return;
+    Object.keys(src).forEach(dt => {
+      const outDay = sd[dt] = sd[dt] || {};
+      Object.keys(src[dt]).forEach(key => {
+        const bar = key.lastIndexOf('|');
+        if (bar < 0) { outDay[key] = src[dt][key]; return; }
+        const ck = key.slice(0, bar), ex = key.slice(bar + 1);
+        const nk = transSrc(ck, side) + '|' + (side === 's' ? remapEx(ex) : ex);
+        outDay[nk] = src[dt][key];
+      });
+    });
+  });
+  out.setDetail = sd;
   // 筋肉痛: 部位ごとに新しい日付を採用(同日ならレベルが高い方)
   const so = {};
   [secondary.soreness, primary.soreness].forEach(src => {
@@ -2078,6 +2141,102 @@ function sorenessAdviceHtml(ctx) {
   return html;
 }
 
+// ===== 実績バッジ =====
+const BADGES = [
+  { id: 'first-log', icon: '🎯', name: 'はじめの一歩', desc: '初めてトレを記録', check: st => st.logs.length >= 1 },
+  { id: 'days-10', icon: '🔟', name: '10日戦士', desc: '総トレ日数10日', check: st => new Set(st.logs.map(l => l.date)).size >= 10 },
+  { id: 'days-50', icon: '💪', name: '継続の鬼', desc: '総トレ日数50日', check: st => new Set(st.logs.map(l => l.date)).size >= 50 },
+  { id: 'days-100', icon: '👑', name: 'レジェンド', desc: '総トレ日数100日', check: st => new Set(st.logs.map(l => l.date)).size >= 100 },
+  { id: 'streak-4', icon: '🔥', name: '習慣化成功', desc: '週目標を4週連続達成', check: st => calcWeekStreak(st.logs, st.plan ? Math.max(1, st.plan.days.length) : (st.profile ? st.profile.days : 3)) >= 4 },
+  { id: 'vol-10t', icon: '🚚', name: '10トン持ち上げた', desc: '累計ボリューム10,000kg', check: st => totalVolumeAll(st.logs) >= 10000 },
+  { id: 'vol-100t', icon: '🏗️', name: '100トンクラブ', desc: '累計ボリューム100,000kg', check: st => totalVolumeAll(st.logs) >= 100000 },
+  { id: 'first-pr', icon: '🏆', name: '自己ベスト!', desc: '初めて推定1RMを更新', check: st => prCountBetween(st.logs, '2000-01-01', '2999-12-31') >= 1 },
+  { id: 'pr-10', icon: '🚀', name: '進化が止まらない', desc: '自己ベスト更新10回', check: st => prCountBetween(st.logs, '2000-01-01', '2999-12-31') >= 10 },
+  { id: 'all-parts', icon: '🧩', name: '全身制覇', desc: '全部位を1回以上トレ', check: st => { const ps = new Set(); st.logs.forEach(l => { const ex = DB.byId[l.exId]; if (ex) ps.add(ex.part); }); return SCIENCE.parts.every(p => ps.has(p.key)); } },
+  { id: 'weight-10', icon: '⚖️', name: 'データは裏切らない', desc: '体重を10回記録', check: st => st.weights.length >= 10 },
+];
+// 新規解除をチェックして祝う(達成済みはS.badgesに保存済みなので再トーストしない)
+function checkBadges() {
+  if (!S.badges) S.badges = {};
+  const newly = [];
+  BADGES.forEach(b => {
+    if (S.badges[b.id]) return;
+    try { if (b.check(S)) { S.badges[b.id] = todayStr(); newly.push(b); } } catch (e) {}
+  });
+  if (newly.length) {
+    saveState();
+    const b = newly[0];
+    setTimeout(() => { toast(`${b.icon} 実績解除!「${b.name}」`); haptic('success'); }, 700);
+  }
+}
+function badgeCardHtml() {
+  const un = S.badges || {};
+  const got = BADGES.filter(b => un[b.id]).length;
+  return `<div class="card"><h2>🏅 実績<span class="sub">${got}/${BADGES.length}</span></h2>
+    <div class="badge-grid">` + BADGES.map(b => {
+    const on = un[b.id];
+    return `<div class="badge ${on ? 'on' : ''}">
+      <div class="bi">${on ? b.icon : '🔒'}</div>
+      <div class="bn">${esc(b.name)}</div>
+      <div class="bd">${esc(b.desc)}</div>
+    </div>`;
+  }).join('') + `</div></div>`;
+}
+
+// ===== 週次レポート(月・火に先週のまとめを表示) =====
+function weeklyReportCardHtml() {
+  const today = todayStr();
+  const dow = (new Date(today + 'T12:00:00').getDay() + 6) % 7; // 月=0
+  if (dow > 1) return '';
+  const lastMonday = dateAdd(today, -dow - 7);
+  try { if (localStorage.getItem('kintoreLab.wr.dismissed') === lastMonday) return ''; } catch (e) {}
+  const vol = weekVolume(S.logs, lastMonday);
+  const days = thisWeekDays(S.logs, dateAdd(lastMonday, 6));
+  if (!vol && !days) return '';
+  const volPrev = weekVolume(S.logs, dateAdd(lastMonday, -7));
+  const pr = prCountBetween(S.logs, lastMonday, dateAdd(lastMonday, 6));
+  const target = S.plan ? Math.max(1, S.plan.days.length) : (S.profile ? S.profile.days : 3);
+  const delta = volPrev > 0 ? Math.round((vol - volPrev) / volPrev * 100) : null;
+  const verdict = days >= target && (delta == null || delta >= 0) ? '💮 完璧な一週間。この調子!'
+    : days >= target ? '✅ 目標日数クリア。ボリュームも意識してみよう'
+    : days > 0 ? `あと${target - days}日で目標達成だった。今週は取り返そう`
+    : '先週はお休み。今週また始めればゼロにはならない';
+  return `<div class="card" style="border-color:var(--accent2)"><h2>📊 先週のまとめ<span class="sub">${fmtDate(lastMonday)}週</span></h2>
+    <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;margin-bottom:6px">
+      <div><span class="big">${days}</span><small>/${target}日</small></div>
+      <div><span class="big">${vol.toLocaleString()}</span><small>kg</small>${delta != null ? ` <span style="font-size:12px;color:${delta >= 0 ? 'var(--accent)' : 'var(--ink-dim)'};font-weight:700">${delta >= 0 ? '+' : ''}${delta}%</span>` : ''}</div>
+      ${pr > 0 ? `<div>🏆 <b>${pr}</b><small> PR</small></div>` : ''}
+    </div>
+    <p style="font-size:13px">${verdict}</p>
+    <button class="btn ghost small" id="wr-close" style="margin-top:6px">閉じる</button>
+  </div>`;
+}
+
+// ===== 種目の目標1RM設定モーダル =====
+function openGoalModal(exId) {
+  const ex = DB.byId[exId];
+  if (!ex) return;
+  const cur = (S.exGoals || {})[exId];
+  const hist = e1rmHistory(S.logs, exId);
+  const nowE = hist.length ? Math.round(hist[hist.length - 1].e1rm * 10) / 10 : 0;
+  const bg = openModal(`<h2>🎯 ${esc(ex.name)} の目標</h2>
+    <p class="modal-sub">${nowE > 0 ? `現在の推定1RM: ${nowE}kg。` : ''}目標を決めると、伸びのペースから到達時期を予測します。</p>
+    <div class="field"><label>目標1RM (kg)</label><input type="number" id="goal-target" step="2.5" min="1" value="${cur ? cur.target : (nowE > 0 ? Math.ceil(nowE * 1.1 / 2.5) * 2.5 : '')}" placeholder="${nowE > 0 ? String(Math.ceil(nowE * 1.1 / 2.5) * 2.5) : '100'}"></div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      ${cur ? '<button class="btn ghost" id="goal-del" style="color:var(--danger)">削除</button>' : '<button class="btn ghost" onclick="closeModal()">閉じる</button>'}
+      <button class="btn" id="goal-save">保存</button>
+    </div>`);
+  $('#goal-save', bg).addEventListener('click', () => {
+    const t = Number($('#goal-target', bg).value);
+    if (!(t > 0)) { toast('目標を入力してください'); return; }
+    if (!S.exGoals) S.exGoals = {};
+    S.exGoals[exId] = { target: Math.round(t * 10) / 10 };
+    saveState(); closeModal(); toast('目標を設定しました🎯'); renderLog();
+  });
+  const gd = $('#goal-del', bg);
+  if (gd) gd.addEventListener('click', () => { delete S.exGoals[exId]; saveState(); closeModal(); toast('目標を削除しました'); renderLog(); });
+}
+
 let homeDate = null;  // renderHome時点の日付 (日付跨ぎの誤記録防止)
 let homeCarry = [];   // renderHome時点の積み残しスナップショット (表示とチェック処理の一致保証)
 function renderHome() {
@@ -2096,9 +2255,11 @@ function renderHome() {
       <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
     </div>`;
 
-  // 閲覧系カード(今日のカラダ・週間ボリューム)は「今日のメニュー」(操作系)の下に置く
+  checkBadges(); // 実績の新規解除チェック(解除済みは再発火しない)
+
+  // 閲覧系カード(先週まとめ・今日のカラダ・週間ボリューム)は「今日のメニュー」(操作系)の下に置く
   // — ジムで開いた瞬間に記録UIが最上部に来るように(情報の優先度 = 操作 > 閲覧)
-  let infoCards = healthTodayCardHtml();
+  let infoCards = weeklyReportCardHtml() + healthTodayCardHtml();
   {
     const volThis = weekVolume(S.logs);
     const volLast = weekVolume(S.logs, dateAdd(todayStr(), -7));
@@ -2107,11 +2268,21 @@ function renderHome() {
       const deltaHtml = delta == null ? '<span class="sub">先週の記録なし</span>'
         : delta >= 0 ? `<span style="color:var(--accent);font-weight:800">先週比 +${delta}%</span>`
         : `<span style="color:var(--ink-dim);font-weight:700">先週比 ${delta}%</span>`;
+      const lr = loadRatio(S.logs);
+      const lrLine = lr
+        ? `<p style="font-size:13px;margin-top:6px">負荷バランス: ${
+            lr.ratio < 0.8 ? '<b style="color:var(--accent2)">🔵 余裕あり</b> — 攻めどき。少し増やしてOK'
+            : lr.ratio <= 1.3 ? '<b style="color:var(--accent)">🟢 適正</b> — いいペース'
+            : lr.ratio <= 1.5 ? '<b style="color:var(--warn)">🟡 やや高め</b> — 睡眠・栄養を厚めに'
+            : '<b style="color:var(--danger)">🔴 急増しすぎ</b> — 怪我リスク。今週は抑えるかディロードを'
+          }<span style="color:var(--ink-dim);font-size:11.5px">(直近7日÷月平均 = ${lr.ratio})</span></p>`
+        : '';
       infoCards += `<div class="card"><h2>📊 今週のボリューム</h2>
         <div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap">
           <div><span class="big">${volThis.toLocaleString()}</span><small> kg</small></div>
           <div>${deltaHtml}</div>
         </div>
+        ${lrLine}
         <p class="card-note">ボリューム=重量×回数の合計。先週より少しでも増えていれば成長のエンジン(漸進性過負荷)が回っています。</p>
       </div>`;
     }
@@ -2268,6 +2439,12 @@ function renderHome() {
   $all('[data-sore-part]', root).forEach(cell => cell.addEventListener('click', () => cycleSoreness(cell.dataset.sorePart)));
   $all('.sore-adj', root).forEach(b => b.addEventListener('click', () => addSoreAdjust(String(b.dataset.parts || '').split(',').filter(Boolean), b.dataset.mode)));
   $all('.sore-skip-undo', root).forEach(b => b.addEventListener('click', clearSoreSkip));
+  const wrClose = $('#wr-close', root);
+  if (wrClose) wrClose.addEventListener('click', () => {
+    const dow = (new Date(todayStr() + 'T12:00:00').getDay() + 6) % 7;
+    try { localStorage.setItem('kintoreLab.wr.dismissed', dateAdd(todayStr(), -dow - 7)); } catch (e) {}
+    renderHome();
+  });
 
   const swapDo = $('#swap-do', root);
   if (swapDo) swapDo.addEventListener('click', () => {
@@ -2369,6 +2546,20 @@ function setExerciseProgress(exId, newCount) {
   const key = ck + '|' + exId;
   const prev = S.setCount[today][key] || 0;
   S.setCount[today][key] = newCount;
+  // セット別の実施内容を記録: 増加時はその時点の入力値(重量/回数)をそのセットの実績として保存
+  // → セットごとに違う重量(ピラミッド等)がそのままログに残る
+  if (!S.setDetail[today]) S.setDetail[today] = {};
+  const det = (S.setDetail[today][key] = (S.setDetail[today][key] || []).slice(0, 10));
+  if (newCount > prev) {
+    const winp0 = $(`input.winp[data-ex="${exId}"]`);
+    const rinp0 = $(`input.rinp[data-ex="${exId}"]`);
+    const w0 = winp0 ? Number(winp0.value) || 0 : 0;
+    const r0 = rinp0 && Number(rinp0.value) > 0 ? Math.round(Number(rinp0.value)) : repMid(item.reps);
+    while (det.length < newCount) det.push({ w: w0, r: r0 });
+  } else if (newCount < prev) {
+    det.length = Math.max(0, newCount);
+  }
+  if (!det.length) delete S.setDetail[today][key];
   const de = ddGet(S.dayDone[today], exId);
   const wasDone = !!(de && de.src === ck);
   // 満了 → 記録(自動チェック)。満了未満へ戻す → 記録解除。どちらも toggleDone が再描画する
@@ -2410,6 +2601,10 @@ function toggleDone(exId, checked) {
     // ただし「別コンテキストが所有するログ」は上書きせず紐付けのみ(実測セット・RIRを破壊しない)。
     const existing = S.logs.find(l => l.date === today && l.exId === exId);
     const prevEntry = ddGet(S.dayDone[today], exId);
+    // セット別の実施記録(ドットで1セットずつ付けた時の重量/回数)があればそれを採用=ピラミッド等に対応
+    const det2 = (S.setDetail[today] || {})[ck + '|' + exId];
+    const mkSets = () => Array.from({ length: item.sets }, (_, i) =>
+      (det2 && det2[i] && (Number(det2[i].w) > 0 || Number(det2[i].r) > 0)) ? { w: Number(det2[i].w) || 0, r: Number(det2[i].r) || r } : { w, r });
     let logId, borrowed = false;
     if (existing && (!prevEntry || prevEntry.src !== ck)) {
       // 別文脈(または同期由来)の記録 → 中身は触らずチェックだけ付ける。解除時も消さない(keep)
@@ -2418,25 +2613,29 @@ function toggleDone(exId, checked) {
       S.dayDone[today][exId] = { id: logId, src: ck, keep: true, ...(prevEntry ? { prevSrc: prevEntry.src } : {}) };
     } else if (existing) {
       logId = existing.id;
-      existing.sets = Array.from({ length: item.sets }, () => ({ w, r }));
+      existing.sets = mkSets();
       S.dayDone[today][exId] = { id: logId, src: ck };
     } else {
       logId = newId();
-      S.logs.push({ id: logId, date: today, exId, sets: Array.from({ length: item.sets }, () => ({ w, r })) });
+      S.logs.push({ id: logId, date: today, exId, sets: mkSets() });
       S.dayDone[today][exId] = { id: logId, src: ck };
     }
     if (!S.setCount[today]) S.setCount[today] = {};
     S.setCount[today][ck + '|' + exId] = item.sets; // ドット表示を満了に同期
     saveState();
-    // PR(自己ベスト)判定: 推定1RMが過去最高を超えたら祝う(重量記録がある種目のみ・借用時は新データ無しなのでスキップ)
+    // PR(自己ベスト)判定: 今日のベストセットの推定1RMが過去最高を超えたら祝う(借用時は新データ無しなのでスキップ)
     let prMsg = '';
-    if (!borrowed && w > 0 && r > 0) {
-      const prevBest = bestE1rmBefore(S.logs, exId, today);
-      const nowE = epley1RM(w, r);
-      if (prevBest != null && nowE > prevBest + 0.01) {
-        const ex = DB.byId[exId];
-        prMsg = `🏆 自己ベスト更新!${ex ? ex.name : ''} 推定1RM ${Math.round(nowE * 10) / 10}kg`;
-        haptic('success');
+    if (!borrowed) {
+      const myLog = S.logs.find(l => l.id === logId);
+      let nowE = 0;
+      (myLog ? myLog.sets : []).forEach(s2 => { if (s2.w > 0 && s2.r > 0) nowE = Math.max(nowE, epley1RM(s2.w, s2.r)); });
+      if (nowE > 0) {
+        const prevBest = bestE1rmBefore(S.logs, exId, today);
+        if (prevBest != null && nowE > prevBest + 0.01) {
+          const ex = DB.byId[exId];
+          prMsg = `🏆 自己ベスト更新!${ex ? ex.name : ''} 推定1RM ${Math.round(nowE * 10) / 10}kg`;
+          haptic('success');
+        }
       }
     }
     const remaining = allItems.filter(i => DB.byId[i.exId] && !isSoreSkipped(i.exId) && !doneInCtx(i)).length; // 外した種目は完遂判定から除外
@@ -3299,6 +3498,7 @@ function renderLog() {
         <div class="field">${exerciseSelectHtml('chart-ex', logUiState.chartEx, true)}</div>
         <canvas class="chart" id="e1rm-chart"></canvas>
         <p class="card-note">推定1RM = 重量×(1+回数÷30)。重量か回数が増えれば右肩上がりになります。</p>
+        <div id="goal-row" style="margin-top:8px"></div>
       </div>
       <div class="card"><h2>📊 週間ボリューム (総セット数)</h2>
         <div class="field"><select id="vol-part"><option value="">全部位</option>${SCIENCE.parts.map(p => `<option value="${p.key}" ${logUiState.volPart === p.key ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
@@ -3307,6 +3507,7 @@ function renderLog() {
       <div class="card"><h2>🗓️ トレーニングカレンダー</h2><div id="cal-heat"></div></div>`;
   }
 
+  html += badgeCardHtml();
   html += `<div class="card"><h2>📷 体型フォト<span class="sub">ビフォーアフター</span></h2><div id="photo-card"><p class="card-note">読み込み中...</p></div></div>`;
 
   html += `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームのチェック or 上のフォームから記録できます。</div>'}</div></div>`;
@@ -3353,6 +3554,7 @@ function renderLog() {
     if (S.profile) { S.profile.w = v; }
     saveState();
     if (isNativeApp()) writeHealthWeight(v, todayStr()); // Apple Health / Health Connect にも書き込む(双方向)
+    checkBadges();
     toast('体重を保存しました');
     renderLog();
   });
@@ -3382,8 +3584,37 @@ function renderLog() {
       const c = $('#e1rm-chart', root);
       if (c) drawLineChart(c, hist.map(h => ({ label: fmtDate(h.date), value: Math.round(h.e1rm * 10) / 10 })), unit);
     };
-    chartEx.addEventListener('change', () => { logUiState.chartEx = chartEx.value; drawE1(); });
+    // 🎯 目標1RMと到達予測(選択中の種目)
+    const renderGoal = () => {
+      const gr = $('#goal-row', root);
+      if (!gr) return;
+      const exId = logUiState.chartEx;
+      const goal = (S.exGoals || {})[exId];
+      if (!goal) {
+        gr.innerHTML = `<button class="btn ghost small" id="goal-set" style="width:100%">🎯 この種目の目標1RMを設定(到達予測が出ます)</button>`;
+      } else {
+        const pj = goalProjection(S.logs, exId, goal.target);
+        const pct = pj.curE1rm > 0 ? Math.min(100, Math.round(pj.curE1rm / goal.target * 100)) : 0;
+        let msg;
+        if (pj.daysTo === 0) msg = '🎉 目標達成!次の目標を設定しよう';
+        else if (pj.daysTo != null) msg = `このペースなら <b style="color:var(--accent)">${fmtDate(pj.eta)}頃</b> に到達見込み(あと約${Math.max(1, Math.ceil(pj.daysTo / 7))}週)`;
+        else if (pj.reason === 'flat') msg = '最近は横ばい。重量+2.5%かレップ+1を狙おう(数週続くならディロードも有効)';
+        else if (pj.reason === 'few') msg = 'あと数回記録すると到達予測が出ます';
+        else if (pj.reason === 'far') msg = '目標が遠め。まずは中間目標を置くのがおすすめ';
+        else msg = '記録を続けると到達予測が出ます';
+        gr.innerHTML = `<div class="goal-box">
+          <div style="display:flex;justify-content:space-between;font-size:13px"><b>🎯 目標 ${goal.target}kg</b><span>現在 ${Math.round(pj.curE1rm * 10) / 10}kg(${pct}%)</span></div>
+          <div class="goal-bar"><div class="goal-fill" style="width:${pct}%"></div></div>
+          <p class="card-note" style="margin:6px 0 8px">${msg}</p>
+          <button class="btn ghost small" id="goal-set">目標を変更・削除</button>
+        </div>`;
+      }
+      const gs = $('#goal-set', root);
+      if (gs) gs.addEventListener('click', () => openGoalModal(logUiState.chartEx));
+    };
+    chartEx.addEventListener('change', () => { logUiState.chartEx = chartEx.value; drawE1(); renderGoal(); });
     drawE1();
+    renderGoal();
 
     const volSel = $('#vol-part', root);
     const drawVol = () => {

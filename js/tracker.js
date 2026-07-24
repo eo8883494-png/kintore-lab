@@ -87,6 +87,75 @@ function weekVolume(logs, base) {
   return Math.round(vol);
 }
 
+// 累計ボリューム(kg)= 全ログのΣ重量×回数
+function totalVolumeAll(logs) {
+  let v = 0;
+  (logs || []).forEach(l => (l.sets || []).forEach(s => { if (s.w > 0 && s.r > 0) v += s.w * s.r; }));
+  return Math.round(v);
+}
+
+// 期間内のPR(自己ベスト更新)回数: 各日付・種目のその日ベストe1RMが、それ以前の全期間ベストを超えた回数
+function prCountBetween(logs, fromDate, toDate) {
+  const best = {}; // exId -> best e1rm so far
+  let count = 0;
+  const sorted = (logs || []).slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  sorted.forEach(l => {
+    let dayBest = 0;
+    (l.sets || []).forEach(s => { if (s.w > 0 && s.r > 0) dayBest = Math.max(dayBest, epley1RM(s.w, s.r)); });
+    if (dayBest <= 0) return;
+    const prev = best[l.exId];
+    if (prev != null && dayBest > prev + 0.01 && l.date >= fromDate && l.date <= toDate) count++;
+    if (prev == null || dayBest > prev) best[l.exId] = dayBest;
+  });
+  return count;
+}
+
+// 負荷バランス(ACWR: 急性:慢性負荷比) = 直近7日のボリューム ÷ 直近28日の週平均ボリューム
+// 目安: <0.8 余裕 / 0.8-1.3 適正 / 1.3-1.5 やや高い / >1.5 高リスク(怪我・オーバーワーク)
+function loadRatio(logs) {
+  const today = todayStr();
+  const dayVol = {};
+  (logs || []).forEach(l => {
+    let v = 0;
+    (l.sets || []).forEach(s => { if (s.w > 0 && s.r > 0) v += s.w * s.r; });
+    if (v > 0) dayVol[l.date] = (dayVol[l.date] || 0) + v;
+  });
+  let acute = 0, month = 0, hasOld = false;
+  for (let i = 0; i < 28; i++) {
+    const d = dateAdd(today, -i);
+    const v = dayVol[d] || 0;
+    if (i < 7) acute += v;
+    month += v;
+    if (i >= 7 && v > 0) hasOld = true;
+  }
+  const chronic = month / 4; // 週平均
+  if (!hasOld || chronic <= 0) return null; // 比較材料が足りない(運用2週目以降で表示)
+  return { acute: Math.round(acute), chronic: Math.round(chronic), ratio: Math.round(acute / chronic * 100) / 100 };
+}
+
+// 種目の伸びから目標1RM到達日を予測(直近の推移を線形近似)。
+// 戻り値: {curE1rm, slopePerDay, daysTo, eta} / 予測不能は daysTo:null(理由reason)
+function goalProjection(logs, exId, target) {
+  const hist = e1rmHistory(logs, exId);
+  if (!hist.length) return { curE1rm: 0, daysTo: null, reason: 'nodata' };
+  const cur = hist[hist.length - 1].e1rm;
+  if (cur >= target) return { curE1rm: cur, daysTo: 0, eta: todayStr() };
+  const pts = hist.slice(-10); // 直近10回分で回帰
+  if (pts.length < 3) return { curE1rm: cur, daysTo: null, reason: 'few' };
+  const t0 = new Date(pts[0].date + 'T12:00:00').getTime();
+  const xs = pts.map(p => (new Date(p.date + 'T12:00:00').getTime() - t0) / 864e5);
+  const ys = pts.map(p => p.e1rm);
+  const n = pts.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n, my = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (xs[i] - mx) * (ys[i] - my); den += (xs[i] - mx) * (xs[i] - mx); }
+  const slope = den > 0 ? num / den : 0; // kg/日
+  if (slope <= 0.001) return { curE1rm: cur, daysTo: null, reason: 'flat' };
+  const days = Math.round((target - cur) / slope);
+  if (days > 730) return { curE1rm: cur, daysTo: null, reason: 'far' };
+  return { curE1rm: cur, slopePerDay: slope, daysTo: days, eta: dateAdd(todayStr(), days) };
+}
+
 // 種目ごとの推定1RM推移 [{date, e1rm, top}]
 function e1rmHistory(logs, exId) {
   const byDate = {};
