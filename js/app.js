@@ -1466,7 +1466,7 @@ function bindPaywall(bg) {
   const start = $('#pw-start', bg);
   if (start) start.addEventListener('click', async () => {
     const B = window.__klBilling;
-    if (!B || !B.ready()) { toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)'); return; }
+    if (!B || !B.ready()) { toast(B && B.diag ? ('準備中 ' + B.diag()) : 'サブスクは準備中です'); return; }
     const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
     try {
       const r = await B.purchase(pwPlan);

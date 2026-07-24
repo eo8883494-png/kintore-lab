@@ -32,7 +32,20 @@
     catch (e) { return false; }
   }
   function plugin() {
-    return (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.PurchasesPlugin) || null;
+    const P = (window.Capacitor && window.Capacitor.Plugins) || null;
+    if (!P) return null;
+    // RevenueCat Capacitorプラグインの登録名は環境/版で異なり得るため、
+    // 既知候補名→名前にpurchase/revenueを含むもの、の順で自動検出する。
+    const names = ['PurchasesPlugin', 'Purchases', 'CapacitorPurchases', 'RevenueCat', 'RevenueCatPurchases'];
+    for (let i = 0; i < names.length; i++) { if (P[names[i]]) return P[names[i]]; }
+    const keys = Object.keys(P);
+    for (let i = 0; i < keys.length; i++) { if (/purchase|revenue/i.test(keys[i])) return P[keys[i]]; }
+    return null;
+  }
+  // 診断用: なぜ ready() が false かを人間可読で返す(トーストに出して原因特定)
+  function diag() {
+    const P = (window.Capacitor && window.Capacitor.Plugins) || {};
+    return 'native=' + native() + ' key=' + keyLooksReal(platformKey()) + ' plugin=' + !!plugin() + ' [' + Object.keys(P).join(',') + ']';
   }
   function platformKey() {
     try {
@@ -166,5 +179,5 @@
   // ネイティブ課金が実際に使えるか(ペイウォールCTAの出し分け用)
   function ready() { return native() && !!plugin() && keyLooksReal(platformKey()); }
 
-  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready };
+  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag };
 })();
