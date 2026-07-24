@@ -9,4 +9,6 @@ CAP_PLUGIN(KLNativePlugin, "KLNative",
   CAP_PLUGIN_METHOD(updateWidget, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(requestReview, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setBadge, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(consumePendingAction, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(indexSpotlight, CAPPluginReturnPromise);
 )

@@ -443,6 +443,44 @@ function updateAppBadge() {
   try { const p = N.setBadge({ count: n }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
 }
 
+// ===== Siriショートカット/Spotlightからの起動アクション(KLNative.consumePendingAction) =====
+// App Intents/Spotlightタップ→UserDefaultsに保留アクション→起動/復帰時にJSが消費する
+async function consumeNativeAction() {
+  const N = klNative();
+  if (!N || !N.consumePendingAction) return;
+  try {
+    const r = await N.consumePendingAction();
+    if (!r || !r.action) return;
+    if (r.action === 'restTimer') {
+      location.hash = 'tools'; route();
+      startRestTimer(Math.max(10, Math.min(600, Number(r.seconds) || 90)), 'Siriショートカット');
+      toast('⏱ 休憩タイマーを開始しました');
+    } else if (r.action === 'openExercise' && r.exId && DB.byId[r.exId]) {
+      openExerciseModal(String(r.exId));
+    } else if (r.action === 'openToday') {
+      location.hash = 'home'; route();
+    }
+  } catch (e) {}
+}
+// Spotlightに全種目をインデックス(1回だけ・バージョンキーで再実行制御)
+function indexSpotlightExercises() {
+  const N = klNative();
+  if (!N || !N.indexSpotlight) return;
+  try {
+    const KEY = 'kintoreLab.spotlight.v1';
+    if (localStorage.getItem(KEY)) return;
+    const items = Object.values(DB.byId).filter(e => !e.custom).slice(0, 300).map(e => ({
+      id: String(e.id),
+      title: e.name,
+      desc: `${SCIENCE.partMap[e.part] ? SCIENCE.partMap[e.part].name : ''}の種目 — フォーム解説・記録・動画`,
+      keywords: [e.name, SCIENCE.partMap[e.part] ? SCIENCE.partMap[e.part].name : '', '筋トレ', 'トレーニング', 'ワークアウト'].filter(Boolean),
+    }));
+    const p = N.indexSpotlight({ items });
+    if (p && p.then) p.then(res => { if (res && res.ok) { try { localStorage.setItem(KEY, '1'); } catch (e) {} } });
+    if (p && p.catch) p.catch(() => {});
+  } catch (e) {}
+}
+
 function initWatchBridge() {
   const W = capPlugin('KLWatch');
   if (!W || !W.addListener) return;
@@ -4132,7 +4170,7 @@ document.addEventListener('visibilitychange', () => {
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
   refreshFromStorage();
-  if (isNativeApp()) updateHealthDisplays();
+  if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); } // 復帰でもSiri/Spotlightアクションを消費
 });
 
 // ネイティブ: 外部リンク(target=_blank)はOSに委譲(YouTube/Instagram等は対応アプリで開く)
@@ -4152,10 +4190,12 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
   initWatchBridge();                  // Apple Watchからのセット完了を受ける(未組み込みはno-op)
   if (isNativeApp()) {
-    // 起動から少し遅らせて: 通知をプランに追従して再スケジュール + Apple Health自動同期(一度同期した人のみ・静かに)
+    consumeNativeAction();              // Siriショートカット/Spotlight経由の起動アクションを実行
+    // 起動から少し遅らせて: 通知の再スケジュール + Health自動同期 + Spotlightインデックス
     setTimeout(() => {
       refreshReminderSchedule();
       if (loadHealthPref().autoSteps) importHealthWeight(true);
+      indexSpotlightExercises();
     }, 1500);
   }
   route();

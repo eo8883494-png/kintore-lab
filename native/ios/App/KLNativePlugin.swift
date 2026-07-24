@@ -7,6 +7,8 @@ import ActivityKit
 import WidgetKit
 import StoreKit
 import UserNotifications
+import CoreSpotlight
+import UniformTypeIdentifiers
 
 @objc(KLNativePlugin)
 public class KLNativePlugin: CAPPlugin {
@@ -92,6 +94,43 @@ public class KLNativePlugin: CAPPlugin {
                 await a.end(nil, dismissalPolicy: .immediate)
             }
             call.resolve()
+        }
+    }
+
+    // Siriショートカット/Spotlightが仕込んだ保留アクションを取り出して消費(JSが起動/復帰時に呼ぶ)
+    @objc func consumePendingAction(_ call: CAPPluginCall) {
+        let ud = UserDefaults.standard
+        guard let json = ud.string(forKey: "kl.pendingAction"),
+              let data = json.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            call.resolve([:])
+            return
+        }
+        ud.removeObject(forKey: "kl.pendingAction")
+        var res = JSObject()
+        for (k, v) in obj {
+            if let s = v as? String { res[k] = s }
+            else if let n = v as? NSNumber { res[k] = n.doubleValue }
+        }
+        call.resolve(res)
+    }
+
+    // 種目をSpotlightにインデックス(検索→タップでアプリ内の種目モーダルを開く)
+    @objc func indexSpotlight(_ call: CAPPluginCall) {
+        guard let items = call.getArray("items") as? [[String: Any]] else { call.resolve(["ok": false]); return }
+        var searchable: [CSSearchableItem] = []
+        for it in items {
+            guard let id = it["id"] as? String, let title = it["title"] as? String else { continue }
+            let attr = CSSearchableItemAttributeSet(contentType: UTType.text)
+            attr.title = title
+            attr.contentDescription = it["desc"] as? String
+            attr.keywords = it["keywords"] as? [String]
+            let item = CSSearchableItem(uniqueIdentifier: "ex:" + id, domainIdentifier: "exercises", attributeSet: attr)
+            item.expirationDate = Date.distantFuture
+            searchable.append(item)
+        }
+        CSSearchableIndex.default().indexSearchableItems(searchable) { err in
+            call.resolve(["ok": err == nil, "count": searchable.count])
         }
     }
 

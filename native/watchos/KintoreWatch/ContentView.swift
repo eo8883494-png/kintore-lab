@@ -4,6 +4,7 @@ import WatchKit
 
 struct ContentView: View {
     @ObservedObject var ws = WatchSession.shared
+    @ObservedObject var wm = WorkoutManager.shared
     @State private var restRemain: Int = 0
     @State private var restLabel: String = ""
     @State private var restTimer: Timer? = nil
@@ -30,6 +31,33 @@ struct ContentView: View {
             }
         } else {
             List {
+                // ワークアウトセッション(心拍+アクティビティリング)
+                Section {
+                    if wm.active {
+                        HStack(spacing: 10) {
+                            Label(wm.heartRate > 0 ? "\(Int(wm.heartRate))" : "–", systemImage: "heart.fill")
+                                .foregroundColor(.red)
+                                .font(.headline)
+                            Text("\(Int(wm.kcal))kcal")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button("終了") { wm.end() }
+                                .font(.caption2)
+                                .tint(.red)
+                                .buttonStyle(.bordered)
+                                .fixedSize()
+                        }
+                    } else {
+                        Button {
+                            wm.start()
+                        } label: {
+                            Label("ワークアウト開始", systemImage: "figure.strengthtraining.traditional")
+                                .font(.caption)
+                        }
+                        .tint(accent)
+                    }
+                }
                 Section {
                     ForEach(ws.menu.items) { it in
                         Button { tapped(it) } label: {

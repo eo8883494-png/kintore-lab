@@ -68,5 +68,36 @@ Watchで「今日のメニュー表示 → タップでセット完了(iPhoneに
 - Watch画面を閉じると休憩タイマーは止まる(手首を上げている間動く)。本格的なバックグラウンド動作はv1.1で
 - 同期はiPhoneアプリがホームを描画したタイミング(リアルタイム双方向はv1.1)
 
+---
+
+# 🚀 追加ネイティブ機能(⑦Watchワークアウト・⑧Siri・⑨Spotlight)
+
+### ⑦ Watchワークアウトセッション(心拍+アクティビティリング)
+1. `native/watchos/KintoreWatch/WorkoutManager.swift` を **KintoreWatch** グループへドラッグ(Target: KintoreWatchのみ)
+   ※ContentView.swiftも更新済み=古いのを削除して最新を再ドラッグ
+2. **KintoreWatch ターゲット → Signing & Capabilities → + Capability → HealthKit** を追加
+3. **KintoreWatch ターゲット → Info** に2キー追加(Boolean でなく String):
+   - `NSHealthShareUsageDescription` = `ワークアウト中の心拍数と消費カロリーを表示するため`
+   - `NSHealthUpdateUsageDescription` = `トレーニングをワークアウトとしてヘルスケアに記録するため`
+4. 確認: Watchアプリの「ワークアウト開始」→ 心拍❤️が表示され、終了後にiPhoneのフィットネスアプリにワークアウトが記録されリングが進む
+
+### ⑧ Siriショートカット
+1. `native/ios/App/KLAppIntents.swift` を **App/App** グループへドラッグ(Target: Appのみ)
+2. それだけでOK(ビルドすると自動登録)。確認: 「ヘイSiri、筋トレLABで休憩タイマー」/ ショートカットアプリにも「休憩タイマー」「今日のメニュー」が出る
+
+### ⑨ Spotlight検索(種目をiPhone検索から開く)
+1. KLNativePlugin.swift は更新済み(再コピーで反映)
+2. **AppDelegate.swift にスニペット追加**: `ios/App/App/AppDelegate.swift` を開き、
+   ファイル先頭に `import CoreSpotlight` を追加し、
+   `func application(_ application: UIApplication, continue userActivity: NSUserActivity, restorationHandler: ...)` の中の `return` の**前**に以下を貼る:
+```swift
+        if userActivity.activityType == CSSearchableItemActionType,
+           let id = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
+           id.hasPrefix("ex:") {
+            UserDefaults.standard.set("{\"action\":\"openExercise\",\"exId\":\"\(id.dropFirst(3))\"}", forKey: "kl.pendingAction")
+        }
+```
+3. 確認: アプリを一度起動(インデックス登録)→ iPhoneのホームで下スワイプ検索→「ベンチプレス」→ 筋トレLABの結果をタップ→ 種目モーダルが開く
+
 ## トラブル時
 エラーの赤字をそのまま報告してください(型名・行番号ごと)。
