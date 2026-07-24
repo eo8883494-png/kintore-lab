@@ -1418,7 +1418,7 @@ function closeModal() { const m = $('#modal-bg'); if (m) m.remove(); }
 // ===== ペイウォール(全機能サブスク・1週間無料→自動継続・月/年プラン。RevenueCat接続は有料Apple Developer登録後) =====
 // 価格は仮。App Store Connectの商品確定後に差し替え(product idもここへ)
 const PRO_PLANS = [
-  { id: 'annual', label: '年間プラン', price: '¥5,800', sub: '/年', per: '月あたり約¥483 ・ 2ヶ月分おトク', best: true },
+  { id: 'annual', label: '年間プラン', price: '¥4,800', sub: '/年', per: '月あたり約¥400 ・ 約41%オフ(5ヶ月分おトク)', best: true },
   { id: 'monthly', label: '月額プラン', price: '¥680', sub: '/月', per: '', best: false },
 ];
 let pwPlan = 'annual'; // 既定は年間(おすすめ)
