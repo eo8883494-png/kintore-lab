@@ -358,7 +358,6 @@ function updateTimerActivityNative(endAt, label) {
 // ホームウィジェットに今日のメニュー・進捗を書き出す(renderHome時)
 function updateHomeWidget() {
   const N = klNative();
-  if (!N || !N.updateWidget) return;
   try {
     const ctx = todayPlanContext();
     const today = todayStr();
@@ -372,9 +371,16 @@ function updateHomeWidget() {
       title = `今日は「${ctx.day.name}」`;
       sub = items.slice(0, 3).map(i => DB.byId[i.exId].name).join('・') + (items.length > 3 ? ' など' : '');
     }
+    // 【一時診断】ウィジェット未反映の原因切り分け用(ネイティブ限定)。原因特定後に削除する。
+    if (isNativeApp() && !window._klWidgetDiag) {
+      window._klWidgetDiag = true;
+      const plugins = Object.keys((window.Capacitor && window.Capacitor.Plugins) || {}).join(', ');
+      try { alert('診断 KLNative=' + (N && N.updateWidget ? '有' : '無') + '\ntitle=' + title + '\nsub=' + sub + '\n登録: [' + plugins + ']'); } catch (e) {}
+    }
+    if (!N || !N.updateWidget) return;
     const p = N.updateWidget({ title, sub, done, total });
-    if (p && p.catch) p.catch(() => {});
-  } catch (e) {}
+    if (p && p.then) { p.then(() => { if (!window._klWidgetDiag2) { window._klWidgetDiag2 = true; try { alert('診断: updateWidget 成功(書き込みOK)'); } catch (e) {} } }).catch(e => { try { alert('診断: updateWidget 失敗 ' + (e && e.message)); } catch (_) {} }); }
+  } catch (e) { try { alert('診断: 例外 ' + (e && e.message)); } catch (_) {} }
 }
 
 // ===== Apple Watch連携(KLWatchカスタムプラグイン・未組み込みはno-op) =====
