@@ -3405,16 +3405,15 @@ function renderSim() {
   if (!simState) simState = { minutes: S.profile.minutes, days: S.profile.days, usePlan: !!S.plan };
   const opt = optimalPlan(S.profile);
 
-  root.innerHTML = `
-    <div class="card"><h2>🏆 あなたの最適解<span class="sub">全56通りを試算</span></h2>
+  const optCard = `<div class="card"><h2>🏆 あなたの最適解<span class="sub">全56通りを試算</span></h2>
       <div class="focus-chips">
         <span class="chip grow">コスパ最強: 週${opt.eco.days}日 × ${opt.eco.minutes}分 (効率${Math.round(opt.eco.eff * 100)}%)</span>
         <span class="chip">理論上の最高: 週${opt.best.days}日 × ${opt.best.minutes}分 (${Math.round(opt.best.eff * 100)}%)</span>
       </div>
       <p class="card-note">「コスパ最強」は最高効率の95%以上を最小の週合計時間で出せる設定。これ以上増やしても伸びは数%です。効率%は標準的な部位配分での試算なので、現在のメニュー配分とは数%前後します。</p>
       <button class="btn small ghost" id="opt-apply">この設定をスライダーで試す</button>
-    </div>
-    <div class="card"><h2>⚗️ 効率シミュレーター</h2>
+    </div>`;
+  const simCard = `<div class="card"><h2>⚗️ 効率シミュレーター</h2>
       <div class="field"><label>1日の時間 <span class="range-val" id="sim-min-val">${simState.minutes}分</span></label>
         <input type="range" id="sim-min" min="15" max="120" step="5" value="${simState.minutes}"></div>
       <div class="field"><label>週の日数 <span class="range-val" id="sim-days-val">${simState.days}日</span></label>
@@ -3423,15 +3422,23 @@ function renderSim() {
         <input type="checkbox" id="sim-useplan" ${simState.usePlan ? 'checked' : ''}> 現在のメニューの部位配分を使う</label>` : ''}
     </div>
     <div id="sim-results"></div>`;
+  const simCards = [
+    { id: 'optimal', name: 'あなたの最適解', html: optCard },
+    { id: 'simulator', name: '効率シミュレーター', html: simCard },
+  ];
+  root.innerHTML = arrangeCards('sim', simCards) + customizeBtnHtml('sim');
+  bindCustomize(root, simCards.map(c => ({ id: c.id, name: c.name })), 'sim');
 
   const update = () => {
-    $('#sim-min-val', root).textContent = simState.minutes + '分';
-    $('#sim-days-val', root).textContent = simState.days + '日';
-    renderSimResults($('#sim-results', root));
+    const mv = $('#sim-min-val', root), dv = $('#sim-days-val', root), res = $('#sim-results', root);
+    if (mv) mv.textContent = simState.minutes + '分';
+    if (dv) dv.textContent = simState.days + '日';
+    if (res) renderSimResults(res);
   };
-  $('#sim-min', root).addEventListener('input', e => { simState.minutes = Number(e.target.value); update(); });
-  $('#sim-days', root).addEventListener('input', e => { simState.days = Number(e.target.value); update(); });
-  $('#opt-apply', root).addEventListener('click', () => {
+  const smin = $('#sim-min', root), sdays = $('#sim-days', root), oapply = $('#opt-apply', root);
+  if (smin) smin.addEventListener('input', e => { simState.minutes = Number(e.target.value); update(); });
+  if (sdays) sdays.addEventListener('input', e => { simState.days = Number(e.target.value); update(); });
+  if (oapply) oapply.addEventListener('click', () => {
     simState.minutes = opt.eco.minutes;
     simState.days = opt.eco.days;
     simState.usePlan = false; // カードの試算と同じ標準配分で表示を揃える
@@ -3963,17 +3970,8 @@ function renderTools() {
   const root = $('#view-tools');
   const p = S.profile;
 
-  root.innerHTML = `
-    ${isNativeApp() ? `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
-      <p class="card-note" style="margin-top:-2px">全機能・<b style="color:var(--accent)">最初の1週間無料</b>。科学的トレ設計をフルに。</p>
-      <button class="btn" id="open-paywall">プランを見る</button>
-    </div>` : ''}
-    <div class="tool-sec">アカウント・同期</div>
-    ${cloudCardHtml()}
-    ${publicProfileCardHtml()}
-    ${isNativeApp() ? '<div class="tool-sec">通知</div>' + localReminderCardHtml() : ''}
-    <div class="tool-sec">タイマー</div>
-    <div class="card"><h2>⏱️ 休憩タイマー</h2>
+  // カスタマイズ可能なツールカード群(タイマー・計算・学ぶ)
+  const tTimer = `<div class="card"><h2>⏱️ 休憩タイマー</h2>
       <div class="timer-display" id="timer-disp">${fmtTimer(timer.sec)}</div>
       <div class="timer-btns">
         <button class="btn ghost" data-t="60">60秒</button>
@@ -3986,20 +3984,15 @@ function renderTools() {
         <button class="btn ghost" id="timer-reset">リセット</button>
       </div>
       <p class="card-note">終了時に音とバイブでお知らせ。コンパウンド種目は2〜3分、アイソレーションは60〜90秒が目安。</p>
-    </div>
-
-    ${itCardHtml()}
-
-    <div class="tool-sec">計算ツール</div>
-    <div class="card"><h2>🏋️ 1RM計算機</h2>
+    </div>`;
+  const t1rm = `<div class="card"><h2>🏋️ 1RM計算機</h2>
       <div class="grid2">
         <div class="field"><label>重量 kg</label><input type="number" id="rm-w" placeholder="60" step="0.5"></div>
         <div class="field"><label>回数</label><input type="number" id="rm-r" placeholder="8"></div>
       </div>
       <div id="rm-out"></div>
-    </div>
-
-    <div class="card"><h2>🏗️ プレート計算機</h2>
+    </div>`;
+  const tPlate = `<div class="card"><h2>🏗️ プレート計算機</h2>
       <p class="card-note" style="margin-top:-2px">目標重量にするには左右に何を付ければいいか。ジムで迷わない。</p>
       <div class="grid2">
         <div class="field"><label>目標重量 kg</label><input type="number" id="pl-target" placeholder="60" step="0.5"></div>
@@ -4007,35 +4000,52 @@ function renderTools() {
       </div>
       <div class="field"><label>ジムにあるプレート(タップで切替・記憶されます)</label><div id="pl-plates" style="display:flex;flex-wrap:wrap;gap:6px"></div></div>
       <div id="pl-out"></div>
-    </div>
-
-    <div class="card"><h2>🍖 タンパク質 & カロリー</h2>
+    </div>`;
+  const tProtein = `<div class="card"><h2>🍖 タンパク質 & カロリー</h2>
       ${p ? `<div class="tool-result">
         <div>1日のタンパク質目標 <span class="big">${Math.round(p.w * (SCIENCE.proteinPerKg[p.goal] || 1.8))}g</span></div>
         <p class="card-note">体重${p.w}kg × ${SCIENCE.proteinPerKg[p.goal] || 1.8}g(${esc(SCIENCE.goals[p.goal].name)}向け)。鶏むね100g≈23g、卵1個≈6g、プロテイン1杯≈20g。</p>
         <div style="margin-top:8px">維持カロリー <span class="big">${calcTDEE(p)}<small>kcal/日</small></span></div>
         <p class="card-note">${p.goal === 'diet' ? '減量はここから−300〜500kcal。' : p.goal === 'hyp' ? '筋肥大はここから+200〜300kcal。' : 'このカロリーを維持でOK。'}</p>
       </div>` : '<p class="card-note">プロフィール設定で自動計算されます。</p>'}
-    </div>
-
-    <div class="card"><h2>💪 FFMI（筋肉の発達度）</h2>
+    </div>`;
+  const tFFMI = `<div class="card"><h2>💪 FFMI（筋肉の発達度）</h2>
       <p class="card-note" style="margin-top:-2px">身長あたりの筋肉量の指数。体脂肪の影響を除くのでBMIより「鍛えてる度」を表します。ナチュラルの上限目安は男性25・女性21。</p>
       <div id="ffmi-out"></div>
       <div class="field" style="margin-top:8px"><label>体脂肪率 %（測定値があれば入力・空欄なら自動推定）</label><input type="number" id="ffmi-bf" placeholder="自動推定で計算中" step="0.1"></div>
-    </div>
-
-    <div class="tool-sec">学ぶ</div>
-    <div class="card"><h2>🔋 超回復ガイド</h2>
+    </div>`;
+  const tRecov = `<div class="card"><h2>🔋 超回復ガイド</h2>
       <table class="recov-table">${SCIENCE.parts.map(pt => `<tr><td>${esc(pt.name)}</td><td>${pt.recoveryH}時間</td></tr>`).join('')}</table>
       <p class="card-note">同じ部位はこの時間を空けるのが目安。ホーム画面で自動追跡しています。</p>
-    </div>
-
-    <div class="card"><h2>📚 筋トレの三原則</h2>
+    </div>`;
+  const tPrinciples = `<div class="card"><h2>📚 筋トレの三原則</h2>
       <details class="acc"><summary>1. 漸進性過負荷 — 少しずつ重く</summary><div class="acc-body">先週の自分を毎回ほんの少し超える(重量+2.5%、または回数+1)。これが成長の唯一のエンジン。記録タブで推定1RMの右肩上がりを確認しよう。</div></details>
       <details class="acc"><summary>2. 栄養 — 体重×2gのタンパク質</summary><div class="acc-body">筋肉の材料が無ければ何も作られない。タンパク質は毎食20g以上×1日3〜5回。増量なら+300kcal、減量でも−500kcalまで。</div></details>
       <details class="acc"><summary>3. 回復 — 筋肉は寝てる間に育つ</summary><div class="acc-body">睡眠不足は筋合成を大きく下げることが繰り返し報告されている。同部位は48〜72時間空ける。2ヶ月に1回は軽い週(ディロード)を入れると停滞を破れる。</div></details>
-    </div>
+    </div>`;
+  const toolCards = [
+    { id: 'timer', name: '休憩タイマー', html: tTimer },
+    { id: 'interval', name: 'インターバルタイマー', html: itCardHtml() },
+    { id: 'rm', name: '1RM計算機', html: t1rm },
+    { id: 'plate', name: 'プレート計算機', html: tPlate },
+    { id: 'protein', name: 'タンパク質&カロリー', html: tProtein },
+    { id: 'ffmi', name: 'FFMI', html: tFFMI },
+    { id: 'recovery', name: '超回復ガイド', html: tRecov },
+    { id: 'principles', name: '筋トレの三原則', html: tPrinciples },
+  ];
 
+  root.innerHTML = `
+    ${isNativeApp() ? `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
+      <p class="card-note" style="margin-top:-2px">全機能・<b style="color:var(--accent)">最初の1週間無料</b>。科学的トレ設計をフルに。</p>
+      <button class="btn" id="open-paywall">プランを見る</button>
+    </div>` : ''}
+    <div class="tool-sec">アカウント・同期</div>
+    ${cloudCardHtml()}
+    ${publicProfileCardHtml()}
+    ${isNativeApp() ? '<div class="tool-sec">通知</div>' + localReminderCardHtml() : ''}
+    <div class="tool-sec">ツール・計算</div>
+    ${arrangeCards('tools', toolCards)}
+    ${customizeBtnHtml('tools')}
     <div class="tool-sec">その他</div>
     <div class="card"><h2>💾 データ管理</h2>
       <button class="btn danger" id="reset-data">全データ削除</button>
@@ -4049,6 +4059,7 @@ function renderTools() {
 
   bindCloudCard(root);
   bindLocalReminder(root);
+  bindCustomize(root, toolCards.map(c => ({ id: c.id, name: c.name })), 'tools');
   const pwBtn = $('#open-paywall', root);
   if (pwBtn) pwBtn.addEventListener('click', openPaywall);
 
@@ -4059,8 +4070,10 @@ function renderTools() {
     updateTimerDisp();
     startTimer();
   }));
-  $('#timer-toggle', root).addEventListener('click', () => { timer.iv ? stopTimer() : startTimer(); });
-  $('#timer-reset', root).addEventListener('click', () => { stopTimer(); timer.sec = timer.total || 0; updateTimerDisp(); });
+  const ttg = $('#timer-toggle', root);
+  if (ttg) ttg.addEventListener('click', () => { timer.iv ? stopTimer() : startTimer(); });
+  const trs = $('#timer-reset', root);
+  if (trs) trs.addEventListener('click', () => { stopTimer(); timer.sec = timer.total || 0; updateTimerDisp(); });
 
   // インターバルタイマー
   bindITimer(root);
@@ -4079,8 +4092,9 @@ function renderTools() {
     out.innerHTML = `<div class="tool-result">推定1RM <span class="big">${(Math.round(rm * 10) / 10).toFixed(1)}<small>kg</small></span>
       <table class="rm-table"><tr><th>%1RM</th><th>重量</th><th>目安回数</th></tr>${rows}</table></div>`;
   };
-  $('#rm-w', root).addEventListener('input', rmCalc);
-  $('#rm-r', root).addEventListener('input', rmCalc);
+  const rmW = $('#rm-w', root), rmR = $('#rm-r', root);
+  if (rmW) rmW.addEventListener('input', rmCalc);
+  if (rmR) rmR.addEventListener('input', rmCalc);
 
   // プレート計算機: 目標重量 → 片側に付けるプレート(手持ちプレートのみで貪欲法・設定は記憶)
   const PLATES = [25, 20, 15, 10, 5, 2.5, 1.25];
@@ -4161,7 +4175,8 @@ function renderTools() {
   drawFFMI(); // 初期表示=自動算出
 
   // データ管理
-  $('#reset-data', root).addEventListener('click', () => {
+  const resetBtn = $('#reset-data', root);
+  if (resetBtn) resetBtn.addEventListener('click', () => {
     if (!confirm('全データを削除します。本当によろしいですか?')) return;
     if (!confirm('記録・プロフィール・メニュー・体型フォトが全て消えます。元に戻せません。実行しますか?')) return;
     localStorage.removeItem(LS_KEY);

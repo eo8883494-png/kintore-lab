@@ -323,7 +323,7 @@ function renderMeals() {
     if (!items.length) return '';
     return `<optgroup label="${FOOD_CAT_LABEL[cat]}">${items.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${esc(f.per)}・${g(f.kcal)}kcal）</option>`).join('')}</optgroup>`;
   }).join('');
-  html += `<div class="card"><h2>🍽️ 食べたものを記録<span class="sub">今日の実測 vs 目標</span></h2>
+  const cFoodlog = `<div class="card"><h2>🍽️ 食べたものを記録<span class="sub">今日の実測 vs 目標</span></h2>
     ${flBar('kcal', flTot.kcal, t.kcal)}
     ${flBar('P', flTot.p, t.p)}
     ${flBar('F', flTot.f, t.f)}
@@ -341,7 +341,7 @@ function renderMeals() {
   const wTgt = waterTarget(S.profile);
   const wCur = (S.water && S.water[flDate]) || 0;
   const cups = Array.from({ length: wTgt }, (_, i) => `<span class="wcup ${i < wCur ? 'on' : ''}">${i < wCur ? '💧' : '·'}</span>`).join('');
-  html += `<div class="card"><h2>💧 水分<span class="sub">${wCur}/${wTgt}杯(1杯250ml)</span></h2>
+  const cWater = `<div class="card"><h2>💧 水分<span class="sub">${wCur}/${wTgt}杯(1杯250ml)</span></h2>
     <div class="wcups">${cups}</div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn small ghost" id="water-minus" style="flex:1">−1杯</button>
@@ -351,35 +351,36 @@ function renderMeals() {
 
   // 体重ナビ
   const nav = weightNav(S.profile, S.weights);
-  html += `<div class="card"><h2>⚖️ 体重ナビ<span class="sub">現在${S.profile.w}kg / BMI ${nav.bmi}</span></h2>`;
+  let cWeightNav = `<div class="card"><h2>⚖️ 体重ナビ<span class="sub">現在${S.profile.w}kg / BMI ${nav.bmi}</span></h2>`;
   if (nav.mode === 'cut') {
     const eta = fmtDate(dateAdd(todayStr(), nav.weeks * 7));
-    html += `<div class="hero-num">−${nav.diff}<small> kg が目安</small></div>
+    cWeightNav += `<div class="hero-num">−${nav.diff}<small> kg が目安</small></div>
       <p class="card-note">週${nav.pace}kgペース(筋肉を守れる上限)で約${nav.weeks}週間、<b style="color:var(--accent)">${eta}頃</b>に到達見込み。上の献立(−400kcal)がほぼこのペースに相当します。</p>`;
   } else if (nav.mode === 'bulk') {
     const eta = fmtDate(dateAdd(todayStr(), nav.weeks * 7));
-    html += `<div class="hero-num">+${nav.diff}<small> kg 増やせる</small></div>
+    cWeightNav += `<div class="hero-num">+${nav.diff}<small> kg 増やせる</small></div>
       <p class="card-note">週${nav.pace}kgペース(脂肪を乗せすぎない上限)で約${nav.weeks}週間、<b style="color:var(--accent)">${eta}頃</b>が目安。上の献立(+250kcal)がほぼこのペースに相当します。</p>`;
   } else {
-    html += `<p style="font-size:13.5px">${esc(nav.msg)}</p>`;
+    cWeightNav += `<p style="font-size:13.5px">${esc(nav.msg)}</p>`;
   }
-  if (nav.advice) html += `<p class="card-note">📈 ${esc(nav.advice)}</p>`;
-  if (nav.cycleHold) html += `<p class="card-note">🌙 今は<b>${esc(nav.cycleHold)}</b>で体重が水分で増減しやすい時期。停滞かどうかの判定・カロリー調整は一旦保留しています(周期が一巡すると正しく判定できます)。</p>`;
+  if (nav.advice) cWeightNav += `<p class="card-note">📈 ${esc(nav.advice)}</p>`;
+  if (nav.cycleHold) cWeightNav += `<p class="card-note">🌙 今は<b>${esc(nav.cycleHold)}</b>で体重が水分で増減しやすい時期。停滞かどうかの判定・カロリー調整は一旦保留しています(周期が一巡すると正しく判定できます)。</p>`;
   if (nav.suggestKcal) {
     const dir = nav.suggestKcal < 0 ? '下げる' : '上げる';
     const abs = Math.abs(nav.suggestKcal);
-    html += `<div style="margin-top:8px;padding:10px;border:1px solid var(--accent);border-radius:10px">
+    cWeightNav += `<div style="margin-top:8px;padding:10px;border:1px solid var(--accent);border-radius:10px">
       <p style="font-size:12.5px;margin-bottom:8px">${nav.stalled ? '⚠️ <b>停滞ぎみ</b>です(代謝が慣れたサイン)。' : ''}目標カロリーを<b>${abs}kcal ${dir}</b>と、実績ペースが目標に合います。</p>
       <button class="btn small" id="meals-autoadjust">目標カロリーを ${abs}kcal ${dir}(自動調整)</button>
     </div>`;
   }
-  html += `</div>`;
+  cWeightNav += `</div>`;
 
   // 🧬 体組成の推定(体重変化の脂肪/筋肉の内訳)
   const bc = bodyCompEstimate(S.profile, S.weights);
+  let cBodyComp = '';
   if (bc) {
     const sign = v => (v >= 0 ? '+' : '') + v;
-    html += `<div class="card"><h2>🧬 体組成の推定<span class="sub">この${bc.days}日</span></h2>
+    cBodyComp = `<div class="card"><h2>🧬 体組成の推定<span class="sub">この${bc.days}日</span></h2>
       <p style="font-size:13.5px">体重 <b>${sign(bc.change)}kg</b> の内訳(推定)</p>
       <div class="bc-breakdown">
         <span class="chip" style="border-color:var(--warn);color:var(--warn)">脂肪 ${sign(bc.fat)}kg</span>
@@ -388,26 +389,26 @@ function renderMeals() {
       <p class="card-note">${bc.cut ? '筋トレ+タンパク質を続けていれば、落ちた体重の大半は脂肪で筋肉はほぼ守れます。' : 'トレ歴が浅いほど増えた体重に筋肉が占める割合が高くなります。'}トレ歴(${SCIENCE.levels ? '' : ''}レベル)から按分した目安で、実測ではありません。体重を継続記録するほど精度が上がります。</p></div>`;
   }
 
+  // 献立(自動生成)+ 合計 + コンビニ + ランキング を1ブロックに
+  let cMealPlan = '';
   plan.meals.forEach(m => {
-    html += `<div class="card"><h2>${m.icon} ${esc(m.name)}<span class="sub">${g(m.totals.kcal)}kcal / P${g(m.totals.p)}g</span></h2>`;
+    cMealPlan += `<div class="card"><h2>${m.icon} ${esc(m.name)}<span class="sub">${g(m.totals.kcal)}kcal / P${g(m.totals.p)}g</span></h2>`;
     if (!m.items.length) {
-      html += `<p class="card-note">この食事のデータが見つかりませんでした。</p>`;
+      cMealPlan += `<p class="card-note">この食事のデータが見つかりませんでした。</p>`;
     } else {
       m.items.forEach(it => {
-        html += `<div class="meal-item">
+        cMealPlan += `<div class="meal-item">
           <div class="mi-info"><div class="nm">${esc(it.food.name)} <b class="amt">${esc(qtyLabel(it.food, it.qty))}</b></div>
           ${it.food.note ? `<div class="meta">${esc(it.food.note)}</div>` : ''}</div>
           <div class="mi-macros">${g(it.food.kcal * it.qty)}kcal<small>P${(Math.round(it.food.p * it.qty * 10) / 10)}g</small></div>
         </div>`;
       });
     }
-    html += `</div>`;
+    cMealPlan += `</div>`;
   });
-
-  // 合計 vs 目標
   const dp = g(plan.totals.p) - t.p;
   const dk = g(plan.totals.kcal) - t.kcal;
-  html += `<div class="card"><h2>📊 この献立の合計</h2>
+  cMealPlan += `<div class="card"><h2>📊 この献立の合計</h2>
     <div class="focus-chips">
       <span class="chip ${Math.abs(dk) <= t.kcal * 0.08 ? 'grow' : ''}">${g(plan.totals.kcal)}kcal (目標${t.kcal})</span>
       <span class="chip ${dp >= -5 ? 'grow' : ''}">P ${g(plan.totals.p)}g (目標${t.p})</span>
@@ -417,28 +418,36 @@ function renderMeals() {
     <p class="card-note">±8%以内なら合格。量の微調整はご飯・麺(炭水化物)で行うのが基本。タンパク質は削らない。</p>
     ${dp < -5 ? `<p class="card-note">タンパク質があと約${-dp}g不足。<b style="color:var(--accent)">ホエイプロテイン${Math.ceil(-dp / 22)}杯</b>を追加すれば届きます(体格が大きいほど食事だけで満たすのは大変なので普通のことです)。</p>` : ''}
   </div>`;
-
-  // コンビニ早見
   const conbini = FOODS.filter(f => f.conbini && f.role === 'protein').sort((a, b) => b.p - a.p);
-  html += `<div class="card"><h2>🏪 コンビニで買うならこれ</h2>`;
+  cMealPlan += `<div class="card"><h2>🏪 コンビニで買うならこれ</h2>`;
   conbini.slice(0, 6).forEach(f => {
-    html += `<div class="meal-item"><div class="mi-info"><div class="nm">${esc(f.name)} <b class="amt">${esc(f.per)}</b></div>
+    cMealPlan += `<div class="meal-item"><div class="mi-info"><div class="nm">${esc(f.name)} <b class="amt">${esc(f.per)}</b></div>
       ${f.note ? `<div class="meta">${esc(f.note)}</div>` : ''}</div>
       <div class="mi-macros">${g(f.kcal)}kcal<small>P${f.p}g</small></div></div>`;
   });
-  html += `</div>`;
-
-  // 高タンパク早見表
+  cMealPlan += `</div>`;
   const ranked = FOODS.filter(f => f.p >= 5).sort((a, b) => (b.p / Math.max(b.kcal, 1)) - (a.p / Math.max(a.kcal, 1)));
-  html += `<details class="acc"><summary>🥇 タンパク質効率ランキング (P ÷ カロリー)</summary><div class="acc-body">
+  cMealPlan += `<details class="acc"><summary>🥇 タンパク質効率ランキング (P ÷ カロリー)</summary><div class="acc-body">
     <table class="rm-table"><tr><th>食品</th><th>量</th><th>P</th><th>kcal</th></tr>
     ${ranked.slice(0, 12).map(f => `<tr><td style="text-align:left">${esc(f.name)}</td><td>${esc(f.per)}</td><td>${f.p}g</td><td>${g(f.kcal)}</td></tr>`).join('')}
-    </table></div></details>
-  <p class="card-note" style="margin-bottom:14px">栄養値は日本食品標準成分表ベースの目安です。細かい誤差より「毎日続けること」が結果を作ります。</p>`;
+    </table></div></details>`;
+
+  // 目標カード+シャッフルは固定・その他はカスタマイズ可能
+  const mealCards = [
+    { id: 'foodlog', name: '食べたものを記録', html: cFoodlog },
+    { id: 'water', name: '水分トラッキング', html: cWater },
+    { id: 'weightnav', name: '体重ナビ', html: cWeightNav },
+    { id: 'bodycomp', name: '体組成の推定', html: cBodyComp },
+    { id: 'mealplan', name: '献立(自動生成)', html: cMealPlan },
+  ];
+  html += arrangeCards('meals', mealCards) + customizeBtnHtml('meals');
+  html += `<p class="card-note" style="margin-bottom:14px">栄養値は日本食品標準成分表ベースの目安です。細かい誤差より「毎日続けること」が結果を作ります。</p>`;
 
   root.innerHTML = html;
+  bindCustomize(root, mealCards.map(c => ({ id: c.id, name: c.name })), 'meals');
 
-  $('#meals-shuffle', root).addEventListener('click', () => {
+  const shuffleBtn = $('#meals-shuffle', root);
+  if (shuffleBtn) shuffleBtn.addEventListener('click', () => {
     S.mealSeed = ((S.mealSeed || 0) + 1) % 1000000;
     saveState();
     toast('献立を変えました');
