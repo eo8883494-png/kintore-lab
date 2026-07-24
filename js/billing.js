@@ -17,7 +17,7 @@
   'use strict';
 
   // ▼▼ 差し替え必須(RevenueCat ダッシュボード → Project → API keys)▼▼
-  const RC_API_KEY_IOS = 'appl_REPLACE_WITH_REVENUECAT_IOS_PUBLIC_KEY';
+  const RC_API_KEY_IOS = 'appl_OzSSiamGbsTIqjxDRBTAfxmGjOi';
   const RC_API_KEY_ANDROID = 'goog_REPLACE_WITH_REVENUECAT_ANDROID_PUBLIC_KEY';
   // ▲▲ ここまで ▲▲
 
