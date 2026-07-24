@@ -1343,7 +1343,16 @@ function applyProCode(code) {
   if (!S.pro) { S.pro = true; saveState(); }
   return true;
 }
-window.__klPro = { isPro, applyCode: applyProCode, uiEnabled: PRO_UI_ENABLED };
+// RevenueCatエンタイトルメント(pro)のキャッシュ更新。billing.jsが起動/復帰/購入/解約時に呼ぶ。
+// サブスクは失効するため true/false 両方向を反映(買い切りのsticky-trueと異なる)。
+function setEntitlement(active) {
+  active = !!active;
+  if (!!S.pro === active) return;      // 変化なしは無視(不要な再描画/同期を避ける)
+  S.pro = active;
+  saveState();
+  if (!$('#modal-bg')) route();        // モーダル操作中でなければ反映
+}
+window.__klPro = { isPro, applyCode: applyProCode, setEntitlement, uiEnabled: PRO_UI_ENABLED };
 
 // ===== cloud.js とのブリッジ =====
 // 現在の状態を取得 (クラウドへ書き込む用)
@@ -1455,12 +1464,39 @@ function bindPaywall(bg) {
     const t = bg.querySelector('#pw-terms'); if (t) t.textContent = pwTermsText();
   }));
   const start = $('#pw-start', bg);
-  if (start) start.addEventListener('click', () => {
-    // TODO: RevenueCat Purchases.purchasePackage(pwPlan) → entitlement 'pro' → S.pro=true(既存isPro機構)
-    toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)');
+  if (start) start.addEventListener('click', async () => {
+    const B = window.__klBilling;
+    if (!B || !B.ready()) { toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)'); return; }
+    const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
+    try {
+      const r = await B.purchase(pwPlan);
+      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); }
+      else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す */ }
+      else { toast('購入を完了できませんでした。時間をおいて再度お試しください'); }
+    } finally { start.disabled = false; start.textContent = orig; }
   });
   const restore = $('#pw-restore', bg);
-  if (restore) restore.addEventListener('click', () => toast('購入の復元はApp Store対応後に有効化されます(準備中)'));
+  if (restore) restore.addEventListener('click', async () => {
+    const B = window.__klBilling;
+    if (!B || !B.ready()) { toast('購入の復元はApp Store対応後に有効化されます(準備中)'); return; }
+    const r = await B.restore();
+    if (r && r.ok) { toast('購入を復元しました'); closeModal(); }
+    else toast('復元できる購入が見つかりませんでした');
+  });
+  // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
+  const B = window.__klBilling;
+  if (B && B.ready && B.ready()) {
+    B.getPlans().then(plans => {
+      if (!plans || !bg.isConnected) return;
+      plans.forEach(pl => {
+        if (!pl.price) return;
+        const cfg = PRO_PLANS.find(x => x.id === pl.id); if (cfg) cfg.price = pl.price;
+        const el = bg.querySelector(`[data-plan="${pl.id}"] .pw-plan-price`);
+        if (el) el.innerHTML = `${pl.price}<small>${(PRO_PLANS.find(x => x.id === pl.id) || {}).sub || ''}</small>`;
+      });
+      const t = bg.querySelector('#pw-terms'); if (t) t.textContent = pwTermsText();
+    }).catch(() => {});
+  }
 }
 function openPaywall() { bindPaywall(openModal(paywallHtml())); }
 
@@ -4513,7 +4549,7 @@ document.addEventListener('visibilitychange', () => {
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
   refreshFromStorage();
-  if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); } // 復帰でもSiri/Spotlightアクションを消費
+  if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); if (window.__klBilling) window.__klBilling.refreshEntitlement(); } // 復帰でSiri/Spotlight消費+課金状態を再確認
 });
 
 // ネイティブ: 外部リンク(target=_blank)はOSに委譲(YouTube/Instagram等は対応アプリで開く)
@@ -4539,6 +4575,7 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshReminderSchedule();
       if (loadHealthPref().autoSteps) importHealthWeight(true);
       indexSpotlightExercises();
+      if (window.__klBilling) window.__klBilling.refreshEntitlement(); // 課金状態を同期(configure含む・トライアル満了→自動課金も追従)
     }, 1500);
   }
   route();

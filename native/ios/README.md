@@ -99,5 +99,46 @@ Watchで「今日のメニュー表示 → タップでセット完了(iPhoneに
 ```
 3. 確認: アプリを一度起動(インデックス登録)→ iPhoneのホームで下スワイプ検索→「ベンチプレス」→ 筋トレLABの結果をタップ→ 種目モーダルが開く
 
+---
+
+## 💳 サブスク課金(RevenueCat)組み込み
+
+JS側(`js/billing.js` + app.js の `window.__klPro.setEntitlement`)は配線済み。
+Entitlement `pro` が有効な間だけ `isPro()` が true になる(トライアル中も true)。
+プラグイン未導入/APIキー未設定の間は**Web同様に「準備中」表示**で安全に動く。
+
+### 0. 前提(ユーザーがダッシュボードで作成)
+- **App Store Connect**: サブスクグループ + 商品2つ
+  - `kintorelab_yearly`(¥5,800/年)・`kintorelab_monthly`(¥680/月)
+  - 両方に **7日間の無料トライアル(Introductory Offer → Free)** を設定
+- **RevenueCat**: プロジェクト作成 → App Store Connectと連携(App-Specific Shared Secret貼付)
+  → **Entitlement `pro`** を作成 → 上記2商品を紐付け → **Offering(current)** に
+  `annual` / `monthly` パッケージとして追加
+
+### 1. プラグイン導入(Mac・ターミナル)
+```bash
+cd kintore-lab
+npm i @revenuecat/purchases-capacitor@7
+npm run build:www          # www/js/billing.js を更新
+npx cap sync ios
+```
+
+### 2. APIキーを差し替え
+`js/billing.js` 冒頭の `RC_API_KEY_IOS`(と Android版)を
+RevenueCat → Project settings → **API keys の「Public app-specific」キー**(`appl_...`)に置換。
+→ `npm run build:www && npx cap sync ios` で再反映。
+
+### 3. Capability
+Xcode: **App ターゲット → Signing & Capabilities → + Capability → In-App Purchase** を追加。
+
+### 4. 確認
+1. **Sandboxテスター**でサインイン(App Store Connect → Users and Access → Sandbox)
+2. アプリ起動 → ペイウォール →「1週間無料で始める」→ Sandbox購入シート
+3. 購入後、機能が解放され(`isPro()`=true)、再起動しても維持されること
+4. RevenueCat ダッシュボードの **Overview → Sandbox** にトランザクションが出れば成功
+
+> 補足: 課金状態は起動時と復帰時に `getCustomerInfo` で再確認するので、
+> トライアル満了→自動課金や、解約→失効も次回起動で `isPro()` に反映される。
+
 ## トラブル時
 エラーの赤字をそのまま報告してください(型名・行番号ごと)。
