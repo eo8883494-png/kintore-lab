@@ -1671,7 +1671,7 @@ function paywallHtml(gate) {
       ${feats.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
     </ul>
     <div class="pw-plans">${plans}</div>
-    <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。</p>
+    <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。困ったときは<a href="https://eo8883494-png.github.io/kintore-lab/support.html" target="_blank" rel="noopener">サポート</a>へ。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
     <!-- CTAと料金説明は常に画面内に見えるよう最下部に固定する(小型端末で押せない事故を防ぐ) -->
     <div class="pw-foot">
@@ -4530,7 +4530,7 @@ function renderTools() {
       持病・怪我・痛みがある場合は医師やトレーナーに相談してください。<br>
       <a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>
       <a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
-      <a href="https://x.com/hataraku_ai_" target="_blank" rel="noopener">お問い合わせ</a><br>
+      <a href="https://eo8883494-png.github.io/kintore-lab/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a><br>
       筋トレLAB v1.0
     </p>`;
 
