@@ -1419,8 +1419,10 @@ function loadState() {
 }
 let applyingRemote = false; // リモート適用中はクラウドへ再pushしない (エコー防止)
 let saveFailWarned = false;
-function saveState() {
-  if (!applyingRemote) S._updatedAt = Date.now(); // ローカル編集の時刻(mergeStatesの新旧判定に使う)
+let saveQueued = false;
+// 実際の書き込み。状態全体をJSON化するのでコストが高い(1操作で何度も呼ばない)
+function flushSave() {
+  saveQueued = false;
   let ok = true;
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
   catch (e) {
@@ -1433,9 +1435,22 @@ function saveState() {
     }
   }
   if (ok) saveFailWarned = false;
-  if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
   return ok;
 }
+// セット⭕1タップで setExerciseProgress→toggleDone と複数回呼ばれるため、
+// 同一タスク内の保存はマイクロタスクで1回にまとめる(古い端末での入力の引っかかりを防ぐ)
+function saveState() {
+  if (!applyingRemote) S._updatedAt = Date.now(); // ローカル編集の時刻(mergeStatesの新旧判定に使う)
+  if (!saveQueued) {
+    saveQueued = true;
+    queueMicrotask(() => { if (saveQueued) flushSave(); });
+  }
+  if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
+  return true;
+}
+// 画面を離れる/隠れる直前は確実に書き込む(まとめ待ちのまま失わない)
+window.addEventListener('pagehide', () => { if (saveQueued) flushSave(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden && saveQueued) flushSave(); });
 
 // ===== Pro (買い切り) — 2026-07-22 ドーマント実装 =====
 // 現状は「無料検証フェーズ」= どの機能もロックしない(isPro参照箇所ゼロ)。
@@ -2577,8 +2592,8 @@ function openCardCustomize(screen, catalog) {
       <div class="cc-row ${c.hidden ? 'off' : ''}">
         <button type="button" class="cc-eye" data-i="${i}">${c.hidden ? '🙈' : '👁'}</button>
         <span class="cc-name">${esc(c.name)}</span>
-        <button type="button" class="cc-mv" data-i="${i}" data-d="-1" ${i === 0 ? 'disabled' : ''}>↑</button>
-        <button type="button" class="cc-mv" data-i="${i}" data-d="1" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" class="cc-mv" data-i="${i}" data-d="-1" aria-label="上へ移動" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button type="button" class="cc-mv" data-i="${i}" data-d="1" aria-label="下へ移動" ${i === list.length - 1 ? 'disabled' : ''}>↓</button>
       </div>`).join('');
     $all('.cc-eye', listEl).forEach(b => b.addEventListener('click', () => { const i = Number(b.dataset.i); list[i].hidden = !list[i].hidden; draw(); }));
     $all('.cc-mv', listEl).forEach(b => b.addEventListener('click', () => {
@@ -3095,7 +3110,7 @@ function renderPlan() {
 
   html += `<div style="display:flex;gap:10px;margin-bottom:14px">
     <button class="btn" id="gen-plan">${S.plan ? 'メニューを作り直す' : 'メニュー生成'}</button>
-    ${S.plan ? '<button class="btn ghost" id="shuffle-plan" style="width:auto">🔀</button>' : ''}
+    ${S.plan ? '<button class="btn ghost" id="shuffle-plan" style="width:auto" aria-label="メニューを組み直す" title="メニューを組み直す">🔀</button>' : ''}
   </div>`;
 
   // オプション(オプトイン): B=指定日数で組む / C=休養日アクティブレスト
@@ -3639,7 +3654,7 @@ async function openPublicGalleryModal() {
           ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
             : `<button class="btn small gal-detail" data-i="${i}">見る</button><button class="btn small ghost gal-import" data-i="${i}">取り込む</button>`}
           ${mine ? `<button class="btn small gal-detail" data-i="${i}">見る</button>`
-            : `<button class="btn ghost small gal-report" data-id="${esc(pm.id)}" data-uid="${esc(pm.uid || '')}" style="padding:8px 10px">⚠</button><button class="btn ghost small gal-block" data-uid="${esc(pm.uid || '')}" title="このユーザーの投稿を今後表示しない" style="padding:8px 10px">🚫</button>`}
+            : `<button class="btn ghost small gal-report" data-id="${esc(pm.id)}" data-uid="${esc(pm.uid || '')}" aria-label="このメニューを通報" style="padding:8px 10px">⚠</button><button class="btn ghost small gal-block" data-uid="${esc(pm.uid || '')}" aria-label="このユーザーの投稿を今後表示しない" title="このユーザーの投稿を今後表示しない" style="padding:8px 10px">🚫</button>`}
         </div></div>`;
     }).join('');
     bindList();
@@ -3875,7 +3890,7 @@ function renderLog() {
           <div class="sets">${m.items.length}種目 / 約${dayMinutes(m.items)}分</div></div>
           <button class="btn small ghost" data-mm-share="${m.id}" title="みんなのメニューに公開">🌐</button>
           <button class="btn small" data-mm-run="${m.id}">▶ 今日やる</button>
-          <button class="del" data-mm-del="${m.id}">🗑</button></div>`).join('')
+          <button class="del" data-mm-del="${m.id}" aria-label="このマイメニューを削除">🗑</button></div>`).join('')
         : '<p class="card-note">よくやる自分の組み合わせを保存すると、ホームでワンタップ実行&チェック記録できます。DBにない種目も「オリジナル種目」として追加OK。</p>'}</div>
       <button class="btn ghost" id="mymenu-new">+ 新しいマイメニュー</button>
     </div>`;
@@ -4048,14 +4063,14 @@ function renderLog() {
     const dates = Object.keys(byDate).sort().reverse().slice(0, 30);
     const list = $('#log-list', root);
     if (list) list.innerHTML = dates.map(d => `
-      <div class="log-day"><div class="log-day-head">${fmtDate(d)}<button class="share-day" data-share="${d}" title="この日の記録をシェア">📸</button></div>
+      <div class="log-day"><div class="log-day-head">${fmtDate(d)}<button class="share-day" data-share="${d}" aria-label="この日の記録をシェア" title="この日の記録をシェア">📸</button></div>
       ${byDate[d].map(l => {
         const ex = DB.byId[l.exId];
         const u = ex && ex.isometric ? '秒' : '回';
         const setsTxt = l.sets.map(s => s.w > 0 ? `${s.w}kg×${s.r}` : `${s.r}${u}`).join(' / ');
         return `<div class="log-entry"><div><div class="nm">${ex ? esc(ex.name) : esc(l.exId)}</div>
           <div class="sets">${esc(setsTxt)}</div></div>
-          <button class="del" data-del="${l.id}">🗑</button></div>`;
+          <button class="del" data-del="${l.id}" aria-label="この記録を削除">🗑</button></div>`;
       }).join('')}</div>`).join('');
     $all('[data-share]', list).forEach(btn => {
       btn.addEventListener('click', () => openShareModal(btn.dataset.share));
@@ -4117,6 +4132,7 @@ function openMyMenuModal() {
       form: ['自分の種目: いつものフォームでOK', '効かせたい部位を意識する', '無理のない重量で丁寧に'],
       mistake: '', repHyp: '10-15', repStr: '8-12', repEnd: '15-20', custom: true,
     };
+    if (S.customEx.length >= 50) { toast('オリジナル種目は50件までです。不要なものを削除してから追加してください'); return; }
     S.customEx.push(ex);
     saveState();
     rebuildDB(S.customEx);
@@ -4145,6 +4161,7 @@ function openMyMenuModal() {
       };
     }).filter(Boolean);
     if (!items.length) { toast('種目が見つかりませんでした。選び直してください'); return; }
+    if (S.myMenus.length >= 20) { toast('マイメニューは20件までです。不要なものを削除してから保存してください'); return; }
     const newId2 = S.myMenus.reduce((m, x) => Math.max(m, x.id), 0) + 1;
     const newMenu2 = { id: newId2, name: name.slice(0, 20), items, uid: newMenuUid(), createdAt: Date.now() };
     clearMenuTombstone(newMenu2); // 同内容の削除マーカーがあれば解除

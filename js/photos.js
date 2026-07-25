@@ -110,11 +110,16 @@ async function renderPhotoCard(container) {
   if (!mine.length && !goal) {
     html += `<div class="empty"><span class="big-emoji">📷</span>最初の1枚を撮っておくと、3ヶ月後の自分に感謝されます。<br>写真はこの端末の中にだけ保存されます。</div>`;
   } else {
-    html += `<div class="photo-grid">` + photos.map(p => `
+    // 1枚あたり数百KBのdataURLをそのまま<img>にするため、枚数が増えるとデコード後の
+    // ビットマップでメモリが逼迫する(古い端末ではアプリごと落ちる)。
+    // 直近12枚だけ即時表示し、残りは遅延読み込みに任せる。
+    const EAGER = 12;
+    html += `<div class="photo-grid">` + photos.map((p, i) => `
       <figure class="photo-thumb" data-photo-id="${p.id}">
-        <img src="${p.dataUrl}" alt="">
+        <img src="${p.dataUrl}" alt="${p.type === 'goal' ? '目標の写真' : fmtDate(p.date) + 'の体型写真'}"
+             loading="${i < EAGER ? 'eager' : 'lazy'}" decoding="async">
         <figcaption>${p.type === 'goal' ? '🎯目標' : fmtDate(p.date)}</figcaption>
-        <button class="photo-del" data-del-photo="${p.id}">✕</button>
+        <button class="photo-del" data-del-photo="${p.id}" aria-label="この写真を削除">✕</button>
       </figure>`).join('') + `</div>
     <p class="card-note">写真は端末内(${typeof storeWord === 'function' ? storeWord() : 'この端末'})にのみ保存。エクスポートには含まれないので機種変更時は個別に保存を。</p>`;
   }
