@@ -157,7 +157,7 @@ async function importHealthWeight(silent) {
     if (silent) return; // 自動同期時はトーストを出さない(静かに反映)
     if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
     else toast(steps != null ? `今日の歩数: ${steps.toLocaleString()}歩(体重データは未登録)` : 'Apple Healthにデータが見つかりませんでした');
-  } catch (e) { console.warn('[health] import failed', e); if (!silent) toast('取り込みに失敗しました'); }
+  } catch (e) { console.warn('[health] import failed', e); if (!silent) toast('ヘルスケアから取り込めませんでした。設定でアクセスを許可してください'); }
 }
 // アプリで入力した体重を Apple Health / Health Connect にも書き込む(双方向)。失敗しても無害
 async function writeHealthWeight(kg, dateStr) {
@@ -572,7 +572,7 @@ async function enableLocalReminder(hour, minute, silent) {
     if (gen !== reminderGen) { await cancelAllReminderNotifs(LN); return { ok: false, reason: 'superseded' }; }
     saveLocalReminder({ enabled: true, hour: h, minute: m });
     return { ok: true };
-  } catch (e) { console.warn('[local-notif] enable failed', e); if (!silent) toast('通知の設定に失敗しました'); return { ok: false, reason: 'error' }; }
+  } catch (e) { console.warn('[local-notif] enable failed', e); if (!silent) toast('通知を設定できませんでした。端末の設定で通知を許可してください'); return { ok: false, reason: 'error' }; }
 }
 // 起動時: 通知ON中ならプランの現状に合わせて静かに再スケジュール(プラン変更の追従)
 function refreshReminderSchedule() {
@@ -644,7 +644,7 @@ function bindLocalReminder(root) {
       if (perm && perm.display !== 'granted') { toast('通知が許可されていません。設定→筋トレLAB→通知 で許可を'); return; }
       await LN.schedule({ notifications: [{ id: LOCAL_REMINDER_ID + 1, title: '筋トレLAB 💪', body: 'テスト通知です。届いていればOK!', schedule: { at: new Date(Date.now() + 5000) } }] });
       toast('5秒後にテスト通知を出します(アプリを閉じてもOK)');
-    } catch (e) { console.warn('[local-notif] test failed', e); toast('テスト通知に失敗しました'); }
+    } catch (e) { console.warn('[local-notif] test failed', e); toast('テスト通知を送れませんでした。端末の設定で通知を許可してください'); }
   });
 }
 
@@ -1553,7 +1553,7 @@ function bindPaywall(bg, gate) {
   const start = $('#pw-start', bg);
   if (start) start.addEventListener('click', async () => {
     const B = window.__klBilling;
-    if (!B || !B.ready()) { toast('サブスクはApp Store審査・課金設定の完了後に有効化されます(準備中)'); return; }
+    if (!B || !B.ready()) { toast('現在ご登録手続きを開始できません。通信環境をご確認のうえ、しばらくしてからお試しください'); return; }
     const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
     try {
       const r = await B.purchase(pwPlan);
@@ -1570,7 +1570,7 @@ function bindPaywall(bg, gate) {
   const restore = $('#pw-restore', bg);
   if (restore) restore.addEventListener('click', async () => {
     const B = window.__klBilling;
-    if (!B || !B.ready()) { toast('購入の復元はApp Store対応後に有効化されます(準備中)'); return; }
+    if (!B || !B.ready()) { toast('現在購入の復元を実行できません。通信環境をご確認のうえ、しばらくしてからお試しください'); return; }
     const r = await B.restore();
     if (r && r.ok) { toast('購入を復元しました'); closeModal(); if (gate) route(); }
     else toast('復元できる購入が見つかりませんでした');
@@ -1594,6 +1594,19 @@ function bindPaywall(bg, gate) {
   }
 }
 function openPaywall(gate) { bindPaywall(openModal(paywallHtml(gate), { persistent: !!gate }), gate); }
+
+// カロリー助言の文言。食事タブ(mealTargets)と同じ安全ガードを使い、画面ごとに真逆の
+// 助言(成長期なのに「−500kcal」等)が出ないようにする
+function calorieAdviceText(p) {
+  if (!p) return '';
+  try {
+    const t = (typeof mealTargets === 'function') ? mealTargets(p) : null;
+    if (t && t.mode === 'teen') return '成長期のため、カロリーは削らない設計です。維持カロリー＋タンパク質＋筋トレで体を作りましょう。';
+    if (t && t.mode === 'recomp') return '体重は十分にあるため、カロリーは削らずに引き締める設計です(維持カロリー＋筋トレ)。';
+    if (t && t.mode === 'maintain') return '体重は足りているので、増やさず維持カロリーで重量を伸ばしましょう。';
+  } catch (e) { /* meals.js 未読込時は既定文言へ */ }
+  return p.goal === 'diet' ? '減量はここから−300〜500kcal。' : p.goal === 'hyp' ? '筋肥大はここから+200〜300kcal。' : 'このカロリーを維持でOK。';
+}
 
 // ===== みんなのメニュー: 迷惑ユーザーの非表示(App Store Guideline 1.2 の必須要件) =====
 function blockUid(uid) {
@@ -3277,7 +3290,7 @@ function openMenuPublishModal(menu) {
       toast(res.avatarDropped ? '🌐 公開しました(画像アイコンは今回反映できず絵文字で表示)' : '🌐 公開しました!');
       renderLog();
     } else {
-      toast(res.reason === 'login' ? 'ログインが必要です' : '公開に失敗しました(ルール未設定の可能性)');
+      toast(res.reason === 'login' ? '公開するにはログインが必要です' : '公開できませんでした。通信環境を確認して、もう一度お試しください');
       btn.disabled = false; btn.textContent = menu.published ? '更新する' : '公開する';
     }
   });
@@ -3285,7 +3298,7 @@ function openMenuPublishModal(menu) {
   if (rm) rm.addEventListener('click', async () => {
     const res = await c.unpublishMenu(menu.pubId);
     if (res.ok) { menu.published = false; delete menu.pubId; saveState(); closeModal(); toast('公開を取り消しました'); renderLog(); }
-    else toast('取り消しに失敗しました');
+    else toast('公開を取り消せませんでした。通信環境を確認して、もう一度お試しください');
   });
 }
 
@@ -3546,7 +3559,7 @@ async function openPublicGalleryModal() {
       b.classList.toggle('grow', on);
       b.textContent = `❤️ ${likeCount(id)}`;
       const res = await c.likeMenu(id, on);
-      if (!res.ok) { toast('いいねを保存できませんでした'); }
+      if (!res.ok) { toast('いいねを保存できませんでした。通信環境を確認してください'); }
       else haptic('light');
     }));
     $all('.gal-report', listEl).forEach(b => b.addEventListener('click', async () => {
@@ -3555,7 +3568,7 @@ async function openPublicGalleryModal() {
       const res = await c.reportMenu(b.dataset.id);
       // 通報した相手はすぐ視界から消す(不快な内容を見続けさせない)
       blockUid(b.dataset.uid);
-      toast(res.ok ? '通報しました。この投稿者を非表示にしました' : '通報に失敗しました');
+      toast(res.ok ? '通報しました。この投稿者を非表示にしました' : '通報を送信できませんでした。通信環境を確認してください');
       renderList();
     }));
     // ブロック(1.2の必須要件)。端末内に保持し、一覧から除外する
@@ -3572,7 +3585,7 @@ async function openPublicGalleryModal() {
         const m = S.myMenus.find(x => x.pubId === b.dataset.id);
         if (m) { m.published = false; delete m.pubId; saveState(); }
         toast('公開を取り消しました'); closeModal(); renderLog();
-      } else toast('取り消しに失敗しました');
+      } else toast('公開を取り消せませんでした。通信環境を確認して、もう一度お試しください');
     }));
   };
 
@@ -4219,7 +4232,7 @@ function renderTools() {
         <div>1日のタンパク質目標 <span class="big">${Math.round(p.w * (SCIENCE.proteinPerKg[p.goal] || 1.8))}g</span></div>
         <p class="card-note">体重${p.w}kg × ${SCIENCE.proteinPerKg[p.goal] || 1.8}g(${esc(SCIENCE.goals[p.goal].name)}向け)。鶏むね100g≈23g、卵1個≈6g、プロテイン1杯≈20g。</p>
         <div style="margin-top:8px">維持カロリー <span class="big">${calcTDEE(p)}<small>kcal/日</small></span></div>
-        <p class="card-note">${p.goal === 'diet' ? '減量はここから−300〜500kcal。' : p.goal === 'hyp' ? '筋肥大はここから+200〜300kcal。' : 'このカロリーを維持でOK。'}</p>
+        <p class="card-note">${calorieAdviceText(p)}</p>
       </div>` : '<p class="card-note">プロフィール設定で自動計算されます。</p>'}
     </div>`;
   const tFFMI = `<div class="card"><h2>💪 FFMI（筋肉の発達度）</h2>

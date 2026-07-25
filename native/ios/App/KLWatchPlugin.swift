@@ -40,6 +40,16 @@ public class KLWatchPlugin: CAPPlugin, CAPBridgedPlugin, WCSessionDelegate {
     public func sessionDidDeactivate(_ session: WCSession) { session.activate() }
 
     public func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        handleWatchPayload(message)
+    }
+
+    // Watch側が届かなかった分を transferUserInfo で送ってくる(iPhoneが手元に無かった場合)。
+    // これを受けないとWatchでのセット完了が失われる。
+    public func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        handleWatchPayload(userInfo)
+    }
+
+    private func handleWatchPayload(_ message: [String: Any]) {
         guard let type = message["type"] as? String, type == "setDone" else { return }
         DispatchQueue.main.async {
             self.notifyListeners("watchSetDone", data: [

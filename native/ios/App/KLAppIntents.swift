@@ -15,7 +15,7 @@ struct KLStartRestTimerIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        let obj: [String: Any] = ["action": "restTimer", "seconds": max(10, min(600, seconds))]
+        let obj: [String: Any] = ["action": "restTimer", "seconds": max(10, min(600, seconds)), "ts": Date().timeIntervalSince1970 * 1000]
         if let data = try? JSONSerialization.data(withJSONObject: obj),
            let s = String(data: data, encoding: .utf8) {
             UserDefaults.standard.set(s, forKey: "kl.pendingAction")
@@ -32,7 +32,7 @@ struct KLOpenTodayIntent: AppIntent {
 
     @MainActor
     func perform() async throws -> some IntentResult {
-        UserDefaults.standard.set("{\"action\":\"openToday\"}", forKey: "kl.pendingAction")
+        UserDefaults.standard.set("{\"action\":\"openToday\",\"ts\":\(Date().timeIntervalSince1970 * 1000)}", forKey: "kl.pendingAction")
         return .result()
     }
 }

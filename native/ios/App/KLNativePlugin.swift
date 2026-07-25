@@ -123,6 +123,12 @@ public class KLNativePlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         ud.removeObject(forKey: "kl.pendingAction")
+        // 古い保留アクションは実行しない(後日アプリを開いた時に勝手にタイマーが始まる等を防ぐ)。
+        // ts が無い場合は互換のため実行する。
+        if let ts = obj["ts"] as? Double, Date().timeIntervalSince1970 * 1000 - ts > 60_000 {
+            call.resolve([:])
+            return
+        }
         var res = JSObject()
         for (k, v) in obj {
             if let s = v as? String { res[k] = s }

@@ -139,7 +139,7 @@ async function renderPhotoCard(container) {
         toast(type === 'goal' ? '目標写真を設定しました🎯' : '記録しました📷 続けよう');
         renderPhotoCard(container);
       } catch (e) {
-        toast('写真を保存できませんでした');
+        toast('写真を保存できませんでした。端末の空き容量をご確認ください');
       }
     });
   };

@@ -16,22 +16,33 @@ final class WorkoutManager: NSObject, ObservableObject {
     @Published var heartRate: Double = 0
     @Published var kcal: Double = 0
     @Published var startedAt: Date? = nil
+    @Published var lastError: String? = nil   // 権限拒否・開始失敗をUIに出す(無反応を防ぐ)
 
     func requestAuth(_ done: @escaping (Bool) -> Void) {
-        guard HKHealthStore.isHealthDataAvailable() else { done(false); return }
-        let share: Set<HKSampleType> = [HKObjectType.workoutType(),
-                                        HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!]
-        let read: Set<HKObjectType> = [HKQuantityType.quantityType(forIdentifier: .heartRate)!,
-                                       HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned)!]
+        guard HKHealthStore.isHealthDataAvailable() else {
+            DispatchQueue.main.async { self.lastError = "この端末ではヘルスケアを利用できません" }
+            done(false); return
+        }
+        // 強制アンラップはしない(nilならクラッシュせずエラー表示にする)
+        var share: Set<HKSampleType> = [HKObjectType.workoutType()]
+        var read: Set<HKObjectType> = []
+        if let energy = HKQuantityType.quantityType(forIdentifier: .activeEnergyBurned) {
+            share.insert(energy); read.insert(energy)
+        }
+        if let hr = HKQuantityType.quantityType(forIdentifier: .heartRate) { read.insert(hr) }
         store.requestAuthorization(toShare: share, read: read) { ok, _ in
-            DispatchQueue.main.async { done(ok) }
+            DispatchQueue.main.async {
+                if !ok { self.lastError = "ヘルスケアの許可が必要です(Watchの設定→プライバシー→ヘルスケア)" }
+                done(ok)
+            }
         }
     }
 
     func start() {
         guard !active else { return }
         requestAuth { ok in
-            guard ok else { return }
+            guard ok else { return }   // 理由は requestAuth 内で lastError にセット済み
+            DispatchQueue.main.async { self.lastError = nil }
             let cfg = HKWorkoutConfiguration()
             cfg.activityType = .traditionalStrengthTraining
             cfg.locationType = .indoor
@@ -52,7 +63,10 @@ final class WorkoutManager: NSObject, ObservableObject {
                     self.heartRate = 0
                     self.kcal = 0
                 }
-            } catch { /* セッション作成失敗は無視(UI側はactiveのまま変わらない) */ }
+            } catch {
+                // 無反応だとユーザーは壊れたと感じるので必ず理由を出す
+                DispatchQueue.main.async { self.lastError = "ワークアウトを開始できませんでした" }
+            }
         }
     }
 

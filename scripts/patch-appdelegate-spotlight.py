@@ -17,7 +17,7 @@ PATH = os.path.normpath(PATH)
 SNIPPET = '''        if userActivity.activityType == CSSearchableItemActionType,
            let id = userActivity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
            id.hasPrefix("ex:") {
-            UserDefaults.standard.set("{\\"action\\":\\"openExercise\\",\\"exId\\":\\"\\(id.dropFirst(3))\\"}", forKey: "kl.pendingAction")
+            UserDefaults.standard.set("{\\"action\\":\\"openExercise\\",\\"exId\\":\\"\\(id.dropFirst(3))\\",\\"ts\\":\\(Date().timeIntervalSince1970 * 1000)}", forKey: "kl.pendingAction")
         }
 '''
 
@@ -29,6 +29,16 @@ def main():
     src = open(PATH, encoding='utf-8').read()
 
     if 'CSSearchableItemActionType' in src:
+        # 旧版(タイムスタンプ無し)が入っている場合は、期限判定できるよう1行だけ差し替える
+        if 'kl.pendingAction' in src and '\\"ts\\"' not in src:
+            lines = src.split('\n')
+            for i, ln in enumerate(lines):
+                if 'kl.pendingAction' in ln and 'openExercise' in ln:
+                    lines[i] = SNIPPET.split('\n')[3]
+                    break
+            open(PATH, 'w', encoding='utf-8').write('\n'.join(lines))
+            print('タイムスタンプ付きに更新しました → ' + PATH)
+            return
         print('既に適用済みです(変更なし)')
         return
 

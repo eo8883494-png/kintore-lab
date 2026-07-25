@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var restRemain: Int = 0
     @State private var restLabel: String = ""
     @State private var restTimer: Timer? = nil
+    @State private var restEnd: Date? = nil    // 実時刻基準でカウントダウンする(tick依存だとずれる)
     private let accent = Color(red: 0.78, green: 0.95, blue: 0.31)
 
     var body: some View {
@@ -57,6 +58,12 @@ struct ContentView: View {
                         }
                         .tint(accent)
                     }
+                    // 権限拒否・開始失敗を必ず出す(押しても何も起きない状態にしない)
+                    if let err = wm.lastError {
+                        Text(err)
+                            .font(.caption2)
+                            .foregroundColor(.red)
+                    }
                 }
                 Section {
                     ForEach(ws.menu.items) { it in
@@ -105,12 +112,19 @@ struct ContentView: View {
     }
 
     private func startRest(sec: Int, label: String) {
+        // 手首を下ろすと Timer が止まり、カウントダウンが実時間からずれる。
+        // 終了時刻を持ち、毎tickで実時刻から残りを計算する。
+        let end = Date().addingTimeInterval(TimeInterval(max(1, sec)))
+        restEnd = end
         restRemain = max(1, sec)
         restLabel = label + " の休憩"
         restTimer?.invalidate()
         restTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            restRemain -= 1
-            if restRemain == 3 { WKInterfaceDevice.current().play(.directionUp) }
+            guard let e = restEnd else { stopRest(); return }
+            let left = Int(e.timeIntervalSinceNow.rounded(.up))
+            let prev = restRemain
+            restRemain = max(0, left)
+            if prev > 3 && restRemain <= 3 && restRemain > 0 { WKInterfaceDevice.current().play(.directionUp) }
             if restRemain <= 0 {
                 WKInterfaceDevice.current().play(.notification)
                 stopRest()
@@ -121,6 +135,7 @@ struct ContentView: View {
     private func stopRest() {
         restTimer?.invalidate()
         restTimer = nil
+        restEnd = nil
         restRemain = 0
     }
 }

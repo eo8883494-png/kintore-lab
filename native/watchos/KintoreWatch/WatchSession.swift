@@ -46,7 +46,16 @@ final class WatchSession: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     func sendSetDone(exId: String, count: Int) {
-        guard WCSession.default.activationState == .activated, WCSession.default.isReachable else { return }
-        WCSession.default.sendMessage(["type": "setDone", "exId": exId, "count": count], replyHandler: nil, errorHandler: nil)
+        guard WCSession.default.activationState == .activated else { return }
+        let payload: [String: Any] = ["type": "setDone", "exId": exId, "count": count]
+        // iPhoneが手元に無い/画面が消えている時に sendMessage は失敗して記録が消える。
+        // 届かない場合は transferUserInfo でキューに積み、あとで確実に配送する。
+        guard WCSession.default.isReachable else {
+            WCSession.default.transferUserInfo(payload)
+            return
+        }
+        WCSession.default.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+            WCSession.default.transferUserInfo(payload)
+        })
     }
 }
