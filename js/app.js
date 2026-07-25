@@ -1113,6 +1113,9 @@ function mergeStates(local, remote) {
     const ne = { ...e, id };
     byId[id] = ne; byContent[ck] = id; merged.push(ne);
   });
+  // sanitizeState は customEx を50件までしか読まない。マージ側で同じ上限に揃えて
+  // 「次回起動で黙って消える」のを防ぐ(超過分は古い順に落とす)
+  if (merged.length > 50) merged.splice(0, merged.length - 50);
   const remapEx = id => remap[id] || id;
 
   // 2) logs: 内容キーで union (二次側の exId は remap 済みで突き合わせる)
@@ -1132,8 +1135,16 @@ function mergeStates(local, remote) {
     if (!logMap.has(k)) logMap.set(k, l);
   });
   logTombs.forEach((t, k) => logMap.delete(k)); // 削除済みの記録は復活させない
+  // 同じ日・同じ種目の記録が両端末で微妙に違う内容だと2件残り、週間ボリュームが二重計上される。
+  // セット数が多い方(=より進んだ記録)を1件だけ残す。
+  const byDayEx = new Map();
+  [...logMap.values()].forEach(l => {
+    const k2 = `${l.date}|${l.exId}`;
+    const prev = byDayEx.get(k2);
+    if (!prev || (l.sets || []).length > (prev.sets || []).length) byDayEx.set(k2, l);
+  });
   let nid = 1;
-  const logs = [...logMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1)).map(l => ({ ...l, id: nid++ }));
+  const logs = [...byDayEx.values()].sort((x, y) => (x.date < y.date ? -1 : 1)).map(l => ({ ...l, id: nid++ }));
   // 墓標は180日で刈る(無限に増やさない)
   const tombCut = Date.now() - 180 * 86400000;
   const logTombstones = [...logTombs.values()].filter(t => (Number(t.at) || 0) >= tombCut).slice(-300);
@@ -1178,7 +1189,11 @@ function mergeStates(local, remote) {
     if (Number(m.createdAt) > 0) nm.createdAt = Number(m.createdAt);
     menuMap.set(k, nm); menuIdMap.set(k, nm.id);
   });
-  const myMenus = [...menuMap.values()];
+  // sanitizeState の上限(20件)を超えると、次回起動時に黙って切り捨てられる。
+  // マージ側で同じ上限に揃え、新しいものを残す(古い順に落とす)。
+  const myMenus = [...menuMap.values()]
+    .sort((a, b2) => (Number(b2.createdAt) || 0) - (Number(a.createdAt) || 0))
+    .slice(0, 20);
   // 統合したトゥームストーンを出力(180日超は刈り込み・200件上限)
   const tombCutoff = Date.now() - 180 * 864e5;
   const menuTombstones = [...tombObjs.values()]
@@ -1336,7 +1351,22 @@ function mergeStates(local, remote) {
   }
   // 食事ログ: 日付ごとにprimary優先(その日の記録は端末単位で持つ)
   const fl = {};
-  [secondary.foodLog, primary.foodLog].forEach(src => { if (src) Object.keys(src).forEach(dt => { fl[dt] = src[dt]; }); });
+  // 食事ログ: 日付ごとに「上書き」だと片方の端末の記録が丸ごと消えるので、食品IDごとに統合する
+  // (同じ食品は多い方の数量を採用=重複加算を防ぎつつ取りこぼさない)
+  const fdates = new Set([...Object.keys(secondary.foodLog || {}), ...Object.keys(primary.foodLog || {})]);
+  fdates.forEach(dt => {
+    const qty = new Map();
+    [(secondary.foodLog || {})[dt], (primary.foodLog || {})[dt]].forEach(arr => {
+      if (!Array.isArray(arr)) return;
+      arr.forEach(it => {
+        if (!it || typeof it.id !== 'string') return;
+        const q = Number(it.qty) || 0;
+        qty.set(it.id, Math.max(qty.get(it.id) || 0, q));
+      });
+    });
+    const list = [...qty.entries()].map(([id, q]) => ({ id, qty: q })).slice(0, 60);
+    if (list.length) fl[dt] = list;
+  });
   out.foodLog = fl;
   // 水分: 日付ごとにmax(どちらかで飲んだ分を活かす)
   const wt = {};
@@ -1361,11 +1391,23 @@ function loadState() {
   }
 }
 let applyingRemote = false; // リモート適用中はクラウドへ再pushしない (エコー防止)
+let saveFailWarned = false;
 function saveState() {
   if (!applyingRemote) S._updatedAt = Date.now(); // ローカル編集の時刻(mergeStatesの新旧判定に使う)
+  let ok = true;
   try { localStorage.setItem(LS_KEY, JSON.stringify(S)); }
-  catch (e) { console.warn('state save failed', e); }
+  catch (e) {
+    ok = false;
+    console.warn('state save failed', e);
+    // 保存できていないのに「記録しました」と出るのが最悪なので、1度だけはっきり伝える
+    if (!saveFailWarned) {
+      saveFailWarned = true;
+      try { toast('保存できませんでした。端末の空き容量をご確認ください'); } catch (e2) {}
+    }
+  }
+  if (ok) saveFailWarned = false;
   if (!applyingRemote && window.__klCloud && window.__klCloud.push) window.__klCloud.push(S);
+  return ok;
 }
 
 // ===== Pro (買い切り) — 2026-07-22 ドーマント実装 =====
