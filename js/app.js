@@ -1584,6 +1584,10 @@ const PRO_PLANS = [
 let pwPlan = 'annual'; // 既定は年間(おすすめ)
 // 無料トライアルの対象かどうか(Offering取得後に判明)。null=未確定
 let pwTrialEligible = null;
+// 入口ゲートで購入に失敗した回数。この回数に達したら開放する(1回で開けるとタダ乗りされ、
+// 一度も開けないと課金基盤の障害でアプリが使えなくなり審査でも落ちるため、その中間を取る)
+let gateFailCount = 0;
+const GATE_FAIL_LIMIT = 2;
 function pwTermsText() {
   const p = PRO_PLANS.find(x => x.id === pwPlan) || PRO_PLANS[0];
   // 過去に登録済みのApple IDは導入オファー(7日無料)の対象外。断言せず実態に合わせる
@@ -1642,16 +1646,20 @@ function bindPaywall(bg, gate) {
     const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
     try {
       const r = await B.purchase(pwPlan);
-      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); if (gate) { route(); afterGatePassed(); } }
+      if (r && r.ok) { gateFailCount = 0; toast('ご登録ありがとうございます!'); closeModal(); if (gate) { route(); afterGatePassed(); } }
       else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す(ゲートは維持) */ }
       else if (r && r.pending) { toast('購入手続きを受け付けました。反映まで少しお待ちください'); closeModal(); if (gate) { route(); afterGatePassed(); } }
       else {
-        // ⚠️ キャンセル以外の失敗は必ずゲートを開ける。商品未取得(no_offering)・設定不備(no_package)・
-        //    課金制限などで締め出すと、アプリが恒久的に使用不能になり審査でも落ちる
-        toast(r && r.error === 'no_offering'
-          ? '商品情報を取得できませんでした。時間をおいて再度お試しください'
-          : '購入を完了できませんでした。時間をおいて再度お試しください');
-        if (gate) { closeModal(); route(); afterGatePassed(); }
+        // ⚠️ キャンセル以外の失敗で締め出すとアプリが恒久的に使用不能になり審査でも落ちる。
+        //    ただし1回の失敗で開けるとタダ乗りされるので、2回連続で失敗した時だけ開放する。
+        gateFailCount++;
+        const canRetry = gate && gateFailCount < GATE_FAIL_LIMIT;
+        toast(canRetry
+          ? 'うまく接続できませんでした。もう一度お試しください'
+          : (r && r.error === 'no_offering'
+            ? '商品情報を取得できませんでした。時間をおいて再度お試しください'
+            : '購入を完了できませんでした。時間をおいて再度お試しください'));
+        if (gate && !canRetry) { closeModal(); route(); afterGatePassed(); }
       }
     } finally { start.disabled = false; start.textContent = orig; }
   });
@@ -1660,7 +1668,7 @@ function bindPaywall(bg, gate) {
     const B = window.__klBilling;
     if (!B || !B.ready()) { toast('現在購入の復元を実行できません。通信環境をご確認のうえ、しばらくしてからお試しください'); return; }
     const r = await B.restore();
-    if (r && r.ok) { toast('購入を復元しました'); closeModal(); if (gate) { route(); afterGatePassed(); } }
+    if (r && r.ok) { gateFailCount = 0; toast('購入を復元しました'); closeModal(); if (gate) { route(); afterGatePassed(); } }
     else toast('復元できる購入が見つかりませんでした');
   });
   // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
