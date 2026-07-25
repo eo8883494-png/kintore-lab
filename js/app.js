@@ -749,7 +749,11 @@ function sanitizeState(s) {
         .filter(x => x.r > 0);
       if (!sets.length) return;
       const id = Number(l.id);
-      out.logs.push({ id: Number.isInteger(id) && id > 0 ? id : 0, date: l.date, exId: l.exId.slice(0, 60), sets });
+      const rec = { id: Number.isInteger(id) && id > 0 ? id : 0, date: l.date, exId: l.exId.slice(0, 60), sets };
+      // 作成時刻は墓標との新旧判定に使うので保持する(消して付け直した記録を守る)
+      const ca = Math.round(numIn(l.createdAt, 0, 4102444800000, 0));
+      if (ca > 0) rec.createdAt = ca;
+      out.logs.push(rec);
     });
     out.logs.forEach(l => { if (l.id > maxId) maxId = l.id; });
     const seen = new Set();
@@ -1066,6 +1070,13 @@ function tombstoneLog(l) {
   S.logTombstones.push({ k, at: Date.now() });
   if (S.logTombstones.length > 300) S.logTombstones = S.logTombstones.slice(-300);
 }
+// 同じ日・同じ種目を記録し直したら、その日の墓標は取り消す
+// (チェックを外して付け直す操作で、同期後に記録が消えるのを防ぐ)
+function clearLogTombstone(date, exId) {
+  if (!Array.isArray(S.logTombstones)) return;
+  const pre = date + '|' + exId + '|';
+  S.logTombstones = S.logTombstones.filter(t => !String(t.k || '').startsWith(pre));
+}
 function menuContentKey(m) { return `${m.name}|${m.items.map(i => i.exId).join(',')}`; }
 
 // マイメニュー削除マーカー(トゥームストーン)。union方式のマージは削除を表現できず、
@@ -1135,7 +1146,12 @@ function mergeStates(local, remote) {
     const k = logContentKey(l);
     if (!logMap.has(k)) logMap.set(k, l);
   });
-  logTombs.forEach((t, k) => logMap.delete(k)); // 削除済みの記録は復活させない
+  // 削除済みの記録は復活させない。ただし墓標より後に作られた記録(消して付け直した等)は残す
+  logTombs.forEach((t, k) => {
+    const l = logMap.get(k);
+    if (l && (Number(l.createdAt) || 0) > (Number(t.at) || 0)) return;
+    logMap.delete(k);
+  });
   // 同じ日・同じ種目の記録が両端末で微妙に違う内容だと2件残り、週間ボリュームが二重計上される。
   // セット数が多い方(=より進んだ記録)を1件だけ残す。
   const byDayEx = new Map();
@@ -1262,7 +1278,9 @@ function mergeStates(local, remote) {
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
     logs, weights, lastW, lastR, customEx: merged, myMenus, menuTombstones, logTombstones, myToday, dayDone,
     nextId: nid,
-    pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
+    // サブスクは解約で失効するため OR(sticky-true)にしてはいけない。
+    // 新しい方の状態を採用し、ネイティブでは RevenueCat の refreshEntitlement を最終的な真実とする。
+    pro: primary.pro,
   });
   out._updatedAt = Math.max(at, bt); // マージ結果の鮮度(次回マージの新旧判定用)
   // タイマープリセット: 内容で union(primary優先・上限30)
@@ -1352,21 +1370,28 @@ function mergeStates(local, remote) {
   }
   // 食事ログ: 日付ごとにprimary優先(その日の記録は端末単位で持つ)
   const fl = {};
-  // 食事ログ: 日付ごとに「上書き」だと片方の端末の記録が丸ごと消えるので、食品IDごとに統合する
-  // (同じ食品は多い方の数量を採用=重複加算を防ぎつつ取りこぼさない)
+  // 食事ログ: 日付ごとに「上書き」だと片方の端末の記録が丸ごと消える。
+  // かといって食品IDで畳むと「昼と夜に同じご飯」を1件に潰してカロリーが半減するため、
+  // 同じ食品の“何件目か”まで見て統合する(件数の多い側を土台に、少ない側の不足分だけ足す)。
   const fdates = new Set([...Object.keys(secondary.foodLog || {}), ...Object.keys(primary.foodLog || {})]);
   fdates.forEach(dt => {
-    const qty = new Map();
-    [(secondary.foodLog || {})[dt], (primary.foodLog || {})[dt]].forEach(arr => {
-      if (!Array.isArray(arr)) return;
-      arr.forEach(it => {
-        if (!it || typeof it.id !== 'string') return;
-        const q = Number(it.qty) || 0;
-        qty.set(it.id, Math.max(qty.get(it.id) || 0, q));
-      });
+    const pArr = Array.isArray((primary.foodLog || {})[dt]) ? (primary.foodLog || {})[dt] : [];
+    const sArr = Array.isArray((secondary.foodLog || {})[dt]) ? (secondary.foodLog || {})[dt] : [];
+    const countBy = arr => arr.reduce((m, it) => (it && typeof it.id === 'string' ? m.set(it.id, (m.get(it.id) || 0) + 1) : m), new Map());
+    const base = pArr.length >= sArr.length ? pArr : sArr;
+    const other = pArr.length >= sArr.length ? sArr : pArr;
+    const baseCount = countBy(base), otherCount = countBy(other);
+    const list = base.filter(it => it && typeof it.id === 'string').map(it => ({ id: it.id, qty: Number(it.qty) || 0 }));
+    // 相手側にしか無い分(件数差)を追加する
+    otherCount.forEach((n, id) => {
+      const lack = n - (baseCount.get(id) || 0);
+      for (let i = 0; i < lack; i++) {
+        const src = other.find(x => x && x.id === id);
+        list.push({ id, qty: Number(src && src.qty) || 0 });
+      }
     });
-    const list = [...qty.entries()].map(([id, q]) => ({ id, qty: q })).slice(0, 60);
-    if (list.length) fl[dt] = list;
+    const trimmed = list.slice(0, 60);
+    if (trimmed.length) fl[dt] = trimmed;
   });
   out.foodLog = fl;
   // 水分: 日付ごとにmax(どちらかで飲んだ分を活かす)
@@ -1495,7 +1520,11 @@ function openModal(html, opts) {
   document.body.appendChild(bg);
   return bg;
 }
-function closeModal() { const m = $('#modal-bg'); if (m) m.remove(); }
+function closeModal() {
+  const m = $('#modal-bg'); if (m) m.remove();
+  // 保留していた課金ゲートがあれば、モーダルが空いた今出す(後から不意打ちにしない)
+  if (typeof proGatePending !== 'undefined' && proGatePending) setTimeout(() => maybeShowProGate(), 0);
+}
 
 // ===== ペイウォール(全機能サブスク・1週間無料→自動継続・月/年プラン。RevenueCat接続は有料Apple Developer登録後) =====
 // 価格は仮。App Store Connectの商品確定後に差し替え(product idもここへ)
@@ -1514,13 +1543,12 @@ function pwTermsText() {
 }
 function pwCtaText() { return pwTrialEligible === false ? '購読を開始する' : '1週間無料で始める'; }
 function paywallHtml(gate) {
+  // ⚠️ 小型iPhone(375x667)でもCTAと価格が初期表示に収まるよう、項目は4件までに抑えること
   const feats = [
     ['🧪', '効率シミュレーター', '時間×頻度で"どれだけ変わるか"を予測'],
     ['📋', '自動メニュー生成', '目標・部位・時間からあなた専用に'],
     ['🍽️', '食事プラン', 'PFC最適化・食事ログ・体重ナビ'],
-    ['📈', '記録と分析', '成長グラフ・体組成推定・停滞検知'],
-    ['📲', 'Apple Health連携', '体重・歩数・睡眠を自動で'],
-    ['⌚', 'ウィジェット・Apple Watch', 'ロック画面のタイマーと手首で記録'],
+    ['📲', 'Health・Watch連携', '体重や歩数を自動で。手首で記録'],
   ];
   const plans = PRO_PLANS.map(p => `<button type="button" class="pw-plan ${p.id === pwPlan ? 'sel' : ''}" data-plan="${p.id}">
     ${p.best ? '<span class="pw-plan-badge">おすすめ</span>' : ''}
@@ -1538,10 +1566,13 @@ function paywallHtml(gate) {
       ${feats.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
     </ul>
     <div class="pw-plans">${plans}</div>
-    <button class="btn pw-cta" id="pw-start">${pwCtaText()}</button>
-    <div class="pw-terms" id="pw-terms">${pwTermsText()}</div>
     <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
+    <!-- CTAと料金説明は常に画面内に見えるよう最下部に固定する(小型端末で押せない事故を防ぐ) -->
+    <div class="pw-foot">
+      <button class="btn pw-cta" id="pw-start">${pwCtaText()}</button>
+      <div class="pw-terms" id="pw-terms">${pwTermsText()}</div>
+    </div>
   </div>`;
 }
 function bindPaywall(bg, gate) {
@@ -1557,14 +1588,17 @@ function bindPaywall(bg, gate) {
     const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
     try {
       const r = await B.purchase(pwPlan);
-      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); if (gate) route(); }
-      else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す */ }
-      else if (r && r.pending) { toast('購入手続きを受け付けました。反映まで少しお待ちください'); closeModal(); if (gate) route(); }
-      else if (r && r.error === 'no_offering') {
-        // 商品が取れない=課金できない。ゲートで締め出さず開放する(アプリが使用不能になるのを防ぐ)
-        toast('商品情報を取得できませんでした。時間をおいて再度お試しください');
-        if (gate) { closeModal(); route(); }
-      } else { toast('購入を完了できませんでした。時間をおいて再度お試しください'); }
+      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); if (gate) { route(); afterGatePassed(); } }
+      else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す(ゲートは維持) */ }
+      else if (r && r.pending) { toast('購入手続きを受け付けました。反映まで少しお待ちください'); closeModal(); if (gate) { route(); afterGatePassed(); } }
+      else {
+        // ⚠️ キャンセル以外の失敗は必ずゲートを開ける。商品未取得(no_offering)・設定不備(no_package)・
+        //    課金制限などで締め出すと、アプリが恒久的に使用不能になり審査でも落ちる
+        toast(r && r.error === 'no_offering'
+          ? '商品情報を取得できませんでした。時間をおいて再度お試しください'
+          : '購入を完了できませんでした。時間をおいて再度お試しください');
+        if (gate) { closeModal(); route(); afterGatePassed(); }
+      }
     } finally { start.disabled = false; start.textContent = orig; }
   });
   const restore = $('#pw-restore', bg);
@@ -1572,7 +1606,7 @@ function bindPaywall(bg, gate) {
     const B = window.__klBilling;
     if (!B || !B.ready()) { toast('現在購入の復元を実行できません。通信環境をご確認のうえ、しばらくしてからお試しください'); return; }
     const r = await B.restore();
-    if (r && r.ok) { toast('購入を復元しました'); closeModal(); if (gate) route(); }
+    if (r && r.ok) { toast('購入を復元しました'); closeModal(); if (gate) { route(); afterGatePassed(); } }
     else toast('復元できる購入が見つかりませんでした');
   });
   // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
@@ -1647,8 +1681,18 @@ async function maybeShowProGate() {
   // 復帰・再インストール時の取りこぼしを防ぐため、最新の課金状態を取得してから判定する
   try { const B = window.__klBilling; if (B) await B.refreshEntitlement(); } catch (e) {}
   if (!proGateNeeded()) return;
-  if ($('#modal-bg')) return;          // 他のモーダル操作中は割り込まない
+  // 他のモーダル(プロフィールウィザード等)が開いている間は割り込まないが、
+  // 「出さずに終わる」と後から不意打ちになるので、閉じたら必ず出すよう予約しておく
+  if ($('#modal-bg')) { proGatePending = true; return; }
+  proGatePending = false;
   openPaywall(true);
+}
+// ゲートを保留中か。モーダルが閉じたタイミングで再挑戦する
+let proGatePending = false;
+// 課金ゲートが不要になった/通れた後に、まだプロフィール未設定なら初期設定へ進める
+function afterGatePassed() {
+  proGatePending = false;
+  if (!S.profile) openProfileWizard(true);
 }
 
 // セグメントボタン生成
@@ -2888,7 +2932,8 @@ function toggleDone(exId, checked) {
       S.dayDone[today][exId] = { id: logId, src: ck };
     } else {
       logId = newId();
-      S.logs.push({ id: logId, date: today, exId, sets: mkSets() });
+      S.logs.push({ id: logId, date: today, exId, sets: mkSets(), createdAt: Date.now() });
+      clearLogTombstone(today, exId); // 消した直後に付け直した記録を、同期マージで消さない
       S.dayDone[today][exId] = { id: logId, src: ck };
     }
     if (!S.setCount[today]) S.setCount[today] = {};
@@ -3530,9 +3575,9 @@ async function openPublicGalleryModal() {
         ${appeal ? `<p style="margin:8px 0 4px;font-size:13px">${esc(appeal)}</p>` : ''}
         ${partChips ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin:6px 0 2px">${partChips}</div>` : ''}
         <p class="card-note" style="margin:6px 0">${exList}${(pm.items || []).length > 6 ? ' ほか' : ''}</p>
-        <div style="display:flex;gap:8px;align-items:center">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <button type="button" class="chip gal-like ${iLiked(pm.id) ? 'grow' : ''}" data-id="${esc(pm.id)}">❤️ ${lk}</button>
-          ${im > 0 ? `<span style="font-size:11.5px;color:var(--ink-dim)">📥 ${im}人が取り込み</span>` : ''}
+          ${im > 0 ? `<span style="font-size:11.5px;color:var(--ink-dim);white-space:nowrap">📥 ${im}</span>` : ''}
           <span style="flex:1"></span>
           ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
             : `<button class="btn small gal-detail" data-i="${i}">見る</button><button class="btn small ghost gal-import" data-i="${i}">取り込む</button>`}
@@ -4791,7 +4836,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 1500);
   }
   route();
-  if (!S.profile) openProfileWizard(true);
+  // 未課金なら先に課金ゲート → 通過後にプロフィール設定へ(順序が逆だと「一通り使わせた後に
+  // 閉じられない課金画面」になり、bait-and-switch と受け取られる)
+  if (!S.profile && !proGateNeeded()) openProfileWizard(true);
   // 浮遊レストタイマーのボタン (静的要素なので一度だけ束縛)
   const fabStop = document.getElementById('rt-stop');
   if (fabStop) fabStop.addEventListener('click', () => { stopTimer(); updateRestFab(); });
