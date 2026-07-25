@@ -3774,7 +3774,8 @@ function renderSim() {
 function renderSimResults(container) {
   const r = simulate(simState.minutes, simState.days, S.profile, simState.usePlan ? S.plan : null);
   const pct = Math.round(r.overallEffect * 100);
-  const g = kg => (Math.round(kg * 10) / 10).toFixed(1);
+  // 数値が壊れていても "NaN" を画面に出さない(壊れたプロフィールが混ざった場合の保険)
+  const g = kg => (Number.isFinite(Number(kg)) ? (Math.round(kg * 10) / 10) : 0).toFixed(1);
   const trained = r.partResults.filter(x => x.sets > 0);
   const avgSets = trained.length ? trained.reduce((s, x) => s + x.sets, 0) / trained.length : 0;
 
@@ -3800,7 +3801,7 @@ function renderSimResults(container) {
     <div class="stat-row">
       <div class="stat-tile"><div class="k">3ヶ月後</div><div class="v"><em>−${g(r.monthlyFatLoss * 3)}</em><small>kg脂肪</small></div></div>
       <div class="stat-tile"><div class="k">半年後</div><div class="v"><em>−${g(r.monthlyFatLoss * 6)}</em><small>kg脂肪</small></div></div>
-      <div class="stat-tile"><div class="k">筋肉</div><div class="v"><em>維持↗</em><small>+${g(r.cumGain(6))}kg/半年</small></div></div>
+      <div class="stat-tile"><div class="k">筋肉(半年)</div><div class="v"><em>維持↗</em><small>+${g(r.cumGain(6))}kg</small></div></div>
     </div>
     <p class="card-note" style="margin-top:-6px;margin-bottom:14px">食事タブの−400kcal/日前提。減量中は「筋肉を守りながら脂肪だけ落とす」のが正解で、体重ナビの目標に着いたら維持へ切替。実際は数kg落ちるとペースが鈍化します。</p>
     ` : `
