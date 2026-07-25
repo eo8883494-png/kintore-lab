@@ -137,11 +137,15 @@
         const t = pkg.packageType || '';
         const id = planIdOf(pkg);
         const prod = pkg.product || {};
+        // introPrice(導入オファー)が付いていなければ、このApple IDは無料トライアル対象外。
+        // 「1週間無料」と断言しないための判定材料にする。
+        const intro = prod.introPrice || prod.introductoryPrice || null;
         return {
           id,
           packageId: pkg.identifier,
           price: prod.priceString || '',
           period: t,
+          trialEligible: !!intro,
         };
       }).filter(p => p.id === 'annual' || p.id === 'monthly');
       return plans.length ? plans : null;

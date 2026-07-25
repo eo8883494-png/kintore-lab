@@ -5,7 +5,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
 import { getDatabase, ref, set, get, onValue, remove, query, orderByChild, limitToLast, equalTo, update } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
 import {
-  getAuth, initializeAuth, indexedDBLocalPersistence, GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence
+  getAuth, initializeAuth, indexedDBLocalPersistence, GoogleAuthProvider, OAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signInWithCredential, signOut, deleteUser, onAuthStateChanged, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-auth.js";
 import { getMessaging, getToken, onMessage, isSupported } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-messaging.js";
 
@@ -323,6 +323,55 @@ async function updateMyMenusProfile(profile) {
   } catch (e) { console.warn('[cloud] updateMyMenusProfile failed', e); return { ok: false, reason: 'write', message: e.message }; }
 }
 
+// ===== 削除(App Store Guideline 5.1.1(v): アプリ内からアカウント削除ができること) =====
+
+// 自分の公開メニューを全件削除
+async function removeMyPublicMenus() {
+  if (!currentUser || !db) return 0;
+  const snap = await get(query(pubMenusRef(), orderByChild('uid'), equalTo(currentUser.uid)));
+  if (!snap.exists()) return 0;
+  const updates = {};
+  let n = 0;
+  snap.forEach(ch => { updates['kintoreLab/publicMenus/' + ch.key] = null; n++; });
+  if (n) await update(ref(db), updates);
+  return n;
+}
+
+// クラウド上の同期データ(state・通知トークン・公開メニュー)を消す。アカウント自体は残す。
+// 消してから push が走ると復活するので、リスナとpushタイマーを止めてから削除する。
+async function wipeCloud() {
+  if (!currentUser || !db) return { ok: false, reason: 'login' };
+  try {
+    clearTimeout(pushTimer); pushTimer = null;
+    if (unsub) { unsub(); unsub = null; }
+    await removeMyPublicMenus();
+    await remove(ref(db, 'kintoreLab/' + currentUser.uid));
+    lastUpdatedAt = 0;
+    return { ok: true };
+  } catch (e) {
+    console.warn('[cloud] wipeCloud failed', e);
+    if (currentUser) startListening(currentUser.uid); // 失敗したら監視を戻す
+    return { ok: false, reason: 'write', message: e.message };
+  }
+}
+
+// アカウント自体を削除(データ削除 → 認証アカウント削除)。
+// 最終ログインが古いと requires-recent-login になるため、その旨を呼び出し側へ返す。
+async function deleteAccount() {
+  if (!currentUser || !auth) return { ok: false, reason: 'login' };
+  const w = await wipeCloud();
+  if (!w.ok) return w;
+  try {
+    await deleteUser(auth.currentUser);
+    return { ok: true };
+  } catch (e) {
+    console.warn('[cloud] deleteUser failed', e);
+    const code = (e && e.code) || '';
+    if (String(code).includes('requires-recent-login')) return { ok: false, reason: 'reauth' };
+    return { ok: false, reason: 'auth', message: e.message };
+  }
+}
+
 async function reportMenu(id) {
   if (!currentUser || !db) return { ok: false, reason: 'login' };
   try { await set(ref(db, 'kintoreLab/menuReports/' + id + '/' + currentUser.uid), { at: Date.now() }); return { ok: true }; }
@@ -394,6 +443,7 @@ async function nativeAppleSignIn() {
 window.__klCloud = {
   available: !!auth,
   publishMenu, unpublishMenu, listPublicMenus, reportMenu, updateMyMenusProfile,
+  wipeCloud, deleteAccount,
   listMenuMarks, likeMenu, markImport,
   myUid() { return currentUser ? currentUser.uid : null; },
   status() {

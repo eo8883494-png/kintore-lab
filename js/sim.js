@@ -73,7 +73,13 @@ function simulate(minutes, days, profile, plan) {
   const rate = SCIENCE.gainRate[profile.level || 1] * (profile.sex === 'f' ? SCIENCE.femaleFactor : 1);
   const monthlyGain = rate * overallEffect * (dietMode ? 0.35 : 1);
   // 減量中の脂肪減少ペース (食事−400kcal/日 + トレ消費)
-  const monthlyFatLoss = dietMode ? Math.round(((400 * 30.4) + (calcBurn(3.5, profile.w || 65, minutes) * days * 4.35)) / 7700 * 10) / 10 : 0;
+  // ⚠️ 食事タブ(mealTargets)と同じ安全ガードをかける。成長期(18歳未満)や低体重(BMI低)では
+  //    カロリーを削らない設計なので、ここで脂肪減少を煽らない(タブ間で真逆の助言になるのを防ぐ)。
+  const hM2 = (profile.h || 170) / 100;
+  const bmi2 = (profile.w || 65) / (hM2 * hM2);
+  const noDeficit = dietMode && ((profile.age || 30) < 18 || bmi2 <= (typeof RECOMP_BMI !== 'undefined' ? RECOMP_BMI : 20));
+  const dietDeficit = noDeficit ? 0 : 400;
+  const monthlyFatLoss = dietMode ? Math.round(((dietDeficit * 30.4) + (calcBurn(3.5, profile.w || 65, minutes) * days * 4.35)) / 7700 * 10) / 10 : 0;
 
   // 3/6/12ヶ月の累積 (月ごとに4%ずつ減衰)
   function cumGain(months) {
@@ -98,7 +104,7 @@ function simulate(minutes, days, profile, plan) {
   return {
     minutes, days, totalSets, setsPerDay, perPart, partResults,
     overallEffect, monthlyGain, cumGain, weeklyBurn, tdee, protein,
-    junk, low, plus15, plusDay, dietMode, monthlyFatLoss,
+    junk, low, plus15, plusDay, dietMode, monthlyFatLoss, noDeficit,
   };
 }
 

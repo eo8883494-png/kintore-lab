@@ -238,7 +238,8 @@ function detectSleepFromGap() {
       if (!(prev && prev.edited) && !(prev && Number(prev.min) >= gap)) {
         l[d] = { ...(prev || {}), min: gap, start: last, end: now, edited: false }; // writtenは温存(二重書込防止)
         saveSleepLog(l);
-        writeHealthSleep(d);
+        // ⚠️ 推定値はヘルスケアに書き込まない(App Store 5.1.3「不正確なデータを書き込まない」)。
+        //    書き込むのはユーザーが睡眠時間を自分で確定した場合(openSleepEdit)のみ。
       }
     }
   }
@@ -259,6 +260,7 @@ function openSleepEdit() {
       <div class="field"><label>時間</label><select id="sl-h">${hOpts}</select></div>
       <div class="field"><label>分</label><select id="sl-m">${mOpts}</select></div>
     </div>
+    ${isNativeApp() ? '<p class="card-note" style="margin-top:8px">保存するとヘルスケアにも記録します(推定値のままでは書き込みません)。</p>' : ''}
     <div style="display:flex;gap:10px;margin-top:14px">
       <button class="btn ghost" onclick="closeModal()">閉じる</button>
       <button class="btn" id="sl-save">保存</button>
@@ -687,7 +689,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -866,6 +868,15 @@ function sanitizeState(s) {
       out.menuTombstones.push(tt);
     });
   }
+  // トレ記録の削除マーカー(同期で復活させないため)
+  if (Array.isArray(s.logTombstones)) {
+    const seenL = new Set();
+    s.logTombstones.slice(-300).forEach(t => {
+      if (!t || typeof t.k !== 'string' || !t.k || seenL.has(t.k)) return;
+      seenL.add(t.k);
+      out.logTombstones.push({ k: t.k.slice(0, 160), at: Math.round(numIn(t.at, 0, 4102444800000, 0)) });
+    });
+  }
   // インターバルタイマーの保存プリセット
   if (Array.isArray(s.timerPresets)) {
     s.timerPresets.slice(0, 30).forEach(t => {
@@ -948,6 +959,10 @@ function sanitizeState(s) {
       const order = clean(v.order), hidden = clean(v.hidden);
       if (order.length || hidden.length) out.cardPrefs[sc] = { order, hidden };
     });
+  }
+  // ギャラリーで非表示にしたユーザー(FirebaseのUID)
+  if (Array.isArray(s.blockedUids)) {
+    out.blockedUids = [...new Set(s.blockedUids.filter(u => typeof u === 'string' && u && u.length <= 64))].slice(0, 500);
   }
   // 実績バッジ(id→解除日)
   if (s.badges && typeof s.badges === 'object') {
@@ -1041,6 +1056,15 @@ function sanitizePlan(pl) {
 // オリジナル種目/マイメニューはID衝突を remap して安全に統合する。
 function customContentKey(e) { return `${e.name}|${e.part}|${e.equipment}`; }
 function logContentKey(l) { return `${l.date}|${l.exId}|${(l.sets || []).map(s => `${s.w || 0}x${s.r || 0}`).join(',')}`; }
+// 記録を消したことを覚えておく(同期マージで復活させないため)。削除前のログを渡すこと。
+function tombstoneLog(l) {
+  if (!l) return;
+  if (!Array.isArray(S.logTombstones)) S.logTombstones = [];
+  const k = logContentKey(l);
+  S.logTombstones = S.logTombstones.filter(t => t.k !== k);
+  S.logTombstones.push({ k, at: Date.now() });
+  if (S.logTombstones.length > 300) S.logTombstones = S.logTombstones.slice(-300);
+}
 function menuContentKey(m) { return `${m.name}|${m.items.map(i => i.exId).join(',')}`; }
 
 // マイメニュー削除マーカー(トゥームストーン)。union方式のマージは削除を表現できず、
@@ -1092,6 +1116,14 @@ function mergeStates(local, remote) {
   const remapEx = id => remap[id] || id;
 
   // 2) logs: 内容キーで union (二次側の exId は remap 済みで突き合わせる)
+  //    削除は墓標(logTombstones)で表現する。union だけだと片方の端末で消した記録が
+  //    もう片方から永久に復活してしまうため。
+  const logTombs = new Map();
+  [...(primary.logTombstones || []), ...(secondary.logTombstones || [])].forEach(t => {
+    if (!t || typeof t.k !== 'string') return;
+    const prev = logTombs.get(t.k);
+    if (!prev || (Number(t.at) || 0) > (Number(prev.at) || 0)) logTombs.set(t.k, t);
+  });
   const logMap = new Map();
   primary.logs.forEach(l => logMap.set(logContentKey(l), { ...l }));
   secondary.logs.forEach(l0 => {
@@ -1099,8 +1131,12 @@ function mergeStates(local, remote) {
     const k = logContentKey(l);
     if (!logMap.has(k)) logMap.set(k, l);
   });
+  logTombs.forEach((t, k) => logMap.delete(k)); // 削除済みの記録は復活させない
   let nid = 1;
   const logs = [...logMap.values()].sort((x, y) => (x.date < y.date ? -1 : 1)).map(l => ({ ...l, id: nid++ }));
+  // 墓標は180日で刈る(無限に増やさない)
+  const tombCut = Date.now() - 180 * 86400000;
+  const logTombstones = [...logTombs.values()].filter(t => (Number(t.at) || 0) >= tombCut).slice(-300);
 
   // 3) weights: 日付で union (primary 優先)
   const wMap = new Map();
@@ -1208,7 +1244,7 @@ function mergeStates(local, remote) {
   Object.assign(out, {
     profile: primary.profile, focus: primary.focus, exclude: primary.exclude, plan: primary.plan,
     mealSeed: primary.mealSeed, swap: primary.swap, swapDismiss: primary.swapDismiss,
-    logs, weights, lastW, lastR, customEx: merged, myMenus, menuTombstones, myToday, dayDone,
+    logs, weights, lastW, lastR, customEx: merged, myMenus, menuTombstones, logTombstones, myToday, dayDone,
     nextId: nid,
     pro: primary.pro || secondary.pro, // 買い切りentitlementは端末間でsticky-true(消えない)
   });
@@ -1250,6 +1286,8 @@ function mergeStates(local, remote) {
   out.recoveryDone = rd;
   // カード表示カスタマイズ: 画面ごとにprimary優先
   out.cardPrefs = { ...secondary.cardPrefs, ...primary.cardPrefs };
+  // ブロックは union(どちらかの端末で非表示にしたら全端末で非表示のまま)
+  out.blockedUids = [...new Set([...(primary.blockedUids || []), ...(secondary.blockedUids || [])])].slice(0, 500);
   // 実績バッジ: union(先に取った日付=古い方を維持)
   const bg2 = {};
   [primary.badges, secondary.badges].forEach(src => {
@@ -1423,10 +1461,15 @@ const PRO_PLANS = [
   { id: 'monthly', label: '月額プラン', price: '¥680', sub: '/月', per: '', best: false },
 ];
 let pwPlan = 'annual'; // 既定は年間(おすすめ)
+// 無料トライアルの対象かどうか(Offering取得後に判明)。null=未確定
+let pwTrialEligible = null;
 function pwTermsText() {
   const p = PRO_PLANS.find(x => x.id === pwPlan) || PRO_PLANS[0];
+  // 過去に登録済みのApple IDは導入オファー(7日無料)の対象外。断言せず実態に合わせる
+  if (pwTrialEligible === false) return `${p.price}${p.sub}（${p.label}）で登録します。解約しない限り自動更新されます。`;
   return `7日間無料 → その後 ${p.price}${p.sub}（${p.label}）。1週間以内に解約・プラン変更しなければ自動で課金されます。`;
 }
+function pwCtaText() { return pwTrialEligible === false ? '購読を開始する' : '1週間無料で始める'; }
 function paywallHtml(gate) {
   const feats = [
     ['🧪', '効率シミュレーター', '時間×頻度で"どれだけ変わるか"を予測'],
@@ -1452,7 +1495,7 @@ function paywallHtml(gate) {
       ${feats.map(([i, t, d]) => `<li><span class="pw-ico">${i}</span><div><b>${t}</b><small>${d}</small></div></li>`).join('')}
     </ul>
     <div class="pw-plans">${plans}</div>
-    <button class="btn pw-cta" id="pw-start">1週間無料で始める</button>
+    <button class="btn pw-cta" id="pw-start">${pwCtaText()}</button>
     <div class="pw-terms" id="pw-terms">${pwTermsText()}</div>
     <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
@@ -1500,11 +1543,25 @@ function bindPaywall(bg, gate) {
         const el = bg.querySelector(`[data-plan="${pl.id}"] .pw-plan-price`);
         if (el) el.innerHTML = `${pl.price}<small>${(PRO_PLANS.find(x => x.id === pl.id) || {}).sub || ''}</small>`;
       });
+      // 導入オファーが1つも付いていなければトライアル対象外として文言を切り替える
+      pwTrialEligible = plans.some(pl => pl.trialEligible);
       const t = bg.querySelector('#pw-terms'); if (t) t.textContent = pwTermsText();
+      const cta = bg.querySelector('#pw-start'); if (cta && !cta.disabled) cta.textContent = pwCtaText();
     }).catch(() => {});
   }
 }
 function openPaywall(gate) { bindPaywall(openModal(paywallHtml(gate), { persistent: !!gate }), gate); }
+
+// ===== みんなのメニュー: 迷惑ユーザーの非表示(App Store Guideline 1.2 の必須要件) =====
+function blockUid(uid) {
+  if (!uid || typeof uid !== 'string') return;
+  if (!Array.isArray(S.blockedUids)) S.blockedUids = [];
+  if (S.blockedUids.includes(uid)) return;
+  S.blockedUids.push(uid);
+  if (S.blockedUids.length > 500) S.blockedUids = S.blockedUids.slice(-500);
+  saveState();
+}
+function unblockAllUids() { S.blockedUids = []; saveState(); }
 
 // ツール画面のProカード。購読中は勧誘せず状態と解約導線を出す(二重課金の誤操作を防ぐ)
 function proCardHtml() {
@@ -2811,6 +2868,7 @@ function toggleDone(exId, checked) {
         if (e.prevSrc) S.dayDone[today][exId] = { id: e.id, src: e.prevSrc };
         else delete S.dayDone[today][exId];
       } else {
+        tombstoneLog(S.logs.find(l => l.id === e.id)); // 同期で復活させない
         S.logs = S.logs.filter(l => l.id !== e.id);
         delete S.dayDone[today][exId];
       }
@@ -3032,6 +3090,7 @@ function clearTodayPlanCompletion(exId) {
   if (dd && dd[exId]) {
     const e = ddGet(dd, exId);
     if (e && e.src === 'plan') {
+      tombstoneLog(S.logs.find(l => l.id === e.id)); // 同期で復活させない
       S.logs = S.logs.filter(l => l.id !== e.id);
       delete dd[exId];
       if (S.setCount[today]) delete S.setCount[today]['plan|' + exId];
@@ -3378,6 +3437,9 @@ async function openPublicGalleryModal() {
 
   const renderList = () => {
     let list = menus.slice();
+    // 非表示にしたユーザーの投稿は出さない(App Store Guideline 1.2 のブロック要件)
+    const blocked = new Set(S.blockedUids || []);
+    if (blocked.size) list = list.filter(pm => !blocked.has(pm.uid));
     if (state.part) list = list.filter(pm => pubMenuParts(pm).includes(state.part));
     if (state.q) {
       const q = state.q.toLowerCase();
@@ -3418,7 +3480,8 @@ async function openPublicGalleryModal() {
           <span style="flex:1"></span>
           ${mine ? `<button class="btn ghost small gal-unpub" data-id="${esc(pm.id)}" style="color:var(--warn,#f87171)">公開取消</button>`
             : `<button class="btn small gal-detail" data-i="${i}">見る</button><button class="btn small ghost gal-import" data-i="${i}">取り込む</button>`}
-          ${mine ? `<button class="btn small gal-detail" data-i="${i}">見る</button>` : `<button class="btn ghost small gal-report" data-id="${esc(pm.id)}" style="padding:8px 10px">⚠</button>`}
+          ${mine ? `<button class="btn small gal-detail" data-i="${i}">見る</button>`
+            : `<button class="btn ghost small gal-report" data-id="${esc(pm.id)}" data-uid="${esc(pm.uid || '')}" style="padding:8px 10px">⚠</button><button class="btn ghost small gal-block" data-uid="${esc(pm.uid || '')}" title="このユーザーの投稿を今後表示しない" style="padding:8px 10px">🚫</button>`}
         </div></div>`;
     }).join('');
     bindList();
@@ -3445,9 +3508,20 @@ async function openPublicGalleryModal() {
     }));
     $all('.gal-report', listEl).forEach(b => b.addEventListener('click', async () => {
       if (!c.myUid()) { toast('通報にはログインが必要です'); return; }
-      if (!confirm('このメニューを通報しますか?')) return;
+      if (!confirm('このメニューを通報しますか?\n通報した投稿者は自動的に非表示になります。')) return;
       const res = await c.reportMenu(b.dataset.id);
-      toast(res.ok ? '通報しました。ご協力ありがとうございます' : '通報に失敗しました');
+      // 通報した相手はすぐ視界から消す(不快な内容を見続けさせない)
+      blockUid(b.dataset.uid);
+      toast(res.ok ? '通報しました。この投稿者を非表示にしました' : '通報に失敗しました');
+      renderList();
+    }));
+    // ブロック(1.2の必須要件)。端末内に保持し、一覧から除外する
+    $all('.gal-block', listEl).forEach(b => b.addEventListener('click', () => {
+      if (!b.dataset.uid) { toast('この投稿は非表示にできません'); return; }
+      if (!confirm('このユーザーの投稿を今後表示しないようにしますか?')) return;
+      blockUid(b.dataset.uid);
+      toast('このユーザーを非表示にしました(ツール画面で解除できます)');
+      renderList();
     }));
     $all('.gal-unpub', listEl).forEach(b => b.addEventListener('click', async () => {
       const res = await c.unpublishMenu(b.dataset.id);
@@ -3539,7 +3613,13 @@ function renderSimResults(container) {
       <p class="card-note">緑の帯が最適ゾーン(部位あたり週10〜20セット)。曲線が寝てきたら時間を増やすより回復と食事に投資。</p>
     </div>
     <button class="btn" id="sim-to-plan" style="width:100%;margin-bottom:14px">🎯 この設定(週${simState.days}日 × ${simState.minutes}分)でメニューを作る</button>
-    ${r.dietMode ? `
+    ${r.dietMode && r.noDeficit ? `
+    <div class="stat-row">
+      <div class="stat-tile"><div class="k">消費カロリー</div><div class="v"><em>${r.weeklyBurn}</em><small>kcal/週</small></div></div>
+      <div class="stat-tile"><div class="k">筋肉</div><div class="v"><em>+${g(r.cumGain(6))}</em><small>kg/半年</small></div></div>
+    </div>
+    <p class="card-note" style="margin-top:-6px;margin-bottom:14px">${(S.profile && S.profile.age < 18) ? '成長期のため、カロリーを削らない設計にしています。' : '体重は十分にあるため、カロリーを削らない設計にしています。'}維持カロリー＋タンパク質＋筋トレで、体重を落とさずに引き締めます(食事タブと同じ方針)。</p>
+    ` : r.dietMode ? `
     <div class="stat-row">
       <div class="stat-tile"><div class="k">脂肪減少ペース</div><div class="v"><em>−${g(r.monthlyFatLoss)}</em><small>kg/月</small></div></div>
       <div class="stat-tile"><div class="k">消費カロリー</div><div class="v"><em>${r.weeklyBurn}</em><small>kcal/週</small></div></div>
@@ -3549,7 +3629,7 @@ function renderSimResults(container) {
       <div class="stat-tile"><div class="k">半年後</div><div class="v"><em>−${g(r.monthlyFatLoss * 6)}</em><small>kg脂肪</small></div></div>
       <div class="stat-tile"><div class="k">筋肉</div><div class="v"><em>維持↗</em><small>+${g(r.cumGain(6))}kg/半年</small></div></div>
     </div>
-    <p class="card-note" style="margin-top:-6px;margin-bottom:14px">食事タブの−400kcal/日前提。減量中は「筋肉を守りながら脂肪だけ落とす」のが正解で、体重ナビの目標に着いたら維持へ切替。</p>
+    <p class="card-note" style="margin-top:-6px;margin-bottom:14px">食事タブの−400kcal/日前提。減量中は「筋肉を守りながら脂肪だけ落とす」のが正解で、体重ナビの目標に着いたら維持へ切替。実際は数kg落ちるとペースが鈍化します。</p>
     ` : `
     <div class="stat-row">
       <div class="stat-tile"><div class="k">筋肉増加ペース</div><div class="v"><em>+${g(r.monthlyGain)}</em><small>kg/月</small></div></div>
@@ -3826,6 +3906,7 @@ function renderLog() {
       btn.addEventListener('click', () => {
         if (!confirm('この記録を削除しますか?')) return;
         const id = Number(btn.dataset.del);
+        tombstoneLog(S.logs.find(l => l.id === id)); // 同期で復活させない
         S.logs = S.logs.filter(l => l.id !== id);
         Object.keys(S.dayDone).forEach(d => {
           Object.keys(S.dayDone[d]).forEach(ex => { const e = ddGet(S.dayDone[d], ex); if (e && e.id === id) delete S.dayDone[d][ex]; });
@@ -3958,10 +4039,11 @@ function cloudCardHtml() {
       .map(h => `<option value="${h}" ${h === rm.hour ? 'selected' : ''}>${h}:00</option>`).join('');
     const denied = rm.permission === 'denied';
     return `<div class="card"><h2>☁️ 端末間同期<span class="tag good" style="font-size:10px">ON</span></h2>
-      <p style="font-size:13.5px">${esc(st.user.name || st.user.email || 'ログイン中')} でログイン中。この端末の記録は自動でクラウドに保存され、同じGoogleアカウントの別端末と同期されます。</p>
+      <p style="font-size:13.5px">${esc(st.user.name || st.user.email || 'ログイン中')} でログイン中。この端末の記録は自動でクラウドに保存され、同じアカウントの別端末と同期されます。</p>
       <p class="card-note">${st.syncing ? '同期中...' : (st.lastSync ? '最終同期: ' + st.lastSync : 'まもなく同期します')}</p>
       <button class="btn ghost" id="cloud-signout">ログアウト(同期を止める)</button>
-      <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。</p>
+      <button class="btn ghost small" id="cloud-delete-account" style="width:100%;margin-top:8px;color:var(--danger,#e5534b)">アカウントを削除</button>
+      <p class="card-note">※体型フォトはこの端末内のみに保存され、同期対象外です。<br>※アカウント削除は、クラウドの同期データ・公開したメニュー・ログイン情報をすべて消去します(取り消せません)。</p>
     </div>` + (isNativeApp() ? '' : `
     <div class="card"><h2>🔔 トレ通知<span class="tag ${rm.enabled ? 'good' : 'none'}" style="font-size:10px">${rm.enabled ? 'ON' : 'OFF'}</span></h2>
       ${denied ? `<p style="font-size:13px;color:var(--warn)">通知がブロックされています。ブラウザ(またはスマホの設定アプリ)で通知を許可してください。</p>` : ''}
@@ -4011,6 +4093,20 @@ function bindCloudCard(root) {
   if (inBtn) inBtn.addEventListener('click', () => { if (window.__klCloud) window.__klCloud.signIn(); });
   const inApple = $('#cloud-signin-apple', root);
   if (inApple) inApple.addEventListener('click', () => { if (window.__klCloud && window.__klCloud.signInApple) window.__klCloud.signInApple(); });
+  // アカウント削除(App Store Guideline 5.1.1(v) 必須): クラウド・公開メニュー・認証アカウントを消す
+  const delAcc = $('#cloud-delete-account', root);
+  if (delAcc) delAcc.addEventListener('click', async () => {
+    const c = window.__klCloud;
+    if (!c || !c.deleteAccount) return;
+    if (!confirm('アカウントを削除します。クラウドの同期データと公開したメニューが消え、ログイン情報も削除されます。')) return;
+    if (!confirm('この操作は取り消せません。本当に削除しますか?\n(この端末に残る記録は「全データ削除」で別途消せます)')) return;
+    delAcc.disabled = true; delAcc.textContent = '削除中…';
+    const r = await c.deleteAccount();
+    delAcc.disabled = false; delAcc.textContent = 'アカウントを削除';
+    if (r && r.ok) { toast('アカウントを削除しました'); route(); }
+    else if (r && r.reason === 'reauth') alert('安全のため、一度ログアウトして再度ログインしてから削除してください。');
+    else toast('アカウントを削除できませんでした。通信環境を確認してください');
+  });
   const outBtn = $('#cloud-signout', root);
   if (outBtn) outBtn.addEventListener('click', () => {
     if (confirm('ログアウトします。この端末のデータは残りますが、以後の変更は同期されません。')) {
@@ -4120,19 +4216,32 @@ function renderTools() {
     <div class="tool-sec">その他</div>
     <div class="card"><h2>💾 データ管理</h2>
       <button class="btn danger" id="reset-data">全データ削除</button>
-      <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。${isNativeApp() ? 'Googleログインで別端末と同期できます。' : ''}</p>
+      <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。${isNativeApp() ? 'ログインすると別端末と同期できます。' : ''}</p>
     </div>
 
-    <p class="card-note" style="text-align:center;padding:0 8px 8px">
-      筋トレLAB v1.0 — 本アプリの数値は研究に基づく一般的な目安で、医学的助言ではありません。
-      持病・怪我・痛みがある場合は医師やトレーナーに相談してください。
-    </p>`;
+    <div class="card"><h2>🚫 非表示にしたユーザー</h2>
+      <p style="font-size:13.5px;margin-bottom:8px">${(S.blockedUids || []).length ? `みんなのメニューで <b>${(S.blockedUids || []).length}人</b> を非表示にしています。` : 'みんなのメニューで非表示にしたユーザーはいません。'}</p>
+      ${(S.blockedUids || []).length ? '<button class="btn ghost" id="unblock-all">すべて解除する</button>' : ''}
+      <p class="card-note">不適切な投稿は各メニューの ⚠ から通報できます。通報された投稿は確認のうえ削除します。お問い合わせ: <a href="https://x.com/hataraku_ai_" target="_blank" rel="noopener">@hataraku_ai_</a></p>
+    </div>
+
+    <div class="card"><h2>📄 規約・プライバシー</h2>
+      <p style="font-size:13.5px;margin-bottom:8px"><a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>　/　<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a></p>
+      <p class="card-note">本アプリの数値は研究に基づく一般的な目安で、医学的助言ではありません。持病・怪我・痛みがある場合は医師やトレーナーに相談してください。</p>
+    </div>
+
+    <p class="card-note" style="text-align:center;padding:0 8px 8px">筋トレLAB v1.0</p>`;
 
   bindCloudCard(root);
   bindLocalReminder(root);
   bindCustomize(root, toolCards.map(c => ({ id: c.id, name: c.name })), 'tools');
   const pwBtn = $('#open-paywall', root);
-  if (pwBtn) pwBtn.addEventListener('click', openPaywall);
+  if (pwBtn) pwBtn.addEventListener('click', () => openPaywall());
+  const unblockBtn = $('#unblock-all', root);
+  if (unblockBtn) unblockBtn.addEventListener('click', () => {
+    if (!confirm('非表示にしたユーザーをすべて解除しますか?')) return;
+    unblockAllUids(); toast('解除しました'); route();
+  });
 
   // タイマー
   $all('[data-t]', root).forEach(b => b.addEventListener('click', () => {
@@ -4247,9 +4356,18 @@ function renderTools() {
 
   // データ管理
   const resetBtn = $('#reset-data', root);
-  if (resetBtn) resetBtn.addEventListener('click', () => {
+  if (resetBtn) resetBtn.addEventListener('click', async () => {
+    const c = window.__klCloud;
+    const signedIn = !!(c && c.myUid && c.myUid());
     if (!confirm('全データを削除します。本当によろしいですか?')) return;
-    if (!confirm('記録・プロフィール・メニュー・体型フォトが全て消えます。元に戻せません。実行しますか?')) return;
+    if (!confirm(signedIn
+      ? 'この端末とクラウド同期データ(公開したメニューを含む)が全て消えます。元に戻せません。実行しますか?'
+      : '記録・プロフィール・メニュー・体型フォトが全て消えます。元に戻せません。実行しますか?')) return;
+    // ログイン中はクラウドを先に消す。消さないと次回起動のマージで全部復活する。
+    if (signedIn) {
+      const r = await c.wipeCloud();
+      if (!r || !r.ok) { toast('クラウド上のデータを削除できませんでした。通信環境を確認してください'); return; }
+    }
     localStorage.removeItem(LS_KEY);
     try {
       if (typeof PhotoDB !== 'undefined') {
