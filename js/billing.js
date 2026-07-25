@@ -137,19 +137,37 @@
         const t = pkg.packageType || '';
         const id = planIdOf(pkg);
         const prod = pkg.product || {};
-        // introPrice(導入オファー)が付いていなければ、このApple IDは無料トライアル対象外。
-        // 「1週間無料」と断言しないための判定材料にする。
-        const intro = prod.introPrice || prod.introductoryPrice || null;
+        // ⚠️ introPrice は「商品に導入オファーが設定されているか」でしかなく、
+        //    このApple IDが使えるかは分からない(常にtrueになる)。資格は別APIで確認する。
         return {
           id,
           packageId: pkg.identifier,
+          productId: (prod.identifier || prod.productIdentifier || ''),
           price: prod.priceString || '',
           period: t,
-          trialEligible: !!intro,
+          trialEligible: null,   // 不明。checkTrialEligibility() で後から確定させる
         };
       }).filter(p => p.id === 'annual' || p.id === 'monthly');
       return plans.length ? plans : null;
     } catch (e) { console.warn('[billing] getOfferings failed', e); return null; }
+  }
+
+  // このApple IDが無料トライアルを使えるか確認する。
+  // 戻り: true(使える) / false(消化済み等で使えない) / null(判定できない)
+  // ※ 商品側の introPrice は「オファーが設定されているか」でしかなく資格判定にならない
+  async function checkTrialEligibility(productIds) {
+    const P = plugin();
+    if (!P || !P.checkTrialOrIntroductoryPriceEligibility || !productIds || !productIds.length) return null;
+    try {
+      const res = await P.checkTrialOrIntroductoryPriceEligibility({ productIdentifiers: productIds });
+      const map = (res && (res.eligibility || res)) || {};
+      const vals = productIds.map(id => map[id]).filter(Boolean);
+      if (!vals.length) return null;
+      const statusOf = v => String((v && (v.status || v.eligibilityStatus)) != null ? (v.status || v.eligibilityStatus) : v).toUpperCase();
+      if (vals.some(v => statusOf(v).includes('ELIGIBLE') && !statusOf(v).includes('INELIGIBLE'))) return true;
+      if (vals.every(v => statusOf(v).includes('INELIGIBLE'))) return false;
+      return null;
+    } catch (e) { console.warn('[billing] trial eligibility failed', e); return null; }
   }
 
   // 購入。planId = 'annual' | 'monthly'。戻り: {ok} / {cancelled} / {error}
@@ -196,5 +214,5 @@
   // ネイティブ課金が実際に使えるか(ペイウォールCTAの出し分け用)
   function ready() { return native() && !!plugin() && keyLooksReal(platformKey()); }
 
-  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag };
+  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility };
 })();

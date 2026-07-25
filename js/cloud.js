@@ -357,18 +357,23 @@ async function wipeCloud() {
 
 // アカウント自体を削除(データ削除 → 認証アカウント削除)。
 // 最終ログインが古いと requires-recent-login になるため、その旨を呼び出し側へ返す。
+// データ削除 → 認証アカウント削除の順で行う。
+// RTDBのルールが auth.uid ベースなので、先に認証を消すとデータが二度と消せなくなるため
+// この順序は変えられない。認証削除だけ失敗した場合(requires-recent-login)は
+// 「データは消えた/アカウントは残っている」ことを呼び出し側へ正確に返す。
 async function deleteAccount() {
   if (!currentUser || !auth) return { ok: false, reason: 'login' };
   const w = await wipeCloud();
-  if (!w.ok) return w;
+  if (!w.ok) return w;   // 何も消えていない
   try {
     await deleteUser(auth.currentUser);
     return { ok: true };
   } catch (e) {
     console.warn('[cloud] deleteUser failed', e);
-    const code = (e && e.code) || '';
-    if (String(code).includes('requires-recent-login')) return { ok: false, reason: 'reauth' };
-    return { ok: false, reason: 'auth', message: e.message };
+    const code = String((e && e.code) || '');
+    // データは削除済み。アカウントだけ残っている状態を明示して伝える
+    if (code.includes('requires-recent-login')) return { ok: false, reason: 'reauth', dataDeleted: true };
+    return { ok: false, reason: 'auth', message: e.message, dataDeleted: true };
   }
 }
 

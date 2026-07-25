@@ -98,6 +98,16 @@ const WEEKDAY_ASSIGN = {
 };
 const WEEKDAY_NAMES = ['日', '月', '火', '水', '木', '金', '土'];
 
+// 曜日割り当てを平行移動して、今日が最初のトレ日になるようにする。
+// 例: 週3(月水金)を土曜に作ったら 土月水 になる(間隔のバランスは維持される)。
+function rotateWeekdaysToToday(base) {
+  if (!Array.isArray(base) || !base.length) return base;
+  const today = new Date().getDay();
+  const shift = (today - base[0] + 7) % 7;
+  if (!shift) return base.slice();
+  return base.map(d => (d + shift) % 7);
+}
+
 // シード付き乱数 (再生成でシャッフルしても保存内容が安定するように)
 function mulberry32(seed) {
   let a = seed >>> 0;
@@ -178,7 +188,10 @@ function dayMinutes(items) {
 function generatePlan(db, profile, focus, seed) {
   const days = Math.min(Math.max(profile.days, 1), 7);
   const template = (profile.goal === 'posture' ? POSTURE_SPLITS : SPLITS)[days];
-  const weekdays = WEEKDAY_ASSIGN[days];
+  // 曜日割り当ては「今日」を最初のトレ日にして回す。
+  // 固定(週3=月水金)だと、作った当日が休息日になる確率が高く(週3で57%)、
+  // 一番やる気がある初日に何もできないまま離脱してしまうため。
+  const weekdays = rotateWeekdaysToToday(WEEKDAY_ASSIGN[days]);
   const rng = mulberry32(seed);
   const budget = profile.minutes;
   // 「やらない部位」= メニューから完全に除外(実行時のグローバル状態を参照)

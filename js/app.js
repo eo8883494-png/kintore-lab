@@ -145,6 +145,7 @@ async function importHealthWeight(silent) {
       else { S.weights.push({ date: d, kg: v.kg }); added++; }
     });
     S.weights.sort((a, b) => (a.date < b.date ? -1 : 1));
+    syncProfileWeight(); // 手入力時と同じく profile.w も追従させる(TDEE・PFC・BMIが古い体重で計算されるのを防ぐ)
     saveState();
     haptic('success');
     // 先に体重反映で再描画 → その後に歩数を表示欄へ(再描画でDOMが作り直されるため順序が重要)
@@ -1491,7 +1492,7 @@ let S = loadState();
 rebuildDB(S.customEx); // オリジナル種目をDBに合流
 // 保存済みデータを正規形に書き直しておく (旧形式とのバイト差分で同期処理が空振りしないように)
 try { if (localStorage.getItem(LS_KEY)) localStorage.setItem(LS_KEY, JSON.stringify(S)); } catch (e) { /* 書けない環境は無視 */ }
-function newId() { const id = S.nextId++; saveState(); return id; }
+function newId() { return S.nextId++; }  // 保存は呼び出し元の saveState() に任せる(1操作で何度も全体保存しない)
 
 // ===== 汎用UI =====
 function $(sel, root) { return (root || document).querySelector(sel); }
@@ -1504,6 +1505,9 @@ function toast(msg) {
   if (t) t.remove();
   t = document.createElement('div');
   t.id = 'toast'; t.className = 'toast'; t.textContent = msg;
+  // 保存成功もエラーも全部この経路なので、読み上げ対象にしないと結果が伝わらない
+  t.setAttribute('role', 'status');
+  t.setAttribute('aria-live', 'polite');
   document.body.appendChild(t);
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.remove(), 2200);
@@ -1511,20 +1515,50 @@ function toast(msg) {
 window.toast = toast; // cloud.js (通知) から利用
 
 function openModal(html, opts) {
-  closeModal();
+  const cur = $('#modal-bg');
+  // 必須モーダル(入口ゲート)が出ている間は、他のモーダルに潰させない。
+  // Spotlight/Siri復帰などで別モーダルが開くとゲートが消えて素通りできてしまうため。
+  // ⚠️ 呼び出し側は戻り値に対して querySelector する実装が多いので、null ではなく
+  //    「画面に出さない要素」を返して安全に無視させる(クラッシュを防ぐ)。
+  const blocked = !!(cur && cur.dataset.persistent === '1' && !(opts && opts.persistent));
+  if (!blocked) closeModal();
   const bg = document.createElement('div');
   bg.className = 'modal-bg'; bg.id = 'modal-bg';
-  bg.innerHTML = `<div class="modal">${html}</div>`;
-  // 入口ゲート等の必須モーダルは背景タップで閉じない
-  if (!(opts && opts.persistent)) bg.addEventListener('click', e => { if (e.target === bg) closeModal(); });
+  bg.innerHTML = `<div class="modal" role="dialog" aria-modal="true">${html}</div>`;
+  if (blocked) return bg;   // 挿入せず返す = 何も表示されない
+  if (opts && opts.persistent) bg.dataset.persistent = '1';
+  else bg.addEventListener('click', e => { if (e.target === bg) closeModal(); });
   document.body.appendChild(bg);
+  // 背景を支援技術からも不活性化(VoiceOverでタブバーに到達してゲートを回避できてしまう)
+  ['.topbar', 'main', '.tabbar'].forEach(sel => {
+    const e = document.querySelector(sel);
+    if (e) { e.setAttribute('inert', ''); e.setAttribute('aria-hidden', 'true'); }
+  });
+  lastFocusBeforeModal = document.activeElement;
+  const focusTarget = bg.querySelector('input, select, textarea, button');
+  if (focusTarget) setTimeout(() => { try { focusTarget.focus({ preventScroll: true }); } catch (e) {} }, 0);
   return bg;
 }
+let lastFocusBeforeModal = null;
 function closeModal() {
   const m = $('#modal-bg'); if (m) m.remove();
+  ['.topbar', 'main', '.tabbar'].forEach(sel => {
+    const e = document.querySelector(sel);
+    if (e) { e.removeAttribute('inert'); e.removeAttribute('aria-hidden'); }
+  });
+  if (lastFocusBeforeModal && lastFocusBeforeModal.isConnected) {
+    try { lastFocusBeforeModal.focus({ preventScroll: true }); } catch (e) {}
+  }
+  lastFocusBeforeModal = null;
   // 保留していた課金ゲートがあれば、モーダルが空いた今出す(後から不意打ちにしない)
   if (typeof proGatePending !== 'undefined' && proGatePending) setTimeout(() => maybeShowProGate(), 0);
 }
+// Escで閉じる(必須モーダルは閉じない)
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const bg = $('#modal-bg');
+  if (bg && bg.dataset.persistent !== '1') closeModal();
+});
 
 // ===== ペイウォール(全機能サブスク・1週間無料→自動継続・月/年プラン。RevenueCat接続は有料Apple Developer登録後) =====
 // 価格は仮。App Store Connectの商品確定後に差し替え(product idもここへ)
@@ -1539,9 +1573,14 @@ function pwTermsText() {
   const p = PRO_PLANS.find(x => x.id === pwPlan) || PRO_PLANS[0];
   // 過去に登録済みのApple IDは導入オファー(7日無料)の対象外。断言せず実態に合わせる
   if (pwTrialEligible === false) return `${p.price}${p.sub}（${p.label}）で登録します。解約しない限り自動更新されます。`;
+  if (pwTrialEligible === null) return `初回のみ7日間無料（対象の場合）→ その後 ${p.price}${p.sub}（${p.label}）。解約しない限り自動更新されます。`;
   return `7日間無料 → その後 ${p.price}${p.sub}（${p.label}）。1週間以内に解約・プラン変更しなければ自動で課金されます。`;
 }
-function pwCtaText() { return pwTrialEligible === false ? '購読を開始する' : '1週間無料で始める'; }
+function pwCtaText() {
+  if (pwTrialEligible === false) return '購読を開始する';
+  if (pwTrialEligible === null) return '始める';
+  return '1週間無料で始める';
+}
 function paywallHtml(gate) {
   // ⚠️ 小型iPhone(375x667)でもCTAと価格が初期表示に収まるよう、項目は4件までに抑えること
   const feats = [
@@ -1620,14 +1659,32 @@ function bindPaywall(bg, gate) {
         const el = bg.querySelector(`[data-plan="${pl.id}"] .pw-plan-price`);
         if (el) el.innerHTML = `${pl.price}<small>${(PRO_PLANS.find(x => x.id === pl.id) || {}).sub || ''}</small>`;
       });
-      // 導入オファーが1つも付いていなければトライアル対象外として文言を切り替える
-      pwTrialEligible = plans.some(pl => pl.trialEligible);
       const t = bg.querySelector('#pw-terms'); if (t) t.textContent = pwTermsText();
-      const cta = bg.querySelector('#pw-start'); if (cta && !cta.disabled) cta.textContent = pwCtaText();
+      // このApple IDが実際にトライアルを使えるかを確認して文言を確定する
+      // (商品にオファーが付いているかだけでは判定できない=再加入ユーザーは即課金される)
+      const ids = plans.map(pl => pl.productId).filter(Boolean);
+      if (B.checkTrialEligibility) {
+        B.checkTrialEligibility(ids).then(el => {
+          if (!bg.isConnected) return;
+          pwTrialEligible = el;
+          const t2 = bg.querySelector('#pw-terms'); if (t2) t2.textContent = pwTermsText();
+          const cta = bg.querySelector('#pw-start'); if (cta && !cta.disabled) cta.textContent = pwCtaText();
+        }).catch(() => {});
+      }
     }).catch(() => {});
   }
 }
 function openPaywall(gate) { bindPaywall(openModal(paywallHtml(gate), { persistent: !!gate }), gate); }
+
+// 体重の単一ソース化: 実測(S.weights)の最新値を profile.w に反映する。
+// これをしないと、ヘルスケア同期で体重が更新されても TDEE・PFC・BMI 判定だけ
+// 初期入力の体重で計算され続け、画面ごとに矛盾した数字が出る。
+function syncProfileWeight() {
+  if (!S.profile || !Array.isArray(S.weights) || !S.weights.length) return;
+  const latest = S.weights[S.weights.length - 1];
+  const kg = Number(latest && latest.kg);
+  if (kg > 0 && Math.abs(kg - Number(S.profile.w)) >= 0.1) S.profile.w = kg;
+}
 
 // カロリー助言の文言。食事タブ(mealTargets)と同じ安全ガードを使い、画面ごとに真逆の
 // 助言(成長期なのに「−500kcal」等)が出ないようにする
@@ -2663,8 +2720,8 @@ function renderHome() {
             </div>
           </div>
           <div class="ex-ctrl">
-            ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${wVal}" placeholder="kg" step="0.5"><span class="unit">kg</span>`}
-            <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1"><span class="unit">${rUnit}</span>
+            ${isBW ? '<span class="unit">自重</span>' : `<input type="number" class="winp" data-ex="${it.exId}" value="${wVal}" placeholder="kg" step="0.5" aria-label="${esc(ex.name)} の重量(kg)"><span class="unit">kg</span>`}
+            <input type="number" class="rinp" data-ex="${it.exId}" value="${lastR != null ? lastR : repMid(it.reps)}" placeholder="${rUnit}" min="1" step="1" aria-label="${esc(ex.name)} の${rUnit}数"><span class="unit">${rUnit}</span>
             <button class="ex-tmr" data-tmr-ex="${it.exId}" data-tmr-rest="${it.rest}" title="休憩タイマー ${it.rest}秒">⏱ 休憩</button>
           </div>
         </div>`;
@@ -3853,7 +3910,7 @@ function renderLog() {
       </div>` : '';
   const cCal = hasLogs ? `<div class="card"><h2>🗓️ トレーニングカレンダー</h2><div id="cal-heat"></div></div>` : '';
   const cPhoto = `<div class="card"><h2>📷 体型フォト<span class="sub">ビフォーアフター</span></h2><div id="photo-card"><p class="card-note">読み込み中...</p></div></div>`;
-  const cHistory = `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームのチェック or 上のフォームから記録できます。</div>'}</div></div>`;
+  const cHistory = `<div class="card"><h2>🗂️ 履歴</h2><div id="log-list">${hasLogs ? '' : '<div class="empty"><span class="big-emoji">📭</span>まだ記録がありません。<br>ホームの「今日のメニュー」でチェックすると、ここに貯まっていきます。</div>'}</div></div>`;
 
   const logCards = [
     { id: 'mymenu', name: 'マイメニュー', html: cMymenu },
@@ -4204,9 +4261,16 @@ function bindCloudCard(root) {
     delAcc.disabled = true; delAcc.textContent = '削除中…';
     const r = await c.deleteAccount();
     delAcc.disabled = false; delAcc.textContent = 'アカウントを削除';
+    // クラウド上のデータが消えたら、ローカルの公開状態も実態に合わせる(公開中のまま残さない)
+    if (r && (r.ok || r.dataDeleted)) {
+      S.myMenus.forEach(m => { delete m.pubId; delete m.pubLink; m.published = false; });
+      saveState();
+    }
     if (r && r.ok) { toast('アカウントを削除しました'); route(); }
-    else if (r && r.reason === 'reauth') alert('安全のため、一度ログアウトして再度ログインしてから削除してください。');
+    else if (r && r.reason === 'reauth') alert('同期データと公開したメニューは削除しました。\nアカウント自体の削除は、安全のため一度ログアウトして再ログインしたあと、もう一度実行してください。');
+    else if (r && r.dataDeleted) alert('同期データは削除しましたが、アカウントの削除に失敗しました。時間をおいて再度お試しください。');
     else toast('アカウントを削除できませんでした。通信環境を確認してください');
+    route();
   });
   const outBtn = $('#cloud-signout', root);
   if (outBtn) outBtn.addEventListener('click', () => {
