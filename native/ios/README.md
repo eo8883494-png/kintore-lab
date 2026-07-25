@@ -149,5 +149,37 @@ Xcode: **App ターゲット → Signing & Capabilities → + Capability → In-
 > 補足: 課金状態は起動時と復帰時に `getCustomerInfo` で再確認するので、
 > トライアル満了→自動課金や、解約→失効も次回起動で `isPro()` に反映される。
 
+---
+
+## 🛡 提出前チェック(Info.plist / プライバシーマニフェスト)
+
+### Appターゲットの Info に必要なキー
+| キー | 値(例) | 無いとどうなるか |
+|---|---|---|
+| `NSHealthShareUsageDescription` | ヘルスケアから体重と歩数を読み込み、記録の自動入力と分析に使用します | Health連携時にクラッシュ |
+| `NSHealthUpdateUsageDescription` | アプリで記録した体重と睡眠時間をヘルスケアに保存します | 同上 |
+| `NSCameraUsageDescription` | 体型写真やプロフィール画像を撮影するために使用します。写真は端末内にのみ保存されます | **体型フォトで「写真を撮る」を選ぶとクラッシュ** |
+| `NSPhotoLibraryUsageDescription` | 体型写真やプロフィール画像を選ぶために写真へアクセスします | 写真選択でクラッシュし得る |
+| `NSSupportsLiveActivities` = YES (Boolean) | — | Live Activityが出ない |
+| `ITSAppUsesNonExemptEncryption` = NO (Boolean) | — | アップロードのたびに輸出コンプライアンスの質問 |
+
+※ watchOSターゲットの Health 用途文は「ワークアウト中の心拍数と消費カロリーを表示するため」「トレーニングをワークアウトとしてヘルスケアに記録するため」(Appとは別に設定)。
+
+### プライバシーマニフェスト(必須)
+`native/ios/App/PrivacyInfo.xcprivacy` を **App / KintoreWidgetExtension / KintoreWatch の各ターゲット**に追加する
+(Xcodeへドラッグ → Target Membership で対象にチェック)。
+未追加だと提出後に **ITMS-91053(Missing API declaration)** の警告メールが来る。
+内容(収集データ種別)は App Store Connect の「App のプライバシー」申告と一致させること。
+
+### App Store Connect「App のプライバシー」で申告する項目
+健康(体重・歩数・睡眠・生理周期)/ フィットネス(トレーニング記録)/ メールアドレス / ユーザーID /
+購入履歴 / 写真・動画(公開アイコン)/ その他のユーザーコンテンツ(公開メニュー・表示名・アピール文)
+… すべて「アプリの機能」目的・本人に紐づく・トラッキングなし。
+製品操作(GA4)のみ「アナリティクス」目的・本人に紐づかない。
+
+### 年齢レーティング
+「みんなのメニュー」= ユーザー生成コンテンツがあるため、レーティング質問票で
+**「ユーザー作成コンテンツ: あり」を選ぶ**(4+のままだと 2.3.6 で指摘される)。
+
 ## トラブル時
 エラーの赤字をそのまま報告してください(型名・行番号ごと)。
