@@ -343,18 +343,19 @@ function startTimerActivity(endAt, label, kind) {
   if (!N || !N.startTimerActivity) return;
   try { const p = N.startTimerActivity({ endAt, label: String(label || '休憩'), kind: kind || 'rest' }); if (p && p.catch) p.catch(() => {}); } catch (e) {}
 }
-function endTimerActivity() {
+// kind 省略=全部終了(起動時の残骸掃除)。kind 指定=その種別だけ(休憩とインターバルが互いを消さない)
+function endTimerActivity(kind) {
   const N = klNative();
   if (!N || !N.endTimerActivity) return;
-  try { const p = N.endTimerActivity(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+  try { const p = N.endTimerActivity(kind ? { kind } : {}); if (p && p.catch) p.catch(() => {}); } catch (e) {}
 }
-// 進行中のLive Activityを更新(フェーズ切替用)。update未対応の旧ビルドでは開始し直しにフォールバック
-function updateTimerActivityNative(endAt, label) {
+// 進行中のLive Activityを更新(フェーズ切替・時間延長用)。update未対応の旧ビルドでは開始し直しにフォールバック
+function updateTimerActivityNative(endAt, label, kind) {
   const N = klNative();
   if (!N) return;
   try {
-    if (N.updateTimerActivity) { const p = N.updateTimerActivity({ endAt, label: String(label || '') }); if (p && p.catch) p.catch(() => {}); }
-    else startTimerActivity(endAt, label, 'interval');
+    if (N.updateTimerActivity) { const p = N.updateTimerActivity({ endAt, label: String(label || ''), kind: kind || 'interval' }); if (p && p.catch) p.catch(() => {}); }
+    else startTimerActivity(endAt, label, kind || 'interval');
   } catch (e) {}
 }
 // ホームウィジェットに今日のメニュー・進捗を書き出す(renderHome時)
@@ -4463,7 +4464,7 @@ function stopTimer() {
   if (t) t.textContent = '▶ スタート';
   refreshKeepAwake();
   cancelTimerNotif(TIMER_NOTIF_ID);
-  endTimerActivity();
+  endTimerActivity('rest');
   updateTimerDisp();
 }
 function timerAlarm() {
@@ -4610,7 +4611,7 @@ function itPause() {
   iTimer.sec = Math.max(0, Math.ceil((iTimer.endAt - Date.now()) / 1000));
   refreshKeepAwake();
   cancelTimerNotif(IT_NOTIF_ID);
-  endTimerActivity();
+  endTimerActivity('interval');
   itSyncDisp();
 }
 function itReset() {
@@ -4619,7 +4620,7 @@ function itReset() {
   iTimer.sec = itCfg.prep > 0 ? itCfg.prep : itCfg.work;
   refreshKeepAwake();
   cancelTimerNotif(IT_NOTIF_ID);
-  endTimerActivity();
+  endTimerActivity('interval');
   itSyncDisp();
 }
 function itTick() {
@@ -4642,7 +4643,7 @@ function itAdvance(overshootMs) {
     clearInterval(iTimer.iv); iTimer.iv = null;
     iTimer.idx = iTimer.phases.length; iTimer.sec = 0;
     cancelTimerNotif(IT_NOTIF_ID); // 前面で完了 → 予約済み通知は不要
-    endTimerActivity();
+    endTimerActivity('interval');
     itFinishAlarm();
     if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
     haptic('success');
@@ -4658,7 +4659,7 @@ function itAdvance(overshootMs) {
   itBeep(p.type === 'work' ? 880 : 520, 0.18);
   if (navigator.vibrate) navigator.vibrate(p.type === 'work' ? [120, 60, 120] : [200]);
   haptic(p.type === 'work' ? 'heavy' : 'light');
-  updateTimerActivityNative(iTimer.endAt, itActivityLabel()); // ロック画面のフェーズ表示を更新
+  updateTimerActivityNative(iTimer.endAt, itActivityLabel(), 'interval'); // ロック画面のフェーズ表示を更新
   itSyncDisp();
 }
 function itBeep(freq, dur) {
@@ -4764,6 +4765,8 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
   initWatchBridge();                  // Apple Watchからのセット完了を受ける(未組み込みはno-op)
   if (isNativeApp()) {
+    // アプリを強制終了するとLive Activityがロック画面に残る。タイマー未稼働なら残骸を掃除
+    if (!timer.iv && !iTimer.iv) endTimerActivity();
     consumeNativeAction();              // Siriショートカット/Spotlight経由の起動アクションを実行
     // 起動から少し遅らせて: 通知の再スケジュール + Health自動同期 + Spotlightインデックス
     setTimeout(() => {
@@ -4779,5 +4782,5 @@ document.addEventListener('DOMContentLoaded', () => {
   const fabStop = document.getElementById('rt-stop');
   if (fabStop) fabStop.addEventListener('click', () => { stopTimer(); updateRestFab(); });
   const fabAdd = document.getElementById('rt-add');
-  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ'); startTimerActivity(timer.endAt, timer.label || '休憩', 'rest'); tickTimer(); } });
+  if (fabAdd) fabAdd.addEventListener('click', () => { if (timer.iv) { timer.endAt += 30000; scheduleTimerNotif(TIMER_NOTIF_ID, timer.endAt, '⏱️ 休憩終了!', (timer.label || '休憩') + ' — 次のセットへ'); updateTimerActivityNative(timer.endAt, timer.label || '休憩', 'rest'); tickTimer(); } });
 });

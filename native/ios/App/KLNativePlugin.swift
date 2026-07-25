@@ -58,9 +58,10 @@ public class KLNativePlugin: CAPPlugin, CAPBridgedPlugin {
         let label = call.getString("label") ?? ""
         guard endMs > 0 else { call.resolve(); return }
         let end = Date(timeIntervalSince1970: endMs / 1000)
+        let kind = call.getString("kind")   // 指定があればその種別だけ更新
         Task {
             let state = KLTimerAttributes.ContentState(endDate: end, label: label)
-            for a in Activity<KLTimerAttributes>.activities {
+            for a in Activity<KLTimerAttributes>.activities where kind == nil || a.attributes.kind == kind {
                 if #available(iOS 16.2, *) {
                     await a.update(ActivityContent(state: state, staleDate: end.addingTimeInterval(60)))
                 } else {
@@ -80,7 +81,8 @@ public class KLNativePlugin: CAPPlugin, CAPBridgedPlugin {
         guard endMs > 0 else { call.resolve(["ok": false, "reason": "noEnd"]); return }
         let end = Date(timeIntervalSince1970: endMs / 1000)
         Task {
-            for a in Activity<KLTimerAttributes>.activities {
+            // 同じ種別の残骸だけ畳む。休憩タイマーとインターバルタイマーが互いを消さないようにする
+            for a in Activity<KLTimerAttributes>.activities where a.attributes.kind == kind {
                 await a.end(nil, dismissalPolicy: .immediate)
             }
             let attrs = KLTimerAttributes(kind: kind)
@@ -99,11 +101,12 @@ public class KLNativePlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    // タイマーのLive Activityを終了
+    // タイマーのLive Activityを終了。kind 指定でその種別だけ、省略で全部(起動時の残骸掃除用)
     @objc func endTimerActivity(_ call: CAPPluginCall) {
         guard #available(iOS 16.1, *) else { call.resolve(); return }
+        let kind = call.getString("kind")
         Task {
-            for a in Activity<KLTimerAttributes>.activities {
+            for a in Activity<KLTimerAttributes>.activities where kind == nil || a.attributes.kind == kind {
                 await a.end(nil, dismissalPolicy: .immediate)
             }
             call.resolve()
