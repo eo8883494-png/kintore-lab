@@ -27,7 +27,7 @@ function storeWord() { return isNativeApp() ? 'アプリ内' : 'ブラウザ内'
 
 // Appleサインインは有料Apple Developer Program登録後に「Sign in with Apple」ケイパビリティを付けて解禁する。
 // 登録が済んでボタンを出す準備ができたら true にする(それまでは表示しない=押せない死にボタンを作らない)。
-const APPLE_SIGNIN_READY = false;
+const APPLE_SIGNIN_READY = true;
 function appleSignInAvailable() { return isNativeApp() && APPLE_SIGNIN_READY; }
 
 // ===== ネイティブ機能ヘルパー(プラグイン未導入/Webでは安全にno-op) =====
