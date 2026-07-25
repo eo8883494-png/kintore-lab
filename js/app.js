@@ -4275,18 +4275,19 @@ function renderTools() {
       <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。${isNativeApp() ? 'ログインすると別端末と同期できます。' : ''}</p>
     </div>
 
-    <div class="card"><h2>🚫 非表示にしたユーザー</h2>
-      <p style="font-size:13.5px;margin-bottom:8px">${(S.blockedUids || []).length ? `みんなのメニューで <b>${(S.blockedUids || []).length}人</b> を非表示にしています。` : 'みんなのメニューで非表示にしたユーザーはいません。'}</p>
-      ${(S.blockedUids || []).length ? '<button class="btn ghost" id="unblock-all">すべて解除する</button>' : ''}
-      <p class="card-note">不適切な投稿は各メニューの ⚠ から通報できます。通報された投稿は確認のうえ削除します。お問い合わせ: <a href="https://x.com/hataraku_ai_" target="_blank" rel="noopener">@hataraku_ai_</a></p>
-    </div>
+    ${(S.blockedUids || []).length ? `<div class="card"><h2>🚫 非表示にしたユーザー</h2>
+      <p style="font-size:13.5px;margin-bottom:8px">みんなのメニューで <b>${S.blockedUids.length}人</b> を非表示にしています。</p>
+      <button class="btn ghost" id="unblock-all">すべて解除する</button>
+    </div>` : ''}
 
-    <div class="card"><h2>📄 規約・プライバシー</h2>
-      <p style="font-size:13.5px;margin-bottom:8px"><a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>　/　<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a></p>
-      <p class="card-note">本アプリの数値は研究に基づく一般的な目安で、医学的助言ではありません。持病・怪我・痛みがある場合は医師やトレーナーに相談してください。</p>
-    </div>
-
-    <p class="card-note" style="text-align:center;padding:0 8px 8px">筋トレLAB v1.0</p>`;
+    <p class="card-note" style="text-align:center;padding:0 8px 10px;line-height:1.7">
+      本アプリの数値は研究に基づく一般的な目安で、医学的助言ではありません。<br>
+      持病・怪我・痛みがある場合は医師やトレーナーに相談してください。<br>
+      <a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>
+      <a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
+      <a href="https://x.com/hataraku_ai_" target="_blank" rel="noopener">お問い合わせ</a><br>
+      筋トレLAB v1.0
+    </p>`;
 
   bindCloudCard(root);
   bindLocalReminder(root);
