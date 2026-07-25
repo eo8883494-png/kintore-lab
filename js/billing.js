@@ -73,6 +73,18 @@
     } catch (e) { return false; }
   }
 
+  // パッケージ → 'annual' | 'monthly' | その他。packageType が CUSTOM の構成でも
+  // identifier($rc_annual / annual 等)から解決できるようにする。
+  // getPlans と purchase は必ずこの同一関数で照合すること(食い違うと誤プラン課金になる)。
+  function planIdOf(pkg) {
+    const typeToId = { ANNUAL: 'annual', MONTHLY: 'monthly' };
+    if (pkg && typeToId[pkg.packageType]) return typeToId[pkg.packageType];
+    const id = String((pkg && pkg.identifier) || '').toLowerCase().replace(/^\$rc_/, '');
+    if (id === 'annual' || id === 'yearly') return 'annual';
+    if (id === 'monthly') return 'monthly';
+    return id;
+  }
+
   // ===== 公開 API =====
 
   // 起動時に一度だけ(ネイティブのみ)。キー未設定なら黙って何もしない=Web挙動を維持
@@ -121,10 +133,9 @@
       const cur = res && res.current ? res.current : (res && res.all && Object.values(res.all)[0]);
       if (!cur || !Array.isArray(cur.availablePackages)) return null;
       lastOffering = cur;
-      const typeToId = { ANNUAL: 'annual', MONTHLY: 'monthly' };
       const plans = cur.availablePackages.map(pkg => {
         const t = pkg.packageType || '';
-        const id = typeToId[t] || (pkg.identifier || '').toLowerCase();
+        const id = planIdOf(pkg);
         const prod = pkg.product || {};
         return {
           id,
@@ -145,16 +156,18 @@
     // Offering 未取得なら取りに行く
     if (!lastOffering) { await getPlans(); }
     if (!lastOffering) return { error: 'no_offering' };
-    const typeToId = { ANNUAL: 'annual', MONTHLY: 'monthly' };
-    const pkg = (lastOffering.availablePackages || []).find(p => (typeToId[p.packageType] || '') === planId)
-      || (lastOffering.availablePackages || [])[0];
+    // ⚠️ 一致するパッケージが無いときに先頭へフォールバックしてはいけない
+    //    (月額を選んだのに年額を課金する事故になる)。見つからなければ購入しない。
+    const pkg = (lastOffering.availablePackages || []).find(p => planIdOf(p) === planId);
     if (!pkg) return { error: 'no_package' };
     try {
       const res = await P.purchasePackage({ aPackage: pkg });
       const info = res && res.customerInfo ? res.customerInfo : res;
       const active = entitledFrom(info);
       applyEntitlement(active);
-      return { ok: active };
+      // 決済は通ったがエンタイトルメント反映が遅れている場合(検証遅延・承認待ち)は
+      // 「失敗」ではなく保留として返す(再購入を促さないため)
+      return active ? { ok: true } : { ok: false, pending: true };
     } catch (e) {
       if (e && (e.userCancelled || e.code === '1' || /cancel/i.test(e.message || ''))) return { cancelled: true };
       console.warn('[billing] purchase failed', e);

@@ -9,8 +9,7 @@ import Capacitor
 class KLViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(KLNativePlugin())
-        // Watch連携を組み込む時は KLWatchPlugin.swift をAppターゲットに追加した上で
-        // 次の行のコメントを外す:
-        // bridge?.registerPluginInstance(KLWatchPlugin())
+        // ⚠️ KLWatchPlugin.swift をAppターゲットに追加していない場合はこの行を消すこと(ビルドが通らない)
+        bridge?.registerPluginInstance(KLWatchPlugin())
     }
 }

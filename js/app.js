@@ -1404,12 +1404,13 @@ function toast(msg) {
 }
 window.toast = toast; // cloud.js (通知) から利用
 
-function openModal(html) {
+function openModal(html, opts) {
   closeModal();
   const bg = document.createElement('div');
   bg.className = 'modal-bg'; bg.id = 'modal-bg';
   bg.innerHTML = `<div class="modal">${html}</div>`;
-  bg.addEventListener('click', e => { if (e.target === bg) closeModal(); });
+  // 入口ゲート等の必須モーダルは背景タップで閉じない
+  if (!(opts && opts.persistent)) bg.addEventListener('click', e => { if (e.target === bg) closeModal(); });
   document.body.appendChild(bg);
   return bg;
 }
@@ -1426,14 +1427,14 @@ function pwTermsText() {
   const p = PRO_PLANS.find(x => x.id === pwPlan) || PRO_PLANS[0];
   return `7日間無料 → その後 ${p.price}${p.sub}（${p.label}）。1週間以内に解約・プラン変更しなければ自動で課金されます。`;
 }
-function paywallHtml() {
+function paywallHtml(gate) {
   const feats = [
     ['🧪', '効率シミュレーター', '時間×頻度で"どれだけ変わるか"を予測'],
     ['📋', '自動メニュー生成', '目標・部位・時間からあなた専用に'],
     ['🍽️', '食事プラン', 'PFC最適化・食事ログ・体重ナビ'],
     ['📈', '記録と分析', '成長グラフ・体組成推定・停滞検知'],
     ['📲', 'Apple Health連携', '体重・歩数・睡眠を自動で'],
-    ['🚫', '広告なし・全機能', 'すべての機能をフルに'],
+    ['⌚', 'ウィジェット・Apple Watch', 'ロック画面のタイマーと手首で記録'],
   ];
   const plans = PRO_PLANS.map(p => `<button type="button" class="pw-plan ${p.id === pwPlan ? 'sel' : ''}" data-plan="${p.id}">
     ${p.best ? '<span class="pw-plan-badge">おすすめ</span>' : ''}
@@ -1441,7 +1442,7 @@ function paywallHtml() {
     ${p.per ? `<div class="pw-plan-per">${p.per}</div>` : ''}
   </button>`).join('');
   return `<div class="paywall">
-    <button class="pw-close" onclick="closeModal()" aria-label="閉じる">×</button>
+    ${gate ? '' : '<button class="pw-close" onclick="closeModal()" aria-label="閉じる">×</button>'}
     <div class="pw-hero">
       <div class="pw-badge">全機能</div>
       <h2 class="pw-title">筋トレLABを<br><span>1週間無料</span>で全部使う</h2>
@@ -1457,7 +1458,7 @@ function paywallHtml() {
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
   </div>`;
 }
-function bindPaywall(bg) {
+function bindPaywall(bg, gate) {
   bg.querySelectorAll('[data-plan]').forEach(b => b.addEventListener('click', () => {
     pwPlan = b.dataset.plan;
     bg.querySelectorAll('[data-plan]').forEach(x => x.classList.toggle('sel', x.dataset.plan === pwPlan));
@@ -1470,10 +1471,14 @@ function bindPaywall(bg) {
     const orig = start.textContent; start.disabled = true; start.textContent = '処理中…';
     try {
       const r = await B.purchase(pwPlan);
-      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); }
+      if (r && r.ok) { toast('ご登録ありがとうございます!'); closeModal(); if (gate) route(); }
       else if (r && r.cancelled) { /* ユーザーがキャンセル: 無言で戻す */ }
-      else if (r && r.error === 'no_offering') { toast('商品情報を取得できませんでした。時間をおいて再度お試しください'); }
-      else { toast('購入を完了できませんでした。時間をおいて再度お試しください'); }
+      else if (r && r.pending) { toast('購入手続きを受け付けました。反映まで少しお待ちください'); closeModal(); if (gate) route(); }
+      else if (r && r.error === 'no_offering') {
+        // 商品が取れない=課金できない。ゲートで締め出さず開放する(アプリが使用不能になるのを防ぐ)
+        toast('商品情報を取得できませんでした。時間をおいて再度お試しください');
+        if (gate) { closeModal(); route(); }
+      } else { toast('購入を完了できませんでした。時間をおいて再度お試しください'); }
     } finally { start.disabled = false; start.textContent = orig; }
   });
   const restore = $('#pw-restore', bg);
@@ -1481,7 +1486,7 @@ function bindPaywall(bg) {
     const B = window.__klBilling;
     if (!B || !B.ready()) { toast('購入の復元はApp Store対応後に有効化されます(準備中)'); return; }
     const r = await B.restore();
-    if (r && r.ok) { toast('購入を復元しました'); closeModal(); }
+    if (r && r.ok) { toast('購入を復元しました'); closeModal(); if (gate) route(); }
     else toast('復元できる購入が見つかりませんでした');
   });
   // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
@@ -1499,7 +1504,39 @@ function bindPaywall(bg) {
     }).catch(() => {});
   }
 }
-function openPaywall() { bindPaywall(openModal(paywallHtml())); }
+function openPaywall(gate) { bindPaywall(openModal(paywallHtml(gate), { persistent: !!gate }), gate); }
+
+// ツール画面のProカード。購読中は勧誘せず状態と解約導線を出す(二重課金の誤操作を防ぐ)
+function proCardHtml() {
+  if (!isNativeApp()) return '';
+  if (isPro()) {
+    return `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro 有効中</h2>
+      <p class="card-note" style="margin-top:-2px">全機能をご利用いただけます。プラン変更・解約は<b>App Storeの登録管理</b>から。</p>
+    </div>`;
+  }
+  return `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
+    <p class="card-note" style="margin-top:-2px">全機能・<b style="color:var(--accent)">最初の1週間無料</b>。科学的トレ設計をフルに。</p>
+    <button class="btn" id="open-paywall">プランを見る</button>
+  </div>`;
+}
+
+// ===== 入口ゲート(ハードペイウォール) =====
+// ネイティブかつ未課金なら起動時にペイウォールを出し、購入/復元するまで中に入れない。
+// ⚠️ 課金基盤が使えない状況(プラグイン未導入・キー未設定・商品取得不可・通信断)では
+//    ゲートを出さない/開放する = アプリが永久に使用不能になる事態を防ぐ(審査でも致命的)。
+function proGateNeeded() {
+  if (!isNativeApp() || isPro()) return false;
+  const B = window.__klBilling;
+  return !!(B && B.ready());
+}
+async function maybeShowProGate() {
+  if (!proGateNeeded()) return;
+  // 復帰・再インストール時の取りこぼしを防ぐため、最新の課金状態を取得してから判定する
+  try { const B = window.__klBilling; if (B) await B.refreshEntitlement(); } catch (e) {}
+  if (!proGateNeeded()) return;
+  if ($('#modal-bg')) return;          // 他のモーダル操作中は割り込まない
+  openPaywall(true);
+}
 
 // セグメントボタン生成
 function segHtml(name, options, current, extraCls) {
@@ -4072,10 +4109,7 @@ function renderTools() {
   ];
 
   root.innerHTML = `
-    ${isNativeApp() ? `<div class="card pw-card"><h2>⭐ 筋トレLAB Pro</h2>
-      <p class="card-note" style="margin-top:-2px">全機能・<b style="color:var(--accent)">最初の1週間無料</b>。科学的トレ設計をフルに。</p>
-      <button class="btn" id="open-paywall">プランを見る</button>
-    </div>` : ''}
+    ${proCardHtml()}
     <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
@@ -4550,7 +4584,7 @@ document.addEventListener('visibilitychange', () => {
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
   refreshFromStorage();
-  if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); if (window.__klBilling) window.__klBilling.refreshEntitlement(); } // 復帰でSiri/Spotlight消費+課金状態を再確認
+  if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); maybeShowProGate(); } // 復帰でSiri/Spotlight消費+課金状態を再確認(失効していれば再ゲート)
 });
 
 // ネイティブ: 外部リンク(target=_blank)はOSに委譲(YouTube/Instagram等は対応アプリで開く)
@@ -4576,7 +4610,7 @@ document.addEventListener('DOMContentLoaded', () => {
       refreshReminderSchedule();
       if (loadHealthPref().autoSteps) importHealthWeight(true);
       indexSpotlightExercises();
-      if (window.__klBilling) window.__klBilling.refreshEntitlement(); // 課金状態を同期(configure含む・トライアル満了→自動課金も追従)
+      maybeShowProGate(); // 課金状態を同期(configure含む)し、未課金なら入口ゲートを出す
     }, 1500);
   }
   route();
