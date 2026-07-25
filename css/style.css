@@ -276,6 +276,11 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .today-ex .sd::after { content: ''; position: absolute; inset: -9px; border-radius: 50%; }
 .today-ex .sd.on { background: var(--accent); border-color: var(--accent); }
 .today-ex .sdlabel { font-size: 11.5px; color: var(--ink-dim); font-weight: 700; margin-left: 4px; }
+/* セット数の増減。ドットと同じくタップ判定は44ptに広げる */
+.today-ex .setadj { display: flex; align-items: center; gap: 6px; margin-left: auto; flex: 0 0 auto; }
+.today-ex .setadj-btn { position: relative; width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--surface2); color: var(--ink); font-size: 15px; line-height: 1; font-weight: 700; cursor: pointer; flex: 0 0 auto; }
+.today-ex .setadj-btn::after { content: ''; position: absolute; inset: -8px; border-radius: 50%; }
+.today-ex .setadj-btn:active { background: var(--line); }
 .today-ex .po-hint { font-size: 11.5px; color: var(--ink-dim); margin-top: 5px; line-height: 1.4; }
 .today-ex .po-hint.up { color: var(--accent); font-weight: 700; }
 .today-ex .rir-pick { font-size: 11.5px; color: var(--ink-dim); margin-top: 7px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }

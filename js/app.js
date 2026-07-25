@@ -281,6 +281,9 @@ function updateHealthDisplays() {
   const kcal = steps != null ? stepKcal(steps, w) : 0;
   document.querySelectorAll('[data-step-steps]').forEach(el => { el.textContent = steps != null ? steps.toLocaleString() : '—'; });
   document.querySelectorAll('[data-step-kcal]').forEach(el => { el.textContent = String(kcal); });
+  // 歩数は描画より後に届くので、消費カロリー合計も遅れて埋め直す
+  const burn = todayBurnBreakdown();
+  if (burn) document.querySelectorAll('[data-burn-total]').forEach(el => { el.textContent = burn.total.toLocaleString(); });
   const hk = document.getElementById('hk-steps');
   if (hk && steps != null) hk.textContent = `🚶 今日の歩数: ${steps.toLocaleString()}歩`;
   // 睡眠(端末の無操作から推定・タップで修正)
@@ -296,6 +299,50 @@ function updateHealthDisplays() {
     }
   });
 }
+// 今日の消費カロリー内訳: 基礎代謝 + 生活活動 + 歩数 + 筋トレ(実際に記録したセットから算出)。
+// 歩数が取れない環境では歩数分を 0 として、基礎+生活活動+筋トレのみを積む。
+const LIFE_ACTIVITY_FACTOR = 0.2; // 家事・通勤など「歩数に出ない日常活動」の目安(BMR比)
+function todayBurnBreakdown() {
+  const p = S.profile;
+  if (!p) return null;
+  const today = todayStr();
+  const bmr = Math.round(calcBMR(p.sex, p.w, p.h, p.age));
+  const life = Math.round(bmr * LIFE_ACTIVITY_FACTOR);
+  const steps = (hkTodaySteps.date === today) ? hkTodaySteps.steps : null;
+  const walk = steps != null ? stepKcal(steps, p.w) : 0;
+  // 予定ではなく「実際に記録したセット数」で計算する(やった分だけ加算)
+  const logs = S.logs.filter(l => l.date === today && DB.byId[l.exId]);
+  const restOf = (exId) => {
+    const src = (S.plan ? S.plan.days.flatMap(d => d.items) : []).find(i => i.exId === exId);
+    return src ? src.rest : 60;
+  };
+  const train = logs.length
+    ? sessionBurn(logs.map(l => ({ exId: l.exId, sets: l.sets.length, rest: restOf(l.exId) })), DB.byId, p.w)
+    : 0;
+  return { bmr, life, walk, train, steps, total: bmr + life + walk + train };
+}
+
+function todayBurnCardHtml() {
+  const b = todayBurnBreakdown();
+  if (!b) return '';
+  const parts = [
+    `基礎代謝 <b style="color:var(--ink)">${b.bmr.toLocaleString()}</b>`,
+    `生活活動 <b style="color:var(--ink)">${b.life.toLocaleString()}</b>`,
+  ];
+  if (b.steps != null) parts.push(`歩数(${b.steps.toLocaleString()}歩) <b style="color:var(--ink)">${b.walk.toLocaleString()}</b>`);
+  parts.push(`筋トレ <b style="color:${b.train > 0 ? 'var(--accent)' : 'var(--ink)'}">${b.train.toLocaleString()}</b>`);
+  const note = b.steps == null
+    ? '歩数を足すとより正確になります(記録タブの「Apple Healthと同期」)。'
+    : '筋トレ分はチェックした種目の実セット数から計算しています。';
+  return `<div class="card"><h2>🔥 今日の消費カロリー</h2>
+    <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
+      <span class="big" data-burn-total>${b.total.toLocaleString()}</span><small>kcal</small>
+    </div>
+    <div style="font-size:12.5px;color:var(--ink-dim);line-height:1.9">${parts.join(' ／ ')}</div>
+    <p class="card-note">${note}</p>
+  </div>`;
+}
+
 // ホームの「今日のカラダ」カード(歩数+睡眠推定)。ネイティブ+プロフィールありで表示。歩数はApple Health同期済みのみ
 function healthTodayCardHtml() {
   if (!(isNativeApp() && S.profile)) return '';
@@ -1991,10 +2038,10 @@ function warmupHtml(ex) {
     <p class="card-note" style="margin-top:4px">軽い重量から神経系を起こすとメインの挙上が安定し、ケガ予防にも。休憩は各30〜60秒でOK。</p></div>`;
 }
 
-function openExerciseModal(exId, restSec, planRef) {
+function openExerciseModal(exId, restSec, editTarget) {
   const ex = DB.byId[exId];
   if (!ex) return;
-  const canEdit = planRef && S.plan && S.plan.days[planRef.di] && S.plan.days[planRef.di].items[planRef.ii];
+  const canEdit = !!resolveEditTarget(editTarget); // プラン日・マイメニュー・積み残しのいずれでも変更可
   const bg = openModal(`
     <h2>${esc(ex.name)}</h2>
     <p class="modal-sub">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]} / ${'★'.repeat(ex.level)}${'☆'.repeat(3 - ex.level)} ${ex.compound ? '/ 多関節(コンパウンド)' : '/ 単関節(アイソレーション)'}</p>
@@ -2013,7 +2060,7 @@ function openExerciseModal(exId, restSec, planRef) {
     ${canEdit ? '<button class="btn ghost" id="ex-swap" style="margin-bottom:10px">🔄 別の種目に変える</button>' : ''}
     <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
   const sw = $('#ex-swap', bg);
-  if (sw) sw.addEventListener('click', () => { closeModal(); openPlanExercisePicker(planRef.di, planRef.ii); });
+  if (sw) sw.addEventListener('click', () => { closeModal(); openExercisePicker(editTarget); });
   const yt = $('#ex-yt', bg);
   if (yt) yt.addEventListener('click', () => openYouTubeSearch(exSearchName(ex) + ' フォーム やり方'));
   const tb = $('#ex-timer', bg);
@@ -2270,7 +2317,8 @@ function findCarryover(excludeIds) {
   const day = S.plan.days.find(x => x.weekday === dow);
   if (!day) return [];
   const doneToday = S.dayDone[today] || {};
-  return day.items.filter(it =>
+  const di = S.plan.days.indexOf(day); // 積み残しでも種目変更・セット調整ができるよう出所を持たせる
+  return day.items.map((it, ii) => ({ ...it, _di: di, _ii: ii })).filter(it =>
     DB.byId[it.exId] &&
     !pastLogs.some(l => l.date === lastTrained && l.exId === it.exId) &&
     !excludeIds.has(it.exId) &&
@@ -2709,7 +2757,12 @@ function renderHome() {
     const exRow = (it, isCarry, idx) => {
       const ex = DB.byId[it.exId];
       if (!ex) return '';
-      const planCtx = !ctx.myMenu && !isCarry && idx != null && ctx.idx >= 0; // プラン日の種目=編集可
+      // 編集対象: プラン日・マイメニュー・積み残し(出所の曜日)すべてで種目変更とセット増減を可能にする
+      const editTarget = isCarry
+        ? (it._di != null ? `plan:${it._di}:${it._ii}` : '')
+        : (idx == null ? ''
+          : ctx.myMenu ? (S.myToday ? `my:${S.myToday.id}:${idx}` : '')
+            : (ctx.idx >= 0 ? `plan:${ctx.idx}:${idx}` : ''));
       const de = ddGet(doneMap, it.exId);
       const done = !!(de && de.src === curCtxKey);
       const lastW = S.lastW[it.exId];
@@ -2730,10 +2783,10 @@ function renderHome() {
         <div class="today-ex ${done ? 'done' : ''}" data-ex="${it.exId}">
           <div class="ex-top">
             <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
-            <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${planCtx ? ` data-di="${ctx.idx}" data-ii="${idx}"` : ''}>
+            <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${editTarget ? ` data-edit="${editTarget}"` : ''}>
               <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
               <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it._light ? '<b style="color:var(--accent2)">🪶軽め</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
-              <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span></div>
+              <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span>${editTarget && !done ? `<span class="setadj"><button class="setadj-btn" data-t="${editTarget}" data-ex="${it.exId}" data-d="-1" aria-label="セットを減らす">−</button><button class="setadj-btn" data-t="${editTarget}" data-ex="${it.exId}" data-d="1" aria-label="セットを増やす">＋</button></span>` : ''}</div>
               ${it._light && !done ? `<div class="po-hint">🪶 筋肉痛のため軽め推奨: 重量は前回の6割くらいで丁寧に</div>` : po && po.hint && !done ? (deloadActive && po.up
                 ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
                 : `<div class="po-hint ${po.up ? 'up' : ''}">💡 ${esc(po.hint)}</div>`) : ''}
@@ -2802,6 +2855,7 @@ function renderHome() {
   const homeCards = [
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
+    { id: 'burn', name: '今日の消費カロリー', html: todayBurnCardHtml() },
     { id: 'vol', name: '今週のボリューム・負荷バランス', html: volHtml },
     { id: 'recov', name: '部位の回復状態', html: recovHtml },
     { id: 'deload', name: 'ディロード提案', html: deloadCardHtml() },
@@ -2876,8 +2930,13 @@ function renderHome() {
     chk.addEventListener('change', () => toggleDone(chk.dataset.ex, chk.checked));
   });
   $all('[data-open-ex]', root).forEach(el => {
-    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0,
-      el.dataset.di != null ? { di: Number(el.dataset.di), ii: Number(el.dataset.ii) } : null));
+    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0, el.dataset.edit || null));
+  });
+  $all('.setadj-btn', root).forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation(); // 種目タップ(フォーム解説)を抑止
+      adjustItemSets(b.dataset.t, Number(b.dataset.d), b.dataset.ex);
+    });
   });
   const addEx = $('#home-add-ex', root);
   if (addEx) addEx.addEventListener('click', () => openPlanExercisePicker(Number(addEx.dataset.di), null));
@@ -2924,6 +2983,29 @@ function renderHome() {
     const exId = b.closest('.rir-pick').dataset.ex;
     setExerciseRir(exId, Number(b.dataset.rir));
   }));
+}
+
+// ホーム: その場でセット数を増減(1〜10)。今日だけでなくプラン自体を書き換える。
+// 「軽め」調整で半分表示されていても、書き換えるのは常に元のプラン値。
+const SETS_MIN = 1, SETS_MAX = 10;
+function adjustItemSets(targetStr, delta, exId) {
+  const tg = resolveEditTarget(targetStr);
+  if (!tg || tg.ii == null) return;
+  const item = tg.items[tg.ii];
+  if (!item) return;
+  const next = Math.max(SETS_MIN, Math.min(SETS_MAX, item.sets + delta));
+  if (next === item.sets) { toast(delta > 0 ? `${SETS_MAX}セットが上限です` : `${SETS_MIN}セットが下限です`); return; }
+  item.sets = next;
+  // 減らした結果、記録済みドット数が上限を超えないよう丸める(表示が「4/3セット」になるのを防ぐ)
+  const today = todayStr();
+  if (exId && S.setCount[today]) {
+    Object.keys(S.setCount[today]).forEach(k => {
+      if (k.endsWith('|' + exId) && S.setCount[today][k] > next) S.setCount[today][k] = next;
+    });
+  }
+  if (tg.type === 'plan') recomputePlanDerived();
+  saveState(); route();
+  toast(`${next}セットに変更しました`);
 }
 
 // ホーム: 種目のセット進捗を更新。満了で自動チェック(記録)、以降は休憩タイマーも出す
@@ -3156,7 +3238,7 @@ function renderPlan() {
       day.items.forEach((it, ii) => {
         const ex = DB.byId[it.exId];
         if (!ex) return;
-        html += `<div class="plan-ex" data-open-ex="${it.exId}" data-rest="${it.rest}">
+        html += `<div class="plan-ex" data-open-ex="${it.exId}" data-rest="${it.rest}" data-edit="plan:${di}:${ii}">
           <div><div class="nm">${esc(ex.name)}${it.priority ? '<span class="pri">◆優先</span>' : ''}</div>
           <div class="meta">${esc(SCIENCE.partMap[ex.part].name)} / ${EQUIP_NAMES[ex.equipment]}</div></div>
           <div class="setrep">${it.sets}×${esc(it.reps)}${ex.isometric ? '秒' : ''}<small>休${it.rest}秒</small></div>
@@ -3249,7 +3331,7 @@ function renderPlan() {
   }));
   $all('.add-ex', root).forEach(b => b.addEventListener('click', () => openPlanExercisePicker(Number(b.dataset.di), null)));
   $all('[data-open-ex]', root).forEach(el => {
-    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0));
+    el.addEventListener('click', () => openExerciseModal(el.dataset.openEx, Number(el.dataset.rest) || 0, el.dataset.edit || null));
   });
 }
 
@@ -3317,8 +3399,35 @@ function openPlanItemEditor(di, ii) {
 }
 
 // プラン: 種目を選ぶ(replaceIi=null なら追加、番号指定なら差し替え)
+// 編集対象の解決。'plan:<di>:<ii>' / 'my:<menuId>:<ii>'、ii が 'new' なら末尾に追加。
+// ホーム(プラン日/マイメニュー/積み残し)とプランタブで、種目変更とセット増減の入口を共通化する。
+function resolveEditTarget(t) {
+  if (!t) return null;
+  const [type, a, b] = String(t).split(':');
+  const ii = (b === 'new' || b === '' || b == null) ? null : Number(b);
+  if (type === 'plan') {
+    const day = S.plan && S.plan.days[Number(a)];
+    if (!day) return null;
+    if (ii != null && !day.items[ii]) return null;
+    return { type, items: day.items, ii };
+  }
+  if (type === 'my') {
+    const menu = (S.myMenus || []).find(m => String(m.id) === String(a));
+    if (!menu) return null;
+    if (ii != null && !menu.items[ii]) return null;
+    return { type, items: menu.items, ii };
+  }
+  return null;
+}
+
 function openPlanExercisePicker(di, replaceIi) {
-  if (!S.plan || !S.plan.days[di]) return;
+  openExercisePicker(`plan:${di}:${replaceIi == null ? 'new' : replaceIi}`);
+}
+
+function openExercisePicker(targetStr) {
+  const tg = resolveEditTarget(targetStr);
+  if (!tg) return;
+  const replaceIi = tg.ii;
   const goal = S.profile.goal;
   const partBtns = SCIENCE.parts.map(pt => `<button class="btn ghost small pick-part" data-part="${pt.key}">${esc(pt.name)}</button>`).join('');
   const bg = openModal(`
@@ -3336,7 +3445,7 @@ function openPlanExercisePicker(di, replaceIi) {
     $all('.pick-ex', listEl).forEach(el => el.addEventListener('click', () => {
       const e = DB.byId[el.dataset.id];
       if (!e) return;
-      const base = replaceIi != null ? S.plan.days[di].items[replaceIi] : null;
+      const base = replaceIi != null ? tg.items[replaceIi] : null;
       const newItem = {
         exId: e.id, part: el.dataset.part,
         sets: base ? base.sets : setsFor(goal, false),
@@ -3345,10 +3454,11 @@ function openPlanExercisePicker(di, replaceIi) {
         priority: base ? base.priority : false,
       };
       if (replaceIi != null) {
-        clearTodayPlanCompletion(S.plan.days[di].items[replaceIi].exId); // 差し替え前の種目の当日記録を掃除
-        S.plan.days[di].items[replaceIi] = newItem;
-      } else S.plan.days[di].items.push(newItem);
-      recomputePlanDerived(); saveState(); closeModal();
+        clearTodayPlanCompletion(tg.items[replaceIi].exId); // 差し替え前の種目の当日記録を掃除
+        tg.items[replaceIi] = newItem;
+      } else tg.items.push(newItem);
+      if (tg.type === 'plan') recomputePlanDerived();
+      saveState(); closeModal();
       toast(replaceIi != null ? '種目を変更しました' : '種目を追加しました');
       route();
     }));
