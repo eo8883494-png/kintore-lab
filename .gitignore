@@ -7,3 +7,5 @@ docs/
 # Capacitor / iOS ビルド (node_modules と www/ は生成物。ios/ はMac側で cap add ios 後に別途コミット)
 node_modules/
 www/
+.DS_Store
+.DS_Store
