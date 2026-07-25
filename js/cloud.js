@@ -418,6 +418,22 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timer]).finally(() => clearTimeout(t));
 }
 
+// 資格情報→Firebase の交換。初回サインインはアカウント作成を伴うぶん遅く、
+// 15秒では間に合わずに失敗することがあった(2回目以降は成功する = 一過性)。
+// タイムアウトを伸ばしたうえで、ユーザーのキャンセル以外は一度だけ自動で再試行する。
+const CRED_TIMEOUT_MS = 30000;
+function isCanceled(e) { return /cancel/i.test(String((e && (e.code || e.message)) || e)); }
+async function exchangeCredential(cred, label) {
+  try {
+    return await withTimeout(signInWithCredential(auth, cred), CRED_TIMEOUT_MS, label);
+  } catch (e) {
+    if (isCanceled(e)) throw e;
+    console.warn('[cloud] ' + label + ' failed, retrying once:', e);
+    await new Promise(r => setTimeout(r, 800));
+    return await withTimeout(signInWithCredential(auth, cred), CRED_TIMEOUT_MS, label + '(再試行)');
+  }
+}
+
 async function nativeGoogleSignIn() {
   const FA = nativeAuthPlugin();
   if (!FA) throw new Error('ネイティブ認証プラグインが見つかりません');
@@ -426,8 +442,7 @@ async function nativeGoogleSignIn() {
   console.log('[cloud] google native cred: idToken=' + !!cr.idToken + ' accessToken=' + !!cr.accessToken);
   if (!cr.idToken) throw new Error('Googleの資格情報を取得できませんでした');
   const cred = GoogleAuthProvider.credential(cr.idToken, cr.accessToken || undefined);
-  console.log('[cloud] signInWithCredential start (google)');
-  const uc = await withTimeout(signInWithCredential(auth, cred), 15000, 'signInWithCredential');
+  const uc = await exchangeCredential(cred, 'signInWithCredential(google)');
   console.log('[cloud] signInWithCredential OK uid=' + (uc && uc.user && uc.user.uid));
   return uc;
 }
@@ -440,8 +455,27 @@ async function nativeAppleSignIn() {
   if (!cr.idToken) throw new Error('Appleの資格情報を取得できませんでした');
   const provider = new OAuthProvider('apple.com');
   const cred = provider.credential({ idToken: cr.idToken, rawNonce: cr.nonce });
-  const uc = await withTimeout(signInWithCredential(auth, cred), 15000, 'signInWithCredential');
+  const uc = await exchangeCredential(cred, 'signInWithCredential(apple)');
+  console.log('[cloud] apple signIn OK uid=' + (uc && uc.user && uc.user.uid));
   return uc;
+}
+
+// ネイティブのサインイン実行。連打による二重実行を防ぎ、進行中と結果をユーザーに伝える。
+// キャンセルは失敗ではないので何も出さない。
+let signInBusy = false;
+function runSignIn(fn, label) {
+  if (signInBusy) return;
+  signInBusy = true;
+  const toast = (m) => { try { if (typeof window.toast === 'function') window.toast(m); } catch (e) {} };
+  toast(label + 'でサインインしています…');
+  fn().then(() => {
+    toast('サインインしました');
+  }).catch(err => {
+    const msg = (err && (err.code || err.message)) || String(err);
+    console.warn('[cloud] native ' + label + ' signIn failed', msg, err);
+    if (isCanceled(err)) return;
+    alert(label + 'でサインインできませんでした。\n通信環境をご確認のうえ、もう一度お試しください。\n\n(' + msg + ')');
+  }).finally(() => { signInBusy = false; });
 }
 
 // ===== 公開API (app.js から利用) =====
@@ -462,11 +496,7 @@ window.__klCloud = {
   signIn() {
     if (!auth) { alert('この環境では同期を利用できません。'); return; }
     if (isNative()) {
-      nativeGoogleSignIn().catch(err => {
-        const msg = (err && (err.code || err.message)) || String(err);
-        console.warn('[cloud] native google signIn failed', msg, err);
-        if (!String(msg).includes('canceled')) alert('Googleログイン失敗: ' + msg);
-      });
+      runSignIn(nativeGoogleSignIn, 'Google');
       return;
     }
     const provider = new GoogleAuthProvider();
@@ -482,11 +512,7 @@ window.__klCloud = {
   signInApple() {
     if (!auth) { alert('この環境では同期を利用できません。'); return; }
     if (isNative()) {
-      nativeAppleSignIn().catch(err => {
-        const msg = (err && (err.code || err.message)) || String(err);
-        console.warn('[cloud] native apple signIn failed', msg, err);
-        if (!String(msg).includes('canceled')) alert('Appleログイン失敗: ' + msg);
-      });
+      runSignIn(nativeAppleSignIn, 'Apple');
       return;
     }
     const provider = new OAuthProvider('apple.com');
