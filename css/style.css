@@ -320,6 +320,15 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 
 canvas.chart { width: 100%; height: 180px; display: block; }
 
+/* 食事ログの削除ボタン: .del は .log-entry 配下にしか定義が無く、素のままだと 9x19px で
+   ほぼ押せなかった。トレ中の操作なので確実に押せるサイズを確保する(HIG 44pt目安) */
+.meal-item .fl-del {
+  flex: 0 0 auto; min-width: 40px; height: 40px; margin-left: 4px;
+  background: none; border: none; color: var(--danger); font-size: 15px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.meal-item .fl-del:active { background: var(--surface2); border-radius: 10px; }
+
 /* 共通の小アイコンボタン(タップ領域を確保・見た目を統一) */
 .icon-btn-sm { flex: 0 0 auto; width: 38px; height: 38px; border-radius: 10px; background: var(--surface2); border: 1px solid var(--line); color: var(--ink); font-size: 16px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .icon-btn-sm:active { background: var(--accent); color: var(--accent-ink); }
