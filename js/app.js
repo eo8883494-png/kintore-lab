@@ -499,7 +499,19 @@ function onboardCardHtml() {
 // ===== おまかせ(回復ベース) =====
 // 曜日で決めたプランが崩れた人・不定期な人でも、開けば今日やるものが出るようにする。
 // 生成結果は既存のマイメニュー機構(S.myToday)に載せるので、記録やWatch連携はそのまま動く。
-const OMAKASE_ID = -1;   // 予約ID。ユーザーが作るマイメニュー(正のID)と衝突しない
+// おまかせは「その日だけの提案」であって保存物ではないので、マイメニュー(S.myMenus)には
+// 入れない。入れると①一覧に並んで邪魔②20件上限を圧迫③sanitizeStateが負のIDを振り直して
+// 実行中のメニューを見失う、という問題が起きる。端末内の一時領域に日付付きで置く。
+const OMAKASE_KEY = 'kintoreLab.omakase';
+function loadOmakase() {
+  try {
+    const o = JSON.parse(localStorage.getItem(OMAKASE_KEY) || 'null');
+    if (o && o.date === todayStr() && Array.isArray(o.items) && o.items.length) return o;
+  } catch (e) {}
+  return null;
+}
+function saveOmakase(o) { try { localStorage.setItem(OMAKASE_KEY, JSON.stringify(o)); } catch (e) {} }
+function clearOmakase() { try { localStorage.removeItem(OMAKASE_KEY); } catch (e) {} }
 function omakaseCardHtml() {
   if (!S.profile || !S.plan) return '';
   const ctx = todayPlanContext();
@@ -522,12 +534,12 @@ function omakaseCardHtml() {
 function startOmakase() {
   const menu = generateTodayMenu(DB, S.profile, S.focus, S.profile.minutes, Date.now() % 1e9);
   if (!menu || !menu.items.length) { toast('今日おすすめできる部位がありません(回復待ち)'); return; }
-  S.myMenus = (S.myMenus || []).filter(m => m.id !== OMAKASE_ID);
-  S.myMenus.push({ id: OMAKASE_ID, name: menu.name, items: menu.items });
-  S.myToday = { date: todayStr(), id: OMAKASE_ID };
+  S.myToday = null;                                   // 通常のマイメニュー実行中なら解除する
+  saveOmakase({ date: todayStr(), name: menu.name, items: menu.items });
   saveState(); route();
   toast('おまかせメニューを作りました');
 }
+function stopOmakase() { clearOmakase(); route(); toast('通常のメニューに戻しました'); }
 
 // ===== サボり検知と煽り =====
 // 最後にトレした日からの空き日数。1日も記録が無ければ null(始めていない人は煽らない)。
@@ -2745,6 +2757,12 @@ function findCarryover(excludeIds) {
 // 今日実施すべきメニュー (マイメニュー・振替・積み残し込み)
 function todayPlanContext() {
   const today = todayStr();
+  // おまかせ(その日限りの提案)を最優先。翌日になれば loadOmakase が null を返して自然に消える
+  const om = loadOmakase();
+  if (om) {
+    return { day: { name: om.name, weekday: new Date().getDay(), items: om.items, minutes: dayMinutes(om.items) },
+      idx: -1, swapped: false, carry: [], myMenu: true, omakase: true };
+  }
   if (S.myToday && S.myToday.date === today) {
     const menu = S.myMenus.find(m => m.id === S.myToday.id);
     if (menu) {
@@ -3176,8 +3194,9 @@ function renderHome() {
       const editTarget = isCarry
         ? (it._di != null ? `plan:${it._di}:${it._ii}` : '')
         : (idx == null ? ''
-          : ctx.myMenu ? (S.myToday ? `my:${S.myToday.id}:${idx}` : '')
-            : (ctx.idx >= 0 ? `plan:${ctx.idx}:${idx}` : ''));
+          : ctx.omakase ? `om::${idx}`
+            : ctx.myMenu ? (S.myToday ? `my:${S.myToday.id}:${idx}` : '')
+              : (ctx.idx >= 0 ? `plan:${ctx.idx}:${idx}` : ''));
       const de = ddGet(doneMap, it.exId);
       const done = !!(de && de.src === curCtxKey);
       const lastW = S.lastW[it.exId];
@@ -3356,6 +3375,7 @@ function renderHome() {
   });
   const myUndo = $('#mymenu-undo', root);
   if (myUndo) myUndo.addEventListener('click', () => {
+    clearOmakase();               // おまかせ実行中ならそれも解除する
     S.myToday = null; saveState(); renderHome();
   });
   const restStart = $('#rest-start', root);
@@ -3448,6 +3468,7 @@ function adjustItemSets(targetStr, delta, exId) {
     });
   }
   if (tg.type === 'plan') recomputePlanDerived();
+  if (tg.type === 'om') saveOmakase(tg._om);   // おまかせは端末内の一時領域に書き戻す
   saveState(); route();
   toast(`${next}セットに変更しました`);
 }
@@ -3482,6 +3503,7 @@ function openRestPicker(targetStr) {
     if (!t2 || t2.ii == null || !t2.items[t2.ii]) { closeModal(); return; }
     t2.items[t2.ii].rest = v;
     if (t2.type === 'plan') recomputePlanDerived();
+    if (t2.type === 'om') saveOmakase(t2._om);
     saveState(); closeModal(); route();
     toast(`休憩を${v}秒にしました`);
   }));
@@ -3896,6 +3918,12 @@ function resolveEditTarget(t) {
     if (ii != null && !menu.items[ii]) return null;
     return { type, items: menu.items, ii };
   }
+  if (type === 'om') {                 // おまかせ(端末内の一時メニュー)
+    const om = loadOmakase();
+    if (!om) return null;
+    if (ii != null && !om.items[ii]) return null;
+    return { type, items: om.items, ii, _om: om };
+  }
   return null;
 }
 
@@ -3937,6 +3965,7 @@ function openExercisePicker(targetStr) {
         tg.items[replaceIi] = newItem;
       } else tg.items.push(newItem);
       if (tg.type === 'plan') recomputePlanDerived();
+      if (tg.type === 'om') saveOmakase(tg._om);
       saveState(); closeModal();
       toast(replaceIi != null ? '種目を変更しました' : '種目を追加しました');
       route();

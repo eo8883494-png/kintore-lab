@@ -280,8 +280,10 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .today-ex .sd.on { background: var(--accent); border-color: var(--accent); }
 .today-ex .sdlabel { font-size: 11.5px; color: var(--ink-dim); font-weight: 700; margin-left: 4px; }
 /* 休憩秒数は表示そのものを押させる(行にボタンを足さずに変更できるように) */
-.today-ex .rest-edit { font: inherit; color: var(--accent2, #4ed9f1); padding: 4px 2px; margin: -4px 0;
+.today-ex .rest-edit { position: relative; font: inherit; color: var(--accent2, #4ed9f1); padding: 4px 2px; margin: -4px 0;
   border-bottom: 1px dashed currentColor; cursor: pointer; }
+/* 文字は小さいままタップ判定だけ広げる(トレ中の誤タップと押しにくさを避ける) */
+.today-ex .rest-edit::after { content: ''; position: absolute; inset: -12px -8px; }
 /* 診断結果。長い行は折り返して、狭い画面でも横スクロールさせない */
 .diag { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.7;
   white-space: pre-wrap; word-break: break-word; background: var(--surface2); border: 1px solid var(--line);
