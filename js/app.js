@@ -123,7 +123,7 @@ async function importHealthWeight(silent) {
     // 心拍・活動カロリーはApple Watch連携用。名称が非対応の環境では例外になるので、
     // まず全部入りで頼み、弾かれたら従来の最小構成で取り直す(体重同期を落とさない)。
     try {
-      try { await H.requestAuthorization({ read: ['steps', 'weight', 'active-calories', 'resting-heart-rate'], write: ['weight'] }); }
+      try { await H.requestAuthorization({ read: ['steps', 'weight', 'calories', 'restingHeartRate'], write: ['weight'] }); }
       catch (e) { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
     }
     catch (e) { console.warn('[health] auth denied', e); if (!silent) toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
@@ -185,16 +185,36 @@ function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSO
 let hkTodaySteps = { date: '', steps: null };
 // 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
 // ===== Apple Watch 由来の指標(活動カロリー・安静時心拍) =====
-// dataType の綴りはプラグイン/OSで揺れるため候補を順に試し、どれも取れなければ null。
+// dataType は @capgo/capacitor-health の HealthDataType に合わせる。
+// 'calories' = アクティブエネルギー(kilocalorie)、'restingHeartRate' = 安静時心拍(bpm)。
 // 取れない環境では関連UIを丸ごと出さないので、機能が無い端末でも表示が壊れない。
-const HK_ACTIVE_KCAL = ['active-calories', 'activeCaloriesBurned', 'activeEnergyBurned', 'calories', 'active_energy'];
-const HK_RESTING_HR = ['resting-heart-rate', 'restingHeartRate', 'resting_heart_rate'];
+const HK_ACTIVE_KCAL = ['calories'];
+const HK_RESTING_HR = ['restingHeartRate'];
+// 合計値の取得。iPhoneとWatchの両方が同じ指標を記録するため、単純合算だと二重計上になる。
+// 歩数と同じく集計APIを優先し、使えなければソース別に合計して最大の1つだけ採る。
 async function hkSum(H, types, startISO, endISO) {
   for (const dataType of types) {
+    const opts = { dataType, startDate: startISO, endDate: endISO };
     try {
-      const r = await H.readSamples({ dataType, startDate: startISO, endDate: endISO });
+      if (H.queryAggregated) {
+        const r = await H.queryAggregated({ ...opts, bucket: 'day' });
+        const rows = (r && (r.aggregatedData || r.samples || r.aggregations)) || [];
+        const total = rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+        if (total > 0) return total;
+      }
+    } catch (e) { /* 集計API非対応 → フォールバック */ }
+    try {
+      const r = await H.readSamples(opts);
       const rows = (r && r.samples) || [];
-      if (rows.length) return rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+      if (rows.length) {
+        const bySource = new Map();
+        rows.forEach(x => {
+          const src = x.sourceId || x.sourceName || 'unknown';
+          bySource.set(src, (bySource.get(src) || 0) + (Number(x.value) || 0));
+        });
+        const total = Math.max(...bySource.values());
+        if (total > 0) return total;
+      }
     } catch (e) { /* 次の候補へ */ }
   }
   return null;
