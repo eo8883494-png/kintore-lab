@@ -3167,7 +3167,7 @@ function renderHome() {
             <input type="checkbox" class="done-chk" data-ex="${it.exId}" ${done ? 'checked' : ''}>
             <div class="info" data-open-ex="${it.exId}" data-rest="${it.rest}"${editTarget ? ` data-edit="${editTarget}"` : ''}>
               <div class="nm">${esc(ex.name)}${it.priority ? '<span style="color:var(--accent)"> ◆</span>' : ''}</div>
-              <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it._light ? '<b style="color:var(--accent2)">🪶軽め</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / 休憩${it.rest}秒</div>
+              <div class="meta">${isCarry ? '<b style="color:var(--warn)">⏳前回の積み残し</b> / ' : ''}${it._light ? '<b style="color:var(--accent2)">🪶軽め</b> / ' : ''}目標 ${esc(it.reps)}${unit} × ${it.sets}セット / ${editTarget ? `<button class="rest-edit" data-t="${editTarget}">休憩${it.rest}秒 ✎</button>` : `休憩${it.rest}秒`}</div>
               <div class="setdots" data-ex="${it.exId}">${dots}<span class="sdlabel">${cnt}/${it.sets}セット${done ? ' ✓' : ''}</span>${editTarget && !done ? `<span class="setadj"><button class="setadj-btn" data-t="${editTarget}" data-ex="${it.exId}" data-d="-1" aria-label="セットを減らす">−</button><button class="setadj-btn" data-t="${editTarget}" data-ex="${it.exId}" data-d="1" aria-label="セットを増やす">＋</button></span>` : ''}</div>
               ${it._light && !done ? `<div class="po-hint">🪶 筋肉痛のため軽め推奨: 重量は前回の6割くらいで丁寧に</div>` : po && po.hint && !done ? (deloadActive && po.up
                 ? `<div class="po-hint">💡 今週はディロード推奨。重量は据え置きでOK</div>`
@@ -3343,6 +3343,9 @@ function renderHome() {
       adjustItemSets(b.dataset.t, Number(b.dataset.d), b.dataset.ex);
     });
   });
+  $all('.rest-edit', root).forEach(b => {
+    b.addEventListener('click', e => { e.stopPropagation(); openRestPicker(b.dataset.t); });
+  });
   const addEx = $('#home-add-ex', root);
   if (addEx) addEx.addEventListener('click', () => openPlanExercisePicker(Number(addEx.dataset.di), null));
   $all('.rc-chk', root).forEach(chk => {
@@ -3411,6 +3414,41 @@ function adjustItemSets(targetStr, delta, exId) {
   if (tg.type === 'plan') recomputePlanDerived();
   saveState(); route();
   toast(`${next}セットに変更しました`);
+}
+
+// ホーム: 休憩時間の変更。ボタンを増やすと行がごちゃつくので、表示中の「休憩◯秒」自体を
+// 押させて選ばせる。目的別の目安を添えて、短くする判断ができるようにする。
+const REST_CHOICES = [
+  [30, '循環・時短'],
+  [45, '引き締め'],
+  [60, '標準'],
+  [90, '筋肥大'],
+  [120, '筋肥大〜筋力'],
+  [180, '高重量・筋力'],
+];
+function openRestPicker(targetStr) {
+  const tg = resolveEditTarget(targetStr);
+  if (!tg || tg.ii == null) return;
+  const item = tg.items[tg.ii];
+  if (!item) return;
+  const ex = DB.byId[item.exId];
+  const btns = REST_CHOICES.map(([s, label]) =>
+    `<button class="btn ${s === item.rest ? '' : 'ghost'} rest-pick" data-s="${s}" style="justify-content:space-between">
+      <span>${s}秒</span><small style="opacity:.7">${esc(label)}</small></button>`).join('');
+  const bg = openModal(`<h2>休憩時間</h2>
+    <p class="modal-sub">${ex ? esc(ex.name) : ''}</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">${btns}</div>
+    <p class="card-note">短いほど心肺と時短向き、長いほど高重量を扱えます。迷ったら60〜90秒。</p>
+    <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  $all('.rest-pick', bg).forEach(b => b.addEventListener('click', () => {
+    const v = Number(b.dataset.s);
+    const t2 = resolveEditTarget(targetStr);            // モーダル表示中に変わっている可能性に備えて取り直す
+    if (!t2 || t2.ii == null || !t2.items[t2.ii]) { closeModal(); return; }
+    t2.items[t2.ii].rest = v;
+    if (t2.type === 'plan') recomputePlanDerived();
+    saveState(); closeModal(); route();
+    toast(`休憩を${v}秒にしました`);
+  }));
 }
 
 // ホーム: 種目のセット進捗を更新。満了で自動チェック(記録)、以降は休憩タイマーも出す
