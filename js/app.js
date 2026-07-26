@@ -635,6 +635,11 @@ function slackCardHtml() {
 async function openHealthDiag() {
   const H = healthPlugin();
   const L = [];
+  // どのビルドで動いているかを最初に出す。修正が入っていない古いビルドの結果を
+  // 見て原因を誤判断しないため(実際に一度それで往復した)。
+  let asset = '?';
+  try { asset = (document.querySelector('script[src*="app.js"]').src.match(/[?&]v=(\d+)/) || [])[1] || '?'; } catch (e) {}
+  L.push(`アプリ資産: v${asset}`);
   L.push(`プラグイン: ${H ? 'あり' : '無し(ネイティブ未導入)'}`);
   if (!H) { openModal(`<h2>🩺 ヘルスケア診断</h2><pre class="diag">${esc(L.join('\n'))}</pre><button class="btn ghost" onclick="closeModal()">閉じる</button>`); return; }
   try { const v = await H.getPluginVersion(); L.push(`バージョン: ${v && v.version}`); } catch (e) { L.push('バージョン: 取得不可'); }
@@ -658,7 +663,8 @@ async function openHealthDiag() {
   L.push('', '— 実データ —');
   for (const dataType of want) {
     try {
-      const r = await H.readSamples({ dataType, startDate: from, endDate: now.toISOString() });
+      // 本体と同じ上限で読む(既定100のままだと実際の取得件数とズレて誤診のもとになる)
+      const r = await H.readSamples({ dataType, startDate: from, endDate: now.toISOString(), limit: HK_SAMPLE_LIMIT });
       const rows = (r && r.samples) || [];
       const last = rows.length ? rows[rows.length - 1] : null;
       L.push(`${dataType}: ${rows.length}件` + (last ? ` (最新 ${Math.round(Number(last.value) * 10) / 10}${last.unit || ''})` : ''));
