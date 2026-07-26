@@ -535,7 +535,9 @@ function cardioTargetMin() {
   return Math.round(CARDIO_WEEK_MIN / days / 5) * 5;
 }
 function cardioCardHtml() {
-  if (!S.profile || S.profile.goal !== 'diet') return '';   // 減量目的の人にだけ出す
+  // 「引き締め・減量」と「健康・体力維持」の人に出す。週150分は元々が健康指標なので後者にも合う。
+  // 筋肥大・筋力の人には出さない(増量期の有酸素は狙いと相反しやすいため)。
+  if (!S.profile || (S.profile.goal !== 'diet' && S.profile.goal !== 'fit')) return '';
   const w = S.profile.w;
   const doneMin = cardioToday().reduce((a, r) => a + r.min, 0);
   const target = cardioTargetMin();
