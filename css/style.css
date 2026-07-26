@@ -287,6 +287,9 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
   white-space: pre-wrap; word-break: break-word; background: var(--surface2); border: 1px solid var(--line);
   border-radius: 10px; padding: 12px; margin-bottom: 12px; max-height: 46vh; overflow: auto; }
 
+/* おまかせ(回復ベース)。曜日プランの代替案なので、主張は控えめにする */
+.omakase-card { border-color: var(--accent2, #4ed9f1); }
+
 /* 初回ガイド。押せる行として見せ、済んだものは沈ませる */
 .onboard-card { border-color: var(--accent); }
 .onboard-card .ob-steps { display: flex; flex-direction: column; gap: 8px; }

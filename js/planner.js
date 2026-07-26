@@ -183,6 +183,83 @@ function dayMinutes(items) {
   return Math.round(items.reduce((s, it) => s + exMinutes(it), 0) + SCIENCE.warmupMin);
 }
 
+// ===== おまかせ(回復ベース) =====
+// 曜日で決め打ちせず「今日の体の状態」からやる部位を選ぶ。
+// 予定が崩れやすい人や不定期な人でも、開けば今日やるべきものが出るようにするため。
+//
+// 優先度 = 回復済みか + 今週まだ足りているか + 鍛えたい部位か
+// 回復していない部位は候補から外す(超回復を待つのがこのアプリの前提のため)。
+function suggestTodayParts(logs, exDb, profile, focus, excluded) {
+  const recov = {};
+  recoveryStatus(logs, exDb).forEach(r => { recov[r.part] = r; });
+
+  // 今週すでに何セットやったか(部位別)
+  const today = todayStr();
+  const dow = (new Date(today + 'T12:00:00').getDay() + 6) % 7;
+  const monday = dateAdd(today, -dow);
+  const weekDays = new Set(Array.from({ length: 7 }, (_, i) => dateAdd(monday, i)));
+  const doneSets = {};
+  (logs || []).forEach(l => {
+    if (!weekDays.has(l.date)) return;
+    const ex = exDb[l.exId];
+    if (!ex) return;
+    doneSets[ex.part] = (doneSets[ex.part] || 0) + ((l.sets || []).length || 0);
+  });
+
+  const scored = SCIENCE.parts.filter(p => !(excluded || {})[p.key]).map(p => {
+    const r = recov[p.key] || { state: 'fresh', remainH: 0 };
+    const done = doneSets[p.key] || 0;
+    const short = Math.max(0, p.optMin - done);      // 今週あと何セット足りないか
+    let score = short * 10;                          // 足りない部位ほど優先
+    if (r.state === 'fresh') score += 25;            // 一度もやっていない部位は最優先で拾う
+    else if (r.state === 'ready') score += 20;
+    else if (r.state === 'almost') score += 5;
+    if ((focus || {})[p.key]) score += 15;           // 本人が鍛えたい部位
+    return { part: p.key, name: p.name, state: r.state, remainH: r.remainH, done, short, score };
+  });
+
+  // 回復していない部位は選ばない。全部回復中なら、残り時間が短い順に上から拾う
+  const ready = scored.filter(s => s.state === 'ready' || s.state === 'fresh');
+  const pool = ready.length ? ready : scored.slice().sort((a, b) => a.remainH - b.remainH).slice(0, 2);
+  return pool.sort((a, b) => b.score - a.score);
+}
+
+// おまかせメニューを1日ぶん組む。使える時間に収まるまで、優先度の高い部位から種目を足す。
+function generateTodayMenu(db, profile, focus, minutes, seed) {
+  const excluded = (typeof S !== 'undefined' && S && S.exclude) ? S.exclude : {};
+  const ranked = suggestTodayParts((typeof S !== 'undefined' && S ? S.logs : []) || [], db.byId, profile, focus, excluded);
+  if (!ranked.length) return null;
+  const rng = mulberry32(seed || 1);
+  const budget = Math.max(10, minutes || profile.minutes);
+  const items = [];
+  const used = new Set();
+  // 上位3部位までを対象に、優先度順で1種目ずつ足していく(1部位に偏らせない)
+  const targets = ranked.slice(0, 3);
+  for (let round = 0; round < 3; round++) {
+    for (const t of targets) {
+      const pool = exercisePool(db, t.part, profile.env, profile.level, profile.gear).filter(e => !used.has(e.id));
+      if (!pool.length) continue;
+      // 1周目は多関節(効率が良い)を優先し、2周目以降は単関節で補う
+      const pref = round === 0 ? pool.filter(e => e.compound) : pool.filter(e => !e.compound);
+      const cand = (pref.length ? pref : pool);
+      const ex = cand[Math.floor(rng() * cand.length)];
+      const item = {
+        exId: ex.id, part: t.part,
+        sets: setsFor(profile.goal, !!(focus || {})[t.part]),
+        reps: repsFor(ex, profile.goal),
+        rest: restFor(ex, profile.goal),
+        priority: !!(focus || {})[t.part],
+      };
+      if (dayMinutes([...items, item]) > budget) continue;  // 時間に入らない種目は飛ばす
+      items.push(item); used.add(ex.id);
+    }
+    if (dayMinutes(items) >= budget * 0.85) break;
+  }
+  if (!items.length) return null;
+  const names = [...new Set(items.map(i => SCIENCE.partMap[i.part].name))];
+  return { name: 'おまかせ(' + names.join('・') + ')', items, ranked: targets };
+}
+
 // メニュー生成本体
 // profile: {days, minutes, env, level, goal}, focus: {part: 'grow'|'tone'}, seed: number
 function generatePlan(db, profile, focus, seed) {

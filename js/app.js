@@ -496,6 +496,39 @@ function onboardCardHtml() {
   </div>`;
 }
 
+// ===== おまかせ(回復ベース) =====
+// 曜日で決めたプランが崩れた人・不定期な人でも、開けば今日やるものが出るようにする。
+// 生成結果は既存のマイメニュー機構(S.myToday)に載せるので、記録やWatch連携はそのまま動く。
+const OMAKASE_ID = -1;   // 予約ID。ユーザーが作るマイメニュー(正のID)と衝突しない
+function omakaseCardHtml() {
+  if (!S.profile || !S.plan) return '';
+  const ctx = todayPlanContext();
+  if (ctx.myMenu) return '';                       // すでにマイメニュー実行中なら出さない
+  if (S.logs.some(l => l.date === todayStr())) return ''; // 今日もう記録があれば不要
+  const ranked = suggestTodayParts(S.logs, DB.byId, S.profile, S.focus, S.exclude);
+  if (!ranked.length) return '';
+  const top = ranked.slice(0, 3).filter(r => r.state === 'ready' || r.state === 'fresh');
+  if (!top.length) return '';                      // 全部回復中の日は勧めない(休むべき日)
+  const isRest = !ctx.day;
+  const names = top.map(r => r.name).join('・');
+  const why = top[0].short > 0 ? `今週あと${top[0].short}セット足りていません` : '回復が済んでいます';
+  return `<div class="card omakase-card">
+    <h2>🎲 今日のおすすめ<span class="sub">${isRest ? '休息日ですが' : '別案'}</span></h2>
+    <p style="font-size:13.5px;margin-bottom:6px"><b style="color:var(--accent)">${esc(names)}</b> が狙い目です。</p>
+    <p style="font-size:12px;color:var(--ink-dim);margin-bottom:10px">${esc(top[0].name)}は${esc(why)}。回復した部位から、今週の不足ぶんを優先して選んでいます。</p>
+    <button class="btn ghost small" id="omakase-go" style="width:100%">この内容でメニューを作る</button>
+  </div>`;
+}
+function startOmakase() {
+  const menu = generateTodayMenu(DB, S.profile, S.focus, S.profile.minutes, Date.now() % 1e9);
+  if (!menu || !menu.items.length) { toast('今日おすすめできる部位がありません(回復待ち)'); return; }
+  S.myMenus = (S.myMenus || []).filter(m => m.id !== OMAKASE_ID);
+  S.myMenus.push({ id: OMAKASE_ID, name: menu.name, items: menu.items });
+  S.myToday = { date: todayStr(), id: OMAKASE_ID };
+  saveState(); route();
+  toast('おまかせメニューを作りました');
+}
+
 // ===== サボり検知と煽り =====
 // 最後にトレした日からの空き日数。1日も記録が無ければ null(始めていない人は煽らない)。
 function daysSinceLastTraining() {
@@ -3237,6 +3270,7 @@ function renderHome() {
   const homeCards = [
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
     { id: 'onboard', name: 'はじめの3ステップ', html: onboardCardHtml() },
+    { id: 'omakase', name: '今日のおすすめ(回復ベース)', html: omakaseCardHtml() },
     { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
     { id: 'burn', name: '今日の消費カロリー', html: todayBurnCardHtml() },
@@ -3271,6 +3305,8 @@ function renderHome() {
       else toast('今日は休息日です。プランで曜日を確認できます');
     } else location.hash = '#' + act;
   }));
+  const omk = $('#omakase-go', root);
+  if (omk) omk.addEventListener('click', startOmakase);
   const obHide = $('#ob-hide', root);
   if (obHide) obHide.addEventListener('click', () => {
     const o = loadOnboard(); o.hidden = true; saveOnboard(o);
