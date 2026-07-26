@@ -496,6 +496,26 @@ function readyPartNames() {
   } catch (e) { return []; }
 }
 
+// 今日がトレ日なのに未実施のまま夜になった時の駆け込み通知。
+// 「明日から」で流れるのを防ぐのが狙いなので、残り時間を具体的に出す。
+const TONIGHT_FROM_HOUR = 20;   // 20時(残り4時間)から出す
+function tonightNudge(now) {
+  if (!S.profile) return null;
+  const today = todayStr();
+  if (S.logs.some(l => l.date === today)) return null;   // 今日もう記録がある人には出さない
+  const ctx = todayPlanContext();
+  if (!ctx.day) return null;                             // 休息日は出さない
+  const d = now || new Date();
+  if (d.getHours() < TONIGHT_FROM_HOUR) return null;
+  return { left: 24 - d.getHours(), name: ctx.day.name };
+}
+const TONIGHT_LINES = [
+  ['今日はサボりですか？', '日付が変わるまであと{h}時間。10分でも今日のうちに'],
+  ['まだ今日は終わってません', 'あと{h}時間あります。1種目だけでも記録を残しましょう'],
+  ['このままだと今日はゼロです', 'あと{h}時間。軽くでもやれば「やった日」になります'],
+  ['駆け込み、間に合います', 'あと{h}時間。短縮でも記録は記録です'],
+];
+
 // 空き日数ごとの煽り文。日替わりで1つ選ぶ(同じ日に何度開いても文言は変わらない)。
 // 責める一方にならないよう、必ず「今日できる小さな一歩」を添える。
 const SLACK_LINES = {
@@ -544,6 +564,20 @@ function slackStatus() {
 }
 
 function slackCardHtml() {
+  // 「今日がトレ日で、まだやっていなくて、もうすぐ日が変わる」が最優先。
+  // 過去のサボりより、今日まだ取り返せる方が行動につながるため。
+  const tn = tonightNudge();
+  if (tn) {
+    const seed = Math.floor(new Date(todayStr() + 'T12:00:00').getTime() / 86400000);
+    const [t, s] = TONIGHT_LINES[((seed % TONIGHT_LINES.length) + TONIGHT_LINES.length) % TONIGHT_LINES.length];
+    const missed = missedPlanDays();
+    return `<div class="card slack-card tonight">
+      <h2>⏳ ${esc(t)}<span class="sub">残り${tn.left}時間</span></h2>
+      <p style="font-size:13.5px;margin-bottom:10px">${esc(s.replace('{h}', tn.left))}</p>
+      <p style="font-size:12.5px;color:var(--accent);margin:-4px 0 10px">📋 今日は「${esc(tn.name)}」の日${missed > 0 ? `・すでに予定を${missed}回パス中` : ''}</p>
+      <button class="btn ghost small" id="slack-go" style="width:100%">💪 今日のメニューを見る</button>
+    </div>`;
+  }
   const st = slackStatus();
   if (!st) return '';
   const list = SLACK_LINES[st.key];
@@ -5330,6 +5364,9 @@ document.addEventListener('visibilitychange', () => {
   if (iTimer.iv) itTick();    // インターバルタイマーも復帰時に追従
   detectSleepFromGap();       // 復帰時: 無操作ギャップから睡眠を推定
   refreshFromStorage();
+  // 20時をまたいで復帰した時に駆け込み通知を出す。毎回描き直すと入力中の重量・回数が
+  // 消えるので、出す/引っ込めるが切り替わる瞬間だけ描き直す(1日1回程度)。
+  if (currentView() === 'home' && !$('#modal-bg') && (!!tonightNudge() !== !!$('.slack-card.tonight'))) renderHome();
   if (isNativeApp()) { updateHealthDisplays(); consumeNativeAction(); maybeShowProGate(); } // 復帰でSiri/Spotlight消費+課金状態を再確認(失効していれば再ゲート)
 });
 

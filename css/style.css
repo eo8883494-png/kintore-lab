@@ -296,6 +296,8 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 
 /* サボり検知カード。責めすぎない色味(警告色ではなくアクセント2)で、視線は引くが不快にしない */
 .slack-card { border-color: var(--accent2, #4ed9f1); }
+/* 駆け込み(今日まだ間に合う)は、過去のサボりより一段強く見せる */
+.slack-card.tonight { border-color: var(--warn); }
 .slack-card h2 .sub { color: var(--ink-dim); font-weight: 600; }
 
 /* セット数の増減。ドットと同じくタップ判定は44ptに広げる */
