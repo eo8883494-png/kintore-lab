@@ -438,8 +438,10 @@ function todayBurnBreakdown() {
   // Apple Watch の活動カロリーが取れる日は、歩数と筋トレの推定を足す代わりに実測を使う。
   // (実測は歩行もトレも含むため、推定を足すと二重計上になる)
   const active = (hkWatch.date === today) ? hkWatch.activeKcal : null;
-  if (active != null) return { bmr, life, walk: 0, train: 0, steps, active, total: bmr + life + active };
-  return { bmr, life, walk, train, steps, active: null, total: bmr + life + walk + train };
+  // 自己申告の有酸素。Watchの実測がある日は実測に含まれているので足さない(二重計上を防ぐ)
+  const cardio = active != null ? 0 : cardioTodayKcal();
+  if (active != null) return { bmr, life, walk: 0, train: 0, cardio: 0, steps, active, total: bmr + life + active };
+  return { bmr, life, walk, train, cardio, steps, active: null, total: bmr + life + walk + train + cardio };
 }
 
 function todayBurnCardHtml() {
@@ -454,6 +456,7 @@ function todayBurnCardHtml() {
   } else {
     if (b.steps != null) parts.push(`歩数(${b.steps.toLocaleString()}歩) <b style="color:var(--ink)">${b.walk.toLocaleString()}</b>`);
     parts.push(`筋トレ <b style="color:${b.train > 0 ? 'var(--accent)' : 'var(--ink)'}">${b.train.toLocaleString()}</b>`);
+    if (b.cardio > 0) parts.push(`有酸素 <b style="color:var(--accent)">${b.cardio.toLocaleString()}</b>`);
   }
   const note = b.active != null
     ? 'Apple Watchが計測した実際の消費に基づいています(歩行も筋トレも込み)。'
@@ -494,6 +497,98 @@ function onboardCardHtml() {
     <div class="ob-steps">${rows}</div>
     <button class="btn ghost small" id="ob-hide" style="width:100%;margin-top:8px">あとで(閉じる)</button>
   </div>`;
+}
+
+// ===== 有酸素(減量向け) =====
+// 減量では「筋トレで筋肉を守り、有酸素と食事で赤字を作る」のが基本。筋トレDBは
+// 部位×セットの世界なので混ぜず、分数で測る別枠として扱う。
+// 天気で外に出られない日があるので、屋外と屋内を必ず対にして出す(天気APIは使わない。
+// 位置情報の許可が要るうえ、外れた時に「今日は無理」で終わってしまうため)。
+const CARDIO = [
+  { id: 'walk',      name: 'ウォーキング',     mets: 3.5, where: 'out', note: '会話できる速さ。膝への負担が最小' },
+  { id: 'jog',       name: 'ジョギング',       mets: 7.0, where: 'out', note: '会話がやや続く速さ。脂肪燃焼の定番' },
+  { id: 'run',       name: 'ランニング',       mets: 9.8, where: 'out', note: '息が上がる速さ。短時間で稼げる' },
+  { id: 'bike',      name: 'サイクリング',     mets: 6.8, where: 'out', note: '膝が痛い人向け。長時間でも続けやすい' },
+  { id: 'stair',     name: '踏み台昇降',       mets: 5.5, where: 'in',  note: '階段や台1つでOK。動画を見ながらでも' },
+  { id: 'jump-rope', name: '縄跳び',           mets: 8.8, where: 'in',  note: '短時間で高消費。マンションでは注意' },
+  { id: 'burpee',    name: 'バーピー',         mets: 8.0, where: 'in',  note: 'きつい代わりに一番短く済む' },
+  { id: 'march',     name: 'その場もも上げ',   mets: 4.5, where: 'in',  note: '道具も音もほぼ不要。雨の日の保険' },
+  { id: 'treadmill', name: 'トレッドミル',     mets: 7.0, where: 'gym', note: '速度と傾斜で強度を調整できる' },
+  { id: 'ergo',      name: 'エアロバイク',     mets: 6.8, where: 'gym', note: '負荷調整が細かく、膝に優しい' },
+];
+const CARDIO_BY_ID = CARDIO.reduce((m, c) => (m[c.id] = c, m), {});
+function cardioKcal(c, min, w) { return calcBurn(c.mets, w, min); }
+function cardioToday() { return (S.cardio && S.cardio[todayStr()]) || []; }
+function cardioTodayKcal() {
+  const w = S.profile ? S.profile.w : 0;
+  if (!w) return 0;
+  return cardioToday().reduce((a, r) => {
+    const c = CARDIO_BY_ID[r.id];
+    return a + (c ? cardioKcal(c, r.min, w) : 0);
+  }, 0);
+}
+// 減量目標の人に、今日あと何分やれば目安に届くかを出す。
+// 目安は「週150分」(WHOの成人向け身体活動ガイドライン)をトレ日数で割った量。
+const CARDIO_WEEK_MIN = 150;
+function cardioTargetMin() {
+  const days = S.profile ? Math.max(1, S.profile.days) : 3;
+  return Math.round(CARDIO_WEEK_MIN / days / 5) * 5;
+}
+function cardioCardHtml() {
+  if (!S.profile || S.profile.goal !== 'diet') return '';   // 減量目的の人にだけ出す
+  const w = S.profile.w;
+  const doneMin = cardioToday().reduce((a, r) => a + r.min, 0);
+  const target = cardioTargetMin();
+  const left = Math.max(0, target - doneMin);
+  const env = S.profile.env;
+  const showGym = env === 'gym';
+  const pick = (where) => CARDIO.filter(c => c.where === where);
+  const row = (c) => `<button class="btn ghost small cardio-add" data-id="${c.id}" style="justify-content:space-between;text-align:left">
+      <span style="min-width:0"><b>${esc(c.name)}</b><small style="display:block;opacity:.7;font-size:11px">${esc(c.note)}</small></span>
+      <small style="white-space:nowrap;opacity:.8">${left > 0 ? left : 20}分で約${cardioKcal(c, left > 0 ? left : 20, w)}kcal</small>
+    </button>`;
+  const doneRows = cardioToday().map((r, i) => {
+    const c = CARDIO_BY_ID[r.id];
+    return c ? `<div class="log-entry"><div style="flex:1;min-width:0"><div class="nm">${esc(c.name)}</div>
+      <div class="sets">${r.min}分 / 約${cardioKcal(c, r.min, w)}kcal</div></div>
+      <button class="del cardio-del" data-i="${i}" aria-label="削除">🗑</button></div>` : '';
+  }).join('');
+  return `<div class="card cardio-card"><h2>🏃 今日の有酸素<span class="sub">${doneMin}/${target}分</span></h2>
+    ${doneRows || ''}
+    <p style="font-size:12.5px;color:var(--ink-dim);margin:${doneRows ? '8px' : '0'} 0 8px">
+      ${left > 0 ? `あと<b style="color:var(--accent)">${left}分</b>で今日の目安に届きます。` : '今日の目安は達成しました。追加するとそのぶん赤字が増えます。'}
+      筋トレの後にやると脂肪が優先的に使われます。</p>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:11.5px;color:var(--ink-dim)">☀️ 外でやるなら</div>
+      ${pick('out').map(row).join('')}
+      <div style="font-size:11.5px;color:var(--ink-dim);margin-top:4px">🏠 雨の日・家の中なら</div>
+      ${pick('in').map(row).join('')}
+      ${showGym ? `<div style="font-size:11.5px;color:var(--ink-dim);margin-top:4px">🏋️ ジムなら</div>${pick('gym').map(row).join('')}` : ''}
+    </div>
+    <p class="card-note">タップすると分数を選んで記録できます。消費カロリーは体重×METsで計算し、「今日の消費カロリー」にも加算されます。</p>
+  </div>`;
+}
+function openCardioAdd(id) {
+  const c = CARDIO_BY_ID[id];
+  if (!c || !S.profile) return;
+  const w = S.profile.w;
+  const mins = [10, 15, 20, 30, 45, 60];
+  const bg = openModal(`<h2>${esc(c.name)}</h2>
+    <p class="modal-sub">${esc(c.note)}</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
+      ${mins.map(m => `<button class="btn ghost cardio-min" data-m="${m}" style="justify-content:space-between">
+        <span>${m}分</span><small style="opacity:.75">約${cardioKcal(c, m, w)}kcal</small></button>`).join('')}
+    </div>
+    <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  $all('.cardio-min', bg).forEach(b => b.addEventListener('click', () => {
+    const t = todayStr();
+    if (!S.cardio) S.cardio = {};
+    if (!S.cardio[t]) S.cardio[t] = [];
+    if (S.cardio[t].length >= 20) { toast('1日に記録できるのは20件までです'); return; }
+    S.cardio[t].push({ id, min: Number(b.dataset.m) });
+    saveState(); closeModal(); route();
+    toast(`${c.name} ${b.dataset.m}分を記録しました`);
+  }));
 }
 
 // ===== おまかせ(回復ベース) =====
@@ -1149,7 +1244,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -1394,6 +1489,15 @@ function sanitizeState(s) {
       const arr = s.foodLog[dt].slice(0, 60).map(it => (it && typeof it.id === 'string')
         ? { id: it.id.slice(0, 60), qty: numIn(it.qty, 0.1, 50, 1) } : null).filter(Boolean);
       if (arr.length) out.foodLog[dt] = arr;
+    });
+  }
+  // 有酸素の記録(日付→[{id, min}])。種目IDと分数のみ保持し、消費kcalは体重から都度算出する
+  if (s.cardio && typeof s.cardio === 'object') {
+    Object.keys(s.cardio).forEach(dt => {
+      if (!DATE_RE.test(dt) || !Array.isArray(s.cardio[dt])) return;
+      const arr = s.cardio[dt].slice(0, 20).map(it => (it && typeof it.id === 'string')
+        ? { id: it.id.slice(0, 40), min: Math.round(numIn(it.min, 1, 600, 20)) } : null).filter(Boolean);
+      if (arr.length) out.cardio[dt] = arr;
     });
   }
   // 水分(日付→杯数)
@@ -1853,6 +1957,29 @@ function mergeStates(local, remote) {
     if (trimmed.length) fl[dt] = trimmed;
   });
   out.foodLog = fl;
+  // 有酸素: 食事ログと同じく、件数の多い側を土台に不足分だけ足す
+  // (「朝と夜に20分ずつ歩いた」を1件に潰さないため)
+  const cd = {};
+  const cdates = new Set([...Object.keys(secondary.cardio || {}), ...Object.keys(primary.cardio || {})]);
+  cdates.forEach(dt => {
+    const pArr = Array.isArray((primary.cardio || {})[dt]) ? (primary.cardio || {})[dt] : [];
+    const sArr = Array.isArray((secondary.cardio || {})[dt]) ? (secondary.cardio || {})[dt] : [];
+    const base = pArr.length >= sArr.length ? pArr : sArr;
+    const other = pArr.length >= sArr.length ? sArr : pArr;
+    const cnt = arr => arr.reduce((m, it) => (it && typeof it.id === 'string' ? m.set(it.id, (m.get(it.id) || 0) + 1) : m), new Map());
+    const bc = cnt(base), oc = cnt(other);
+    const list = base.filter(it => it && typeof it.id === 'string').map(it => ({ id: it.id, min: Number(it.min) || 0 }));
+    oc.forEach((n, id) => {
+      const lack = n - (bc.get(id) || 0);
+      for (let i = 0; i < lack; i++) {
+        const src = other.find(x => x && x.id === id);
+        list.push({ id, min: Number(src && src.min) || 0 });
+      }
+    });
+    const trimmed = list.slice(0, 20);
+    if (trimmed.length) cd[dt] = trimmed;
+  });
+  out.cardio = cd;
   // 水分: 日付ごとにmax(どちらかで飲んだ分を活かす)
   const wt = {};
   [secondary.water, primary.water].forEach(src => { if (src) Object.keys(src).forEach(dt => { wt[dt] = Math.max(wt[dt] || 0, src[dt]); }); });
@@ -3290,6 +3417,7 @@ function renderHome() {
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
     { id: 'onboard', name: 'はじめの3ステップ', html: onboardCardHtml() },
     { id: 'omakase', name: '今日のおすすめ(回復ベース)', html: omakaseCardHtml() },
+    { id: 'cardio', name: '今日の有酸素(減量向け)', html: cardioCardHtml() },
     { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
     { id: 'burn', name: '今日の消費カロリー', html: todayBurnCardHtml() },
@@ -3326,6 +3454,15 @@ function renderHome() {
   }));
   const omk = $('#omakase-go', root);
   if (omk) omk.addEventListener('click', startOmakase);
+  $all('.cardio-add', root).forEach(b => b.addEventListener('click', () => openCardioAdd(b.dataset.id)));
+  $all('.cardio-del', root).forEach(b => b.addEventListener('click', () => {
+    const t = todayStr();
+    if (S.cardio && S.cardio[t]) {
+      S.cardio[t].splice(Number(b.dataset.i), 1);
+      if (!S.cardio[t].length) delete S.cardio[t];
+      saveState(); route(); toast('削除しました');
+    }
+  }));
   const obHide = $('#ob-hide', root);
   if (obHide) obHide.addEventListener('click', () => {
     const o = loadOnboard(); o.hidden = true; saveOnboard(o);
