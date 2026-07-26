@@ -23,10 +23,13 @@ body {
   line-height: 1.6;
   padding-bottom: 76px;
   min-height: 100vh;
-  /* iOS WebView: ダブルタップ拡大を無効化(スクロールは維持) */
-  touch-action: manipulation;
   -webkit-text-size-adjust: auto;
 }
+/* iOS WebView: ダブルタップ拡大を無効化。
+   touch-action は継承されないので body だけに書いても子要素には効かない
+   (カードやボタンをダブルタップすると拡大してしまう)。
+   manipulation はスクロールとピンチズームを残すので、拡大したい人の手段は奪わない。 */
+* { touch-action: manipulation; }
 button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
 input, select, textarea {
   font-family: inherit; font-size: 16px;
@@ -276,6 +279,11 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .today-ex .sd::after { content: ''; position: absolute; inset: -9px; border-radius: 50%; }
 .today-ex .sd.on { background: var(--accent); border-color: var(--accent); }
 .today-ex .sdlabel { font-size: 11.5px; color: var(--ink-dim); font-weight: 700; margin-left: 4px; }
+/* 診断結果。長い行は折り返して、狭い画面でも横スクロールさせない */
+.diag { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.7;
+  white-space: pre-wrap; word-break: break-word; background: var(--surface2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px; margin-bottom: 12px; max-height: 46vh; overflow: auto; }
+
 /* 初回ガイド。押せる行として見せ、済んだものは沈ませる */
 .onboard-card { border-color: var(--accent); }
 .onboard-card .ob-steps { display: flex; flex-direction: column; gap: 8px; }

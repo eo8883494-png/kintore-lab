@@ -564,6 +564,48 @@ function slackCardHtml() {
   </div>`;
 }
 
+// ヘルスケア連携の診断。どこで止まっているか(プラグイン未導入/未許可/データ無し)を
+// 実機で確認できるようにする。原因が分からないまま再ビルドを繰り返さないための窓口。
+async function openHealthDiag() {
+  const H = healthPlugin();
+  const L = [];
+  L.push(`プラグイン: ${H ? 'あり' : '無し(ネイティブ未導入)'}`);
+  if (!H) { openModal(`<h2>🩺 ヘルスケア診断</h2><pre class="diag">${esc(L.join('\n'))}</pre><button class="btn ghost" onclick="closeModal()">閉じる</button>`); return; }
+  try { const v = await H.getPluginVersion(); L.push(`バージョン: ${v && v.version}`); } catch (e) { L.push('バージョン: 取得不可'); }
+  try { const a = await H.isAvailable(); L.push(`利用可否: ${a && a.available ? 'OK' : 'NG'}${a && a.reason ? ' (' + a.reason + ')' : ''}`); }
+  catch (e) { L.push('利用可否: 例外 ' + (e && e.message)); }
+
+  const want = ['steps', 'weight', 'calories', 'restingHeartRate'];
+  try {
+    const st = await H.checkAuthorization({ read: want, write: ['weight'] });
+    L.push('', '許可された読み取り: ' + ((st && st.readAuthorized) || []).join(', '));
+    L.push('拒否/未許可: ' + ((st && st.readDenied) || []).join(', '));
+  } catch (e) { L.push('', '許可状態: 例外 ' + (e && e.message)); }
+
+  // 実際に読めるかを1つずつ試す(許可されていてもデータが無ければ0件になる)
+  const now = new Date();
+  const from = new Date(now.getTime() - 14 * 86400000).toISOString();
+  L.push('', '— 実データ —');
+  for (const dataType of want) {
+    try {
+      const r = await H.readSamples({ dataType, startDate: from, endDate: now.toISOString() });
+      const rows = (r && r.samples) || [];
+      const last = rows.length ? rows[rows.length - 1] : null;
+      L.push(`${dataType}: ${rows.length}件` + (last ? ` (最新 ${Math.round(Number(last.value) * 10) / 10}${last.unit || ''})` : ''));
+    } catch (e) { L.push(`${dataType}: 例外 ${(e && e.message) || e}`); }
+  }
+  L.push('', `画面の値: 活動${hkWatch.activeKcal == null ? '—' : hkWatch.activeKcal} / 安静時心拍${hkWatch.restHR == null ? '—' : hkWatch.restHR} / 平常値${hkWatch.baseHR == null ? '—' : hkWatch.baseHR}`);
+  openModal(`<h2>🩺 ヘルスケア診断</h2>
+    <pre class="diag">${esc(L.join('\n'))}</pre>
+    <button class="btn" id="diag-copy" style="margin-bottom:8px">結果をコピー</button>
+    <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  const cp = document.getElementById('diag-copy');
+  if (cp) cp.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(L.join('\n')); toast('コピーしました'); }
+    catch (e) { toast('コピーできませんでした'); }
+  });
+}
+
 // 安静時心拍から今日のコンディションを判定。
 // 平常値(直近2週間の中央値)より高い日は、疲労・睡眠不足・体調不良のサインとされる。
 // 医学的診断ではないので、断定せず「軽めにする」提案に留める。
@@ -4308,7 +4350,7 @@ function renderLog() {
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
         <button class="btn small" id="bw-save" style="white-space:nowrap">保存</button>
       </div>
-      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthと同期(体重・歩数)</button><div id="hk-steps" class="card-note" style="margin-top:6px"></div>' : ''}
+      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthと同期(体重・歩数・心拍)</button><div id="hk-steps" class="card-note" style="margin-top:6px"></div><button class="btn ghost small" id="hk-diag" style="margin-top:6px;width:100%;font-size:11.5px;opacity:.75">🩺 ヘルスケア連携を診断</button>' : ''}
       ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
@@ -4374,6 +4416,8 @@ function renderLog() {
   // 体重
   const hkw = $('#hk-weight', root);
   if (hkw) hkw.addEventListener('click', importHealthWeight);
+  const hkd = $('#hk-diag', root);
+  if (hkd) hkd.addEventListener('click', openHealthDiag);
   const bwSave = $('#bw-save', root);
   if (bwSave) bwSave.addEventListener('click', () => {
     const v = Number($('#bw-input', root).value);
