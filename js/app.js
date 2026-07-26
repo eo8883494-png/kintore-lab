@@ -412,6 +412,33 @@ function todayBurnCardHtml() {
   </div>`;
 }
 
+// 初回ガイド。プランは初回ウィザードで自動生成されるが、それを「自分用に整える」導線
+// (プランタブ)と、このアプリの核である効率タブに気づかないまま終わる人が多い。
+// 3つ終わるか、閉じるを押したら二度と出さない。
+function onboardCardHtml() {
+  if (!S.profile || !S.plan) return '';       // ウィザード前は既存の「はじめる」カードに任せる
+  const o = loadOnboard();
+  if (o.hidden) return '';
+  const trained = S.logs.length > 0;
+  const steps = [
+    { done: o.plan, icon: '🎯', label: 'プランを自分用に整える', desc: '曜日・種目・セット数を変えられます', act: 'plan' },
+    { done: o.sim, icon: '⚗️', label: '何ヶ月でどう変わるか見る', desc: 'このアプリの核。時間対効果を予測します', act: 'sim' },
+    { done: trained, icon: '💪', label: '最初の1種目を記録する', desc: '⭕をタップするだけ', act: 'home' },
+  ];
+  if (steps.every(s => s.done)) return '';    // 全部やり終えたら自動で消える
+  const rows = steps.map(s => `
+    <button class="btn ghost small ob-step${s.done ? ' done' : ''}" data-act="${s.act}"${s.done ? ' disabled' : ''}>
+      <span class="ob-chk">${s.done ? '✅' : s.icon}</span>
+      <span class="ob-txt"><b>${esc(s.label)}</b><small>${esc(s.desc)}</small></span>
+    </button>`).join('');
+  const left = steps.filter(s => !s.done).length;
+  return `<div class="card onboard-card">
+    <h2>🚀 まずはこの3つ<span class="sub">あと${left}つ</span></h2>
+    <div class="ob-steps">${rows}</div>
+    <button class="btn ghost small" id="ob-hide" style="width:100%;margin-top:8px">あとで(閉じる)</button>
+  </div>`;
+}
+
 // ===== サボり検知と煽り =====
 // 最後にトレした日からの空き日数。1日も記録が無ければ null(始めていない人は煽らない)。
 function daysSinceLastTraining() {
@@ -2046,8 +2073,24 @@ function currentView() {
   const h = location.hash.replace('#', '');
   return VIEWS.includes(h) ? h : 'home';
 }
+// ===== 初回ガイド(端末内のUI状態。同期する必要が無いので localStorage に置く) =====
+function loadOnboard() {
+  try { return { plan: false, sim: false, hidden: false, ...JSON.parse(localStorage.getItem('kintoreLab.onboard') || '{}') }; }
+  catch (e) { return { plan: false, sim: false, hidden: false }; }
+}
+function saveOnboard(o) { try { localStorage.setItem('kintoreLab.onboard', JSON.stringify(o)); } catch (e) {} }
+// タブを開いたら「見た」印を付ける(ガイドのチェックが自動で進む)
+function markOnboardVisit(v) {
+  if (v !== 'plan' && v !== 'sim') return;
+  const o = loadOnboard();
+  if (o[v]) return;
+  o[v] = true;
+  saveOnboard(o);
+}
+
 function route() {
   const v = currentView();
+  markOnboardVisit(v);
   VIEWS.forEach(name => {
     $('#view-' + name).classList.toggle('active', name === v);
     $(`#tab-${name}`).classList.toggle('active', name === v);
@@ -3050,6 +3093,7 @@ function renderHome() {
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
   const homeCards = [
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
+    { id: 'onboard', name: 'はじめの3ステップ', html: onboardCardHtml() },
     { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
     { id: 'burn', name: '今日の消費カロリー', html: todayBurnCardHtml() },
@@ -3076,6 +3120,20 @@ function renderHome() {
     if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
   }
 
+  $all('.ob-step', root).forEach(b => b.addEventListener('click', () => {
+    const act = b.dataset.act;
+    if (act === 'home') {
+      const c = $('.today-ex', root) || $('#home-add-ex', root);
+      if (c) c.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      else toast('今日は休息日です。プランで曜日を確認できます');
+    } else location.hash = '#' + act;
+  }));
+  const obHide = $('#ob-hide', root);
+  if (obHide) obHide.addEventListener('click', () => {
+    const o = loadOnboard(); o.hidden = true; saveOnboard(o);
+    renderHome();
+    toast('ガイドを閉じました');
+  });
   const slackGo = $('#slack-go', root);
   if (slackGo) slackGo.addEventListener('click', () => {
     // 今日のメニューカードまでスクロール(休息日ならプランタブへ)

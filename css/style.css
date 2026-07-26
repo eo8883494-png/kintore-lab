@@ -276,6 +276,16 @@ main { max-width: 560px; margin: 0 auto; padding: 14px; }
 .today-ex .sd::after { content: ''; position: absolute; inset: -9px; border-radius: 50%; }
 .today-ex .sd.on { background: var(--accent); border-color: var(--accent); }
 .today-ex .sdlabel { font-size: 11.5px; color: var(--ink-dim); font-weight: 700; margin-left: 4px; }
+/* 初回ガイド。押せる行として見せ、済んだものは沈ませる */
+.onboard-card { border-color: var(--accent); }
+.onboard-card .ob-steps { display: flex; flex-direction: column; gap: 8px; }
+.onboard-card .ob-step { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 11px 12px; min-height: 44px; }
+.onboard-card .ob-chk { font-size: 17px; flex: 0 0 auto; }
+.onboard-card .ob-txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.onboard-card .ob-txt b { font-size: 13.5px; }
+.onboard-card .ob-txt small { font-size: 11.5px; color: var(--ink-dim); line-height: 1.4; }
+.onboard-card .ob-step.done { opacity: .5; }
+
 /* サボり検知カード。責めすぎない色味(警告色ではなくアクセント2)で、視線は引くが不快にしない */
 .slack-card { border-color: var(--accent2, #4ed9f1); }
 .slack-card h2 .sub { color: var(--ink-dim); font-weight: 600; }
