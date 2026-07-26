@@ -499,6 +499,61 @@ function onboardCardHtml() {
   </div>`;
 }
 
+// ホーム最上部の指標。目標によって「知りたい数字」が違うので出し分ける。
+// 減量・引き締めの人にとっては連続日数より体重の進み具合が本題で、
+// サボると0に戻る数字を最初に見せるのは離脱の原因にもなる。
+function homeStatRowHtml(weekStreak, weekDone, target) {
+  const p = S.profile;
+  const tile = (k, v, u) => `<div class="stat-tile"><div class="k">${k}</div><div class="v"><em>${v}</em><small> ${u}</small></div></div>`;
+  const trainTiles = tile('📅 今週', weekDone, `/ ${target}日`) + tile('🔥 連続達成', weekStreak, '週');
+
+  if (p && (p.goal === 'diet' || p.goal === 'fit') && typeof weightNav === 'function') {
+    try {
+      const nav = weightNav(p, S.weights || []);
+      const cur = (S.weights && S.weights.length) ? S.weights[S.weights.length - 1].kg : p.w;
+      const start = (S.weights && S.weights.length) ? S.weights[0].kg : p.w;
+      const moved = Math.round((start - cur) * 10) / 10;
+      const movedTile = tile(moved > 0 ? '📉 開始から' : '⚖️ 現在', moved > 0 ? '-' + moved : cur, moved > 0 ? 'kg' : 'kg');
+      const goalTile = nav.mode === 'cut'
+        ? tile('🎯 目標まで', nav.diff, 'kg')
+        : tile('🎯 BMI', nav.bmi, '');
+      return `<div class="stat-row">${movedTile}${goalTile}${tile('📅 今週', weekDone, `/ ${target}日`)}</div>`;
+    } catch (e) { /* meals.js 未読込などは従来表示へ */ }
+  }
+  return `<div class="stat-row">${trainTiles}${tile('📚 総トレ日', new Set(S.logs.map(l => l.date)).size, '日')}</div>`;
+}
+
+// 体重の入力はダイエットの生命線なのに食事タブの奥にあり、毎日測る導線として遠い。
+// 減量・健康維持の人には、ホームから1タップで記録できるようにする。
+function homeWeightCardHtml() {
+  const p = S.profile;
+  if (!p || (p.goal !== 'diet' && p.goal !== 'fit')) return '';
+  const today = todayStr();
+  const done = (S.weights || []).some(w => w.date === today);
+  const cur = (S.weights && S.weights.length) ? S.weights[S.weights.length - 1] : null;
+  let line = '';
+  if (typeof weightNav === 'function') {
+    try {
+      const nav = weightNav(p, S.weights || []);
+      if (nav.mode === 'cut') {
+        const eta = nav.weeks ? `約${nav.weeks}週間で目標${nav.target}kg` : '';
+        line = `<p style="font-size:12.5px;color:var(--ink-dim);margin:6px 0 0">週${nav.pace}kgペース(筋肉を守れる上限)なら${eta}。</p>`;
+      } else if (nav.msg) {
+        line = `<p style="font-size:12.5px;color:var(--ink-dim);margin:6px 0 0">${esc(nav.msg.slice(0, 60))}</p>`;
+      }
+    } catch (e) {}
+  }
+  return `<div class="card weight-card"><h2>⚖️ 今日の体重<span class="sub">${done ? '記録済み' : '未記録'}</span></h2>
+    <div style="display:flex;gap:8px;align-items:center">
+      <input type="number" id="hw-input" placeholder="${cur ? cur.kg : p.w}" step="0.1" min="20" inputmode="decimal">
+      <span class="unit">kg</span>
+      <button class="btn small" id="hw-save" style="white-space:nowrap">記録</button>
+    </div>
+    ${line}
+    <p class="card-note">毎朝トイレ後・食事前が一番ブレません。1日で±1kg動くので、線で見るのが大事です。</p>
+  </div>`;
+}
+
 // ===== 有酸素(減量向け) =====
 // 減量では「筋トレで筋肉を守り、有酸素と食事で赤字を作る」のが基本。筋トレDBは
 // 部位×セットの世界なので混ぜず、分数で測る別枠として扱う。
@@ -547,7 +602,7 @@ function cardioCardHtml() {
   const pick = (where) => CARDIO.filter(c => c.where === where);
   const row = (c) => `<button class="btn ghost small cardio-add" data-id="${c.id}" style="justify-content:space-between;text-align:left">
       <span style="min-width:0"><b>${esc(c.name)}</b><small style="display:block;opacity:.7;font-size:11px">${esc(c.note)}</small></span>
-      <small style="white-space:nowrap;opacity:.8">${left > 0 ? left : 20}分で約${cardioKcal(c, left > 0 ? left : 20, w)}kcal</small>
+      <small style="white-space:nowrap;opacity:.8">10分で約${cardioKcal(c, 10, w)}kcal</small>
     </button>`;
   const doneRows = cardioToday().map((r, i) => {
     const c = CARDIO_BY_ID[r.id];
@@ -558,7 +613,10 @@ function cardioCardHtml() {
   return `<div class="card cardio-card"><h2>🏃 今日の有酸素<span class="sub">${doneMin}/${target}分</span></h2>
     ${doneRows || ''}
     <p style="font-size:12.5px;color:var(--ink-dim);margin:${doneRows ? '8px' : '0'} 0 8px">
-      ${left > 0 ? `あと<b style="color:var(--accent)">${left}分</b>で今日の目安に届きます。` : '今日の目安は達成しました。追加するとそのぶん赤字が増えます。'}
+      ${doneMin === 0
+        ? `まずは<b style="color:var(--accent)">10分</b>から。0分と10分の差が一番大きいです(目安は${target}分)。`
+        : left > 0 ? `あと<b style="color:var(--accent)">${left}分</b>で今日の目安に届きます。`
+          : '今日の目安は達成しました。追加するとそのぶん赤字が増えます。'}
       筋トレの後にやると脂肪が優先的に使われます。</p>
     <div style="display:flex;flex-direction:column;gap:6px">
       <div style="font-size:11.5px;color:var(--ink-dim)">☀️ 外でやるなら</div>
@@ -574,7 +632,7 @@ function openCardioAdd(id) {
   const c = CARDIO_BY_ID[id];
   if (!c || !S.profile) return;
   const w = S.profile.w;
-  const mins = [10, 15, 20, 30, 45, 60];
+  const mins = [5, 10, 15, 20, 30, 45, 60];   // 5分から選べるようにする(まず始める心理的ハードルを下げる)
   const bg = openModal(`<h2>${esc(c.name)}</h2>
     <p class="modal-sub">${esc(c.note)}</p>
     <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
@@ -3245,11 +3303,7 @@ function renderHome() {
   const weekDone = thisWeekDays(S.logs);
 
   let html = `
-    <div class="stat-row">
-      <div class="stat-tile"><div class="k">🔥 連続達成</div><div class="v"><em>${weekStreak}</em><small> 週</small></div></div>
-      <div class="stat-tile"><div class="k">📅 今週</div><div class="v"><em>${weekDone}</em><small> / ${target}日</small></div></div>
-      <div class="stat-tile"><div class="k">📚 総トレ日</div><div class="v"><em>${new Set(S.logs.map(l => l.date)).size}</em><small> 日</small></div></div>
-    </div>`;
+    ${homeStatRowHtml(weekStreak, weekDone, target)}`;
 
   checkBadges(); // 実績の新規解除チェック(解除済みは再発火しない)
 
@@ -3419,6 +3473,7 @@ function renderHome() {
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
     { id: 'onboard', name: 'はじめの3ステップ', html: onboardCardHtml() },
     { id: 'omakase', name: '今日のおすすめ(回復ベース)', html: omakaseCardHtml() },
+    { id: 'weight', name: '今日の体重(減量向け)', html: homeWeightCardHtml() },
     { id: 'cardio', name: '今日の有酸素(減量向け)', html: cardioCardHtml() },
     { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
@@ -3456,6 +3511,19 @@ function renderHome() {
   }));
   const omk = $('#omakase-go', root);
   if (omk) omk.addEventListener('click', startOmakase);
+  const hwSave = $('#hw-save', root);
+  if (hwSave) hwSave.addEventListener('click', () => {
+    const el = $('#hw-input', root);
+    const v = Number(el && el.value);
+    if (!v || v < 20 || v > 300) { toast('体重を入力してください'); return; }
+    S.weights = (S.weights || []).filter(w => w.date !== todayStr());
+    S.weights.push({ date: todayStr(), kg: Math.round(v * 10) / 10 });
+    S.weights.sort((a, b) => a.date < b.date ? -1 : 1);
+    syncProfileWeight();          // profile.w も追従(TDEE・PFCが古い体重で計算されるのを防ぐ)
+    if (isNativeApp()) writeHealthWeight(v, todayStr()); // Apple Healthにも書き戻す(双方向)
+    saveState(); route();
+    toast('体重を記録しました');
+  });
   $all('.cardio-add', root).forEach(b => b.addEventListener('click', () => openCardioAdd(b.dataset.id)));
   $all('.cardio-del', root).forEach(b => b.addEventListener('click', () => {
     const t = todayStr();
