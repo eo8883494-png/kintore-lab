@@ -423,9 +423,42 @@ function daysSinceLastTraining() {
   return Math.max(0, Math.round((t1 - t0) / 86400000));
 }
 
+// 直前のトレ日から昨日までの間で、「プラン上はトレ日なのに記録が無い日」を数える。
+// 超回復の速さは人それぞれなので、日数ではなく本人が立てたプランを基準にする。
+// これにより週4〜6日など高頻度のプランなら、1日空けただけでもサボりとして検知できる。
+function missedPlanDays() {
+  if (!S.plan || !S.plan.days || !S.plan.days.length) return 0;
+  const trainWd = new Set(S.plan.days.map(d => d.weekday));
+  const done = new Set(S.logs.map(l => l.date));
+  let cur = dateAdd(todayStr(), -1);
+  let missed = 0;
+  for (let i = 0; i < 14; i++) {         // 遡るのは2週間まで
+    if (done.has(cur)) break;            // 記録がある日に当たったら打ち切り
+    if (trainWd.has(new Date(cur + 'T12:00:00').getDay())) missed++;
+    cur = dateAdd(cur, -1);
+  }
+  return missed;
+}
+
+// 回復済み(=今日やれる)部位の名前。煽りを具体的な行動につなげるために使う。
+function readyPartNames() {
+  try {
+    return recoveryStatus(S.logs, DB.byId)
+      .filter(r => r.state === 'ready' || r.state === 'fresh')
+      .map(r => r.name).slice(0, 3);
+  } catch (e) { return []; }
+}
+
 // 空き日数ごとの煽り文。日替わりで1つ選ぶ(同じ日に何度開いても文言は変わらない)。
 // 責める一方にならないよう、必ず「今日できる小さな一歩」を添える。
 const SLACK_LINES = {
+  // プランのトレ日を飛ばした直後(1日空きでもここに来る)
+  skip: [
+    ['昨日、プランの日でしたよ', 'サボりましたね？今日やれば帳消しです'],
+    ['1日飛びました', '予定では昨日でした。今日ずらしてやってしまいましょう'],
+    ['今日はサボりですか？', 'あなたのプランだと、もう次をやる日です'],
+    ['計画とズレはじめました', 'ズレは今日直せば無傷。1種目からで大丈夫'],
+  ],
   // 3〜4日
   soft: [
     ['今日はサボりですか？', 'いや、まだ間に合います。1種目だけでもやっとく？'],
@@ -448,19 +481,38 @@ const SLACK_LINES = {
     ['ブランクは記録更新のチャンス', '落ちた分は戻りが速い(マッスルメモリー)。今日から回収を'],
   ],
 };
-function slackCardHtml() {
-  if (!S.profile) return '';
+// 表示するか / どの強さか を決める。
+// ①プランのトレ日を飛ばした ②プランが無い人向けの日数フォールバック の2系統。
+function slackStatus() {
+  if (!S.profile) return null;
   const d = daysSinceLastTraining();
-  if (d == null || d < 3) return ''; // 2日空きは超回復の範囲なので煽らない
-  const key = d >= 10 ? 'hard' : d >= 5 ? 'mid' : 'soft';
-  const list = SLACK_LINES[key];
+  if (d == null || d === 0) return null;           // 未経験者と、今日やった人には出さない
+  const missed = missedPlanDays();
+  if (missed === 0 && d < 3) return null;          // プラン通り(休息日)なら煽らない
+  let key = d >= 10 ? 'hard' : d >= 5 ? 'mid' : d >= 3 ? 'soft' : 'skip';
+  // 予定日を2回以上飛ばしていれば一段強める(週5〜6日プランで日数が伸びない場合の補正)
+  if (missed >= 2 && key === 'skip') key = 'soft';
+  if (missed >= 3 && key === 'soft') key = 'mid';
+  return { days: d, missed, key };
+}
+
+function slackCardHtml() {
+  const st = slackStatus();
+  if (!st) return '';
+  const list = SLACK_LINES[st.key];
   // 日替わり(日付から決めるので、同じ日は何度開いても同じ文言)
   const seed = Math.floor(new Date(todayStr() + 'T12:00:00').getTime() / 86400000);
   const [title, sub] = list[((seed % list.length) + list.length) % list.length];
-  const icon = key === 'hard' ? '🫠' : key === 'mid' ? '😐' : '👀';
+  const icon = st.key === 'hard' ? '🫠' : st.key === 'mid' ? '😐' : st.key === 'soft' ? '👀' : '🙄';
+  const badge = st.missed > 0 ? `予定を${st.missed}回パス` : `${st.days}日ぶり`;
+  const ready = readyPartNames();
+  const readyLine = ready.length
+    ? `<p style="font-size:12.5px;color:var(--accent);margin:-4px 0 10px">✅ ${esc(ready.join('・'))}は回復済み。今日やれます</p>`
+    : '';
   return `<div class="card slack-card">
-    <h2>${icon} ${esc(title)}<span class="sub">${d}日ぶり</span></h2>
+    <h2>${icon} ${esc(title)}<span class="sub">${esc(badge)}</span></h2>
     <p style="font-size:13.5px;margin-bottom:10px">${esc(sub)}</p>
+    ${readyLine}
     <button class="btn ghost small" id="slack-go" style="width:100%">💪 今日のメニューを見る</button>
   </div>`;
 }
