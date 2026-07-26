@@ -1,8 +1,10 @@
 name: トレ通知の送信
 
+# 毎時実行は停止中。secrets.FIREBASE_SERVICE_ACCOUNT のJSONが壊れており
+# ("Unexpected non-whitespace character after JSON at position 8")、毎時失敗して
+# 失敗通知メールだけが届く状態だったため。シークレットを入れ直したら schedule を戻す。
+# なおiOSアプリの通知は端末内のローカル通知なので、これが止まっていても影響しない。
 on:
-  schedule:
-    - cron: '0 * * * *'   # 毎時0分(UTC)。各端末のタイムゾーンで設定時刻を判定して送信
   workflow_dispatch:        # 手動テスト用
 
 # 同時実行を防ぐ(重複送信の保険)
