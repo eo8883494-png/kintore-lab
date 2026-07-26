@@ -120,7 +120,12 @@ async function importHealthWeight(silent) {
   const H = healthPlugin();
   if (!H) { if (!silent) toast('この端末ではApple Healthを使えません'); return; }
   try {
-    try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
+    // 心拍・活動カロリーはApple Watch連携用。名称が非対応の環境では例外になるので、
+    // まず全部入りで頼み、弾かれたら従来の最小構成で取り直す(体重同期を落とさない)。
+    try {
+      try { await H.requestAuthorization({ read: ['steps', 'weight', 'active-calories', 'resting-heart-rate'], write: ['weight'] }); }
+      catch (e) { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
+    }
     catch (e) { console.warn('[health] auth denied', e); if (!silent) toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
@@ -179,6 +184,56 @@ function loadHealthPref() { try { return { autoSteps: false, ...JSON.parse(local
 function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSON.stringify(p)); } catch (e) {} }
 let hkTodaySteps = { date: '', steps: null };
 // 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
+// ===== Apple Watch 由来の指標(活動カロリー・安静時心拍) =====
+// dataType の綴りはプラグイン/OSで揺れるため候補を順に試し、どれも取れなければ null。
+// 取れない環境では関連UIを丸ごと出さないので、機能が無い端末でも表示が壊れない。
+const HK_ACTIVE_KCAL = ['active-calories', 'activeCaloriesBurned', 'activeEnergyBurned', 'calories', 'active_energy'];
+const HK_RESTING_HR = ['resting-heart-rate', 'restingHeartRate', 'resting_heart_rate'];
+async function hkSum(H, types, startISO, endISO) {
+  for (const dataType of types) {
+    try {
+      const r = await H.readSamples({ dataType, startDate: startISO, endDate: endISO });
+      const rows = (r && r.samples) || [];
+      if (rows.length) return rows.reduce((a, x) => a + (Number(x.value) || 0), 0);
+    } catch (e) { /* 次の候補へ */ }
+  }
+  return null;
+}
+async function hkSamples(H, types, startISO, endISO) {
+  for (const dataType of types) {
+    try {
+      const r = await H.readSamples({ dataType, startDate: startISO, endDate: endISO });
+      const rows = (r && r.samples) || [];
+      if (rows.length) return rows;
+    } catch (e) { /* 次の候補へ */ }
+  }
+  return null;
+}
+// { date, activeKcal, restHR, baseHR } — baseHR は直近2週間の中央値(今日を除く)
+let hkWatch = { date: '', activeKcal: null, restHR: null, baseHR: null };
+async function refreshWatchMetrics(H) {
+  const today = todayStr();
+  const now = new Date();
+  const sod = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const activeKcal = await hkSum(H, HK_ACTIVE_KCAL, sod.toISOString(), now.toISOString());
+
+  // 安静時心拍: 今日の値と、比較用の平常値(直近14日の中央値)
+  let restHR = null, baseHR = null;
+  const rows = await hkSamples(H, HK_RESTING_HR, new Date(sod.getTime() - 14 * 86400000).toISOString(), now.toISOString());
+  if (rows && rows.length) {
+    const byDay = new Map();
+    rows.forEach(x => {
+      const d = String(x.startDate || x.endDate || '').slice(0, 10);
+      const v = Number(x.value);
+      if (d && isFinite(v) && v > 0) byDay.set(d, v);
+    });
+    restHR = byDay.get(today) != null ? Math.round(byDay.get(today)) : null;
+    const past = [...byDay.entries()].filter(([d]) => d !== today).map(([, v]) => v).sort((a, b) => a - b);
+    if (past.length >= 3) baseHR = Math.round(past[Math.floor(past.length / 2)]);
+  }
+  hkWatch = { date: today, activeKcal: activeKcal != null ? Math.round(activeKcal) : null, restHR, baseHR };
+}
+
 async function refreshHealthToday() {
   if (!isNativeApp()) return;
   if (!loadHealthPref().autoSteps) return;
@@ -186,6 +241,7 @@ async function refreshHealthToday() {
   if (!H) return;
   const steps = await queryTodaySteps(H);
   hkTodaySteps = { date: todayStr(), steps };
+  try { await refreshWatchMetrics(H); } catch (e) { console.warn('[health] watch metrics failed', e); }
   updateHealthDisplays();
 }
 
@@ -284,6 +340,9 @@ function updateHealthDisplays() {
   // 歩数は描画より後に届くので、消費カロリー合計も遅れて埋め直す
   const burn = todayBurnBreakdown();
   if (burn) document.querySelectorAll('[data-burn-total]').forEach(el => { el.textContent = burn.total.toLocaleString(); });
+  // 安静時心拍(Apple Watch)。平常値と比べて高い日は疲労のサインなので、軽めを提案する
+  const c = watchCondition();
+  document.querySelectorAll('[data-rhr-line]').forEach(el => { el.innerHTML = c ? c.html : ''; });
   const hk = document.getElementById('hk-steps');
   if (hk && steps != null) hk.textContent = `🚶 今日の歩数: ${steps.toLocaleString()}歩`;
   // 睡眠(端末の無操作から推定・タップで修正)
@@ -319,7 +378,11 @@ function todayBurnBreakdown() {
   const train = logs.length
     ? sessionBurn(logs.map(l => ({ exId: l.exId, sets: l.sets.length, rest: restOf(l.exId) })), DB.byId, p.w)
     : 0;
-  return { bmr, life, walk, train, steps, total: bmr + life + walk + train };
+  // Apple Watch の活動カロリーが取れる日は、歩数と筋トレの推定を足す代わりに実測を使う。
+  // (実測は歩行もトレも含むため、推定を足すと二重計上になる)
+  const active = (hkWatch.date === today) ? hkWatch.activeKcal : null;
+  if (active != null) return { bmr, life, walk: 0, train: 0, steps, active, total: bmr + life + active };
+  return { bmr, life, walk, train, steps, active: null, total: bmr + life + walk + train };
 }
 
 function todayBurnCardHtml() {
@@ -329,11 +392,17 @@ function todayBurnCardHtml() {
     `基礎代謝 <b style="color:var(--ink)">${b.bmr.toLocaleString()}</b>`,
     `生活活動 <b style="color:var(--ink)">${b.life.toLocaleString()}</b>`,
   ];
-  if (b.steps != null) parts.push(`歩数(${b.steps.toLocaleString()}歩) <b style="color:var(--ink)">${b.walk.toLocaleString()}</b>`);
-  parts.push(`筋トレ <b style="color:${b.train > 0 ? 'var(--accent)' : 'var(--ink)'}">${b.train.toLocaleString()}</b>`);
-  const note = b.steps == null
-    ? '歩数を足すとより正確になります(記録タブの「Apple Healthと同期」)。'
-    : '筋トレ分はチェックした種目の実セット数から計算しています。';
+  if (b.active != null) {
+    parts.push(`⌚️ 運動(実測) <b style="color:var(--accent)">${b.active.toLocaleString()}</b>`);
+  } else {
+    if (b.steps != null) parts.push(`歩数(${b.steps.toLocaleString()}歩) <b style="color:var(--ink)">${b.walk.toLocaleString()}</b>`);
+    parts.push(`筋トレ <b style="color:${b.train > 0 ? 'var(--accent)' : 'var(--ink)'}">${b.train.toLocaleString()}</b>`);
+  }
+  const note = b.active != null
+    ? 'Apple Watchが計測した実際の消費に基づいています(歩行も筋トレも込み)。'
+    : b.steps == null
+      ? '歩数を足すとより正確になります(記録タブの「Apple Healthと同期」)。'
+      : '筋トレ分はチェックした種目の実セット数から計算しています。';
   return `<div class="card"><h2>🔥 今日の消費カロリー</h2>
     <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:8px">
       <span class="big" data-burn-total>${b.total.toLocaleString()}</span><small>kcal</small>
@@ -341,6 +410,80 @@ function todayBurnCardHtml() {
     <div style="font-size:12.5px;color:var(--ink-dim);line-height:1.9">${parts.join(' ／ ')}</div>
     <p class="card-note">${note}</p>
   </div>`;
+}
+
+// ===== サボり検知と煽り =====
+// 最後にトレした日からの空き日数。1日も記録が無ければ null(始めていない人は煽らない)。
+function daysSinceLastTraining() {
+  const dates = [...new Set(S.logs.map(l => l.date))].sort();
+  if (!dates.length) return null;
+  const last = dates[dates.length - 1];
+  const t0 = new Date(last + 'T12:00:00').getTime();
+  const t1 = new Date(todayStr() + 'T12:00:00').getTime();
+  return Math.max(0, Math.round((t1 - t0) / 86400000));
+}
+
+// 空き日数ごとの煽り文。日替わりで1つ選ぶ(同じ日に何度開いても文言は変わらない)。
+// 責める一方にならないよう、必ず「今日できる小さな一歩」を添える。
+const SLACK_LINES = {
+  // 3〜4日
+  soft: [
+    ['今日はサボりですか？', 'いや、まだ間に合います。1種目だけでもやっとく？'],
+    ['お、生きてました？', '3日空くと筋肉がちょっと不安がってます。軽くいきましょう'],
+    ['最後のトレ、覚えてます？', '思い出したなら勝ちです。今日は短めでOK'],
+    ['筋肉「あれ、来ないの？」', 'そう言ってます。10分だけ付き合ってあげて'],
+  ],
+  // 5〜9日
+  mid: [
+    ['さすがにサボりすぎでは？', 'でも大丈夫、筋力が落ちるのはこれからです。今日戻れば無傷'],
+    ['ダンベルが埃をかぶってます', '今日は軽めでいいので、まず触るところから'],
+    ['一週間ぶりの再会になります', '久しぶりなので重量は落として。フォーム確認の日にしましょう'],
+    ['サボりの言い訳、聞きましょうか？', '…と思いましたが、やった方が早いです。1種目だけどうぞ'],
+  ],
+  // 10日以上
+  hard: [
+    ['完全に見失っています', 'ですが、戻ってきた人は必ず戻せます。今日は10分だけ'],
+    ['筋肉は正直です。でもやり直せます', '重量を半分にして再スタートしましょう'],
+    ['アプリ、開いてくれてありがとう', '開いた時点で半分勝ちです。1種目だけやって帰りましょう'],
+    ['ブランクは記録更新のチャンス', '落ちた分は戻りが速い(マッスルメモリー)。今日から回収を'],
+  ],
+};
+function slackCardHtml() {
+  if (!S.profile) return '';
+  const d = daysSinceLastTraining();
+  if (d == null || d < 3) return ''; // 2日空きは超回復の範囲なので煽らない
+  const key = d >= 10 ? 'hard' : d >= 5 ? 'mid' : 'soft';
+  const list = SLACK_LINES[key];
+  // 日替わり(日付から決めるので、同じ日は何度開いても同じ文言)
+  const seed = Math.floor(new Date(todayStr() + 'T12:00:00').getTime() / 86400000);
+  const [title, sub] = list[((seed % list.length) + list.length) % list.length];
+  const icon = key === 'hard' ? '🫠' : key === 'mid' ? '😐' : '👀';
+  return `<div class="card slack-card">
+    <h2>${icon} ${esc(title)}<span class="sub">${d}日ぶり</span></h2>
+    <p style="font-size:13.5px;margin-bottom:10px">${esc(sub)}</p>
+    <button class="btn ghost small" id="slack-go" style="width:100%">💪 今日のメニューを見る</button>
+  </div>`;
+}
+
+// 安静時心拍から今日のコンディションを判定。
+// 平常値(直近2週間の中央値)より高い日は、疲労・睡眠不足・体調不良のサインとされる。
+// 医学的診断ではないので、断定せず「軽めにする」提案に留める。
+const RHR_WARN = 5;   // 平常より+5bpm以上で注意
+const RHR_HIGH = 10;  // +10bpm以上で強めに休養提案
+function watchCondition() {
+  if (hkWatch.date !== todayStr() || hkWatch.restHR == null) return null;
+  const hr = hkWatch.restHR, base = hkWatch.baseHR;
+  if (base == null) {
+    return { level: 'info', html: `❤️ 安静時心拍 <b style="color:var(--ink)">${hr}</b> bpm <span style="color:var(--ink-dim);font-size:11.5px">(平常値を計測中)</span>` };
+  }
+  const diff = hr - base;
+  if (diff >= RHR_HIGH) {
+    return { level: 'high', html: `❤️ 安静時心拍 <b style="color:var(--warn)">${hr}</b> bpm(平常 ${base}）・<b style="color:var(--warn)">+${diff}</b><br><span style="font-size:12px">疲労や寝不足のサインかも。今日は休養か、軽めのメニューがおすすめです。</span>` };
+  }
+  if (diff >= RHR_WARN) {
+    return { level: 'warn', html: `❤️ 安静時心拍 <b style="color:var(--accent2)">${hr}</b> bpm(平常 ${base}）・+${diff}<br><span style="font-size:12px">少し高めです。重量は無理せず、いつもの8割くらいで。</span>` };
+  }
+  return { level: 'ok', html: `❤️ 安静時心拍 <b style="color:var(--accent)">${hr}</b> bpm(平常 ${base}）・<span style="color:var(--accent)">good</span> <span style="font-size:12px;color:var(--ink-dim)">回復はできています</span>` };
 }
 
 // ホームの「今日のカラダ」カード(歩数+睡眠推定)。ネイティブ+プロフィールありで表示。歩数はApple Health同期済みのみ
@@ -356,6 +499,7 @@ function healthTodayCardHtml() {
       <div>🚶 <span class="big" data-step-steps>—</span><small> 歩</small></div>
       <div style="color:var(--ink-dim)">活動 約<b style="color:var(--accent)" data-step-kcal>0</b> kcal</div>
     </div>` : ''}
+    <div data-rhr-line></div>
     <div class="sleep-row" id="sleep-row"><span data-sleep-line>😴 昨夜の睡眠 —</span><span class="sleep-edit">✎ 編集</span></div>
     <p class="card-note">${showSteps ? note : '睡眠は端末の使用状況から自動推定(タップで修正)。歩数は記録タブの「Apple Healthと同期」で表示されます。'}</p>
   </div>`;
@@ -2854,6 +2998,7 @@ function renderHome() {
   const tipIdx = Math.floor(new Date(today + 'T12:00:00').getTime() / 86400000) % tipList.length;
   const homeCards = [
     { id: 'wreport', name: '先週のまとめ', html: wrHtml },
+    { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
     { id: 'burn', name: '今日の消費カロリー', html: todayBurnCardHtml() },
     { id: 'vol', name: '今週のボリューム・負荷バランス', html: volHtml },
@@ -2879,6 +3024,13 @@ function renderHome() {
     if (sleepRow) sleepRow.addEventListener('click', openSleepEdit);
   }
 
+  const slackGo = $('#slack-go', root);
+  if (slackGo) slackGo.addEventListener('click', () => {
+    // 今日のメニューカードまでスクロール(休息日ならプランタブへ)
+    const card = $('.today-ex', root) || $('#home-add-ex', root);
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    else location.hash = '#plan';
+  });
   const setup = $('#home-setup', root);
   if (setup) setup.addEventListener('click', () => openProfileWizard(true));
   const cycleBtn = $('#cycle-setup', root);
