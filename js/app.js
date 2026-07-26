@@ -120,13 +120,15 @@ async function importHealthWeight(silent) {
   const H = healthPlugin();
   if (!H) { if (!silent) toast('この端末ではApple Healthを使えません'); return; }
   try {
-    // 心拍・活動カロリーはApple Watch連携用。名称が非対応の環境では例外になるので、
-    // まず全部入りで頼み、弾かれたら従来の最小構成で取り直す(体重同期を落とさない)。
-    try {
-      try { await H.requestAuthorization({ read: ['steps', 'weight', 'calories', 'restingHeartRate'], write: ['weight'] }); }
-      catch (e) { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
-    }
+    // プラグインの対応データ型はバージョンで違い、未対応の型を混ぜると要求ごと例外になる
+    // (7.2.15 は steps/distance/calories/heartRate/weight のみ)。1つの非対応で
+    // 他まで巻き添えにしないよう、必須ぶんと追加ぶんを分けて要求する。
+    try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
     catch (e) { console.warn('[health] auth denied', e); if (!silent) toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
+    // 追加ぶん(Apple Watch連携)。1つずつ頼み、非対応/拒否はそのまま無視する
+    for (const t of [...HK_ACTIVE_KCAL, ...HK_RESTING_HR]) {
+      try { await H.requestAuthorization({ read: [t] }); } catch (e) { console.warn('[health] optional auth skipped: ' + t, e); }
+    }
     const end = new Date();
     const start = new Date(end.getTime() - 365 * 864e5); // 直近1年
     let rows = [];
@@ -186,10 +188,14 @@ let hkTodaySteps = { date: '', steps: null };
 // 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
 // ===== Apple Watch 由来の指標(活動カロリー・安静時心拍) =====
 // dataType は @capgo/capacitor-health の HealthDataType に合わせる。
-// 'calories' = アクティブエネルギー(kilocalorie)、'restingHeartRate' = 安静時心拍(bpm)。
-// 取れない環境では関連UIを丸ごと出さないので、機能が無い端末でも表示が壊れない。
+// 導入版 7.2.15 が対応するのは steps / distance / calories / heartRate / weight のみ。
+// 'restingHeartRate' は 8系(Capacitor 8必須)からで今は使えないため、
+// 早朝の心拍から安静時心拍を推定する(HK_RESTING_HR は将来対応時のための候補)。
 const HK_ACTIVE_KCAL = ['calories'];
 const HK_RESTING_HR = ['restingHeartRate'];
+const HK_HEART_RATE = 'heartRate';
+// 眠っている時間帯の心拍を安静時の代用にする。3〜7時に限ると件数が少なく精度も高い。
+const REST_HR_FROM = 3, REST_HR_TO = 7;
 // 合計値の取得。iPhoneとWatchの両方が同じ指標を記録するため、単純合算だと二重計上になる。
 // 歩数と同じく集計APIを優先し、使えなければソース別に合計して最大の1つだけ採る。
 async function hkSum(H, types, startISO, endISO) {
@@ -237,16 +243,37 @@ async function refreshWatchMetrics(H) {
   const sod = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const activeKcal = await hkSum(H, HK_ACTIVE_KCAL, sod.toISOString(), now.toISOString());
 
-  // 安静時心拍: 今日の値と、比較用の平常値(直近14日の中央値)
+  // 安静時心拍: プラグインが直接対応していれば使い、無ければ早朝の心拍から推定する
   let restHR = null, baseHR = null;
-  const rows = await hkSamples(H, HK_RESTING_HR, new Date(sod.getTime() - 14 * 86400000).toISOString(), now.toISOString());
-  if (rows && rows.length) {
-    const byDay = new Map();
-    rows.forEach(x => {
+  const byDay = new Map();
+  const direct = await hkSamples(H, HK_RESTING_HR, new Date(sod.getTime() - 14 * 86400000).toISOString(), now.toISOString());
+  if (direct && direct.length) {
+    direct.forEach(x => {
       const d = String(x.startDate || x.endDate || '').slice(0, 10);
       const v = Number(x.value);
       if (d && isFinite(v) && v > 0) byDay.set(d, v);
     });
+  } else {
+    // 代用: 3〜7時(就寝中)の心拍の中央値をその日の安静時とみなす。
+    // 全期間を一度に読むと件数が膨大になるので、日ごとに4時間だけ読む。
+    for (let i = 0; i <= 7; i++) {
+      const day = new Date(sod.getTime() - i * 86400000);
+      const from = new Date(day.getFullYear(), day.getMonth(), day.getDate(), REST_HR_FROM);
+      const to = new Date(day.getFullYear(), day.getMonth(), day.getDate(), REST_HR_TO);
+      if (from > now) continue;
+      let rows = [];
+      try {
+        const r = await H.readSamples({ dataType: HK_HEART_RATE, startDate: from.toISOString(), endDate: to.toISOString(), limit: 200 });
+        rows = (r && r.samples) || [];
+      } catch (e) { break; }   // 心拍そのものが非対応なら以降も無駄なので止める
+      const vals = rows.map(x => Number(x.value)).filter(v => isFinite(v) && v > 20 && v < 200).sort((a, b) => a - b);
+      if (vals.length >= 5) {
+        const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+        byDay.set(key, vals[Math.floor(vals.length / 2)]);
+      }
+    }
+  }
+  if (byDay.size) {
     restHR = byDay.get(today) != null ? Math.round(byDay.get(today)) : null;
     const past = [...byDay.entries()].filter(([d]) => d !== today).map(([, v]) => v).sort((a, b) => a - b);
     if (past.length >= 3) baseHR = Math.round(past[Math.floor(past.length / 2)]);
@@ -649,16 +676,16 @@ function watchCondition() {
   if (hkWatch.date !== todayStr() || hkWatch.restHR == null) return null;
   const hr = hkWatch.restHR, base = hkWatch.baseHR;
   if (base == null) {
-    return { level: 'info', html: `❤️ 安静時心拍 <b style="color:var(--ink)">${hr}</b> bpm <span style="color:var(--ink-dim);font-size:11.5px">(平常値を計測中)</span>` };
+    return { level: 'info', html: `❤️ 安静時心拍(推定) <b style="color:var(--ink)">${hr}</b> bpm <span style="color:var(--ink-dim);font-size:11.5px">(平常値を計測中)</span>` };
   }
   const diff = hr - base;
   if (diff >= RHR_HIGH) {
-    return { level: 'high', html: `❤️ 安静時心拍 <b style="color:var(--warn)">${hr}</b> bpm(平常 ${base}）・<b style="color:var(--warn)">+${diff}</b><br><span style="font-size:12px">疲労や寝不足のサインかも。今日は休養か、軽めのメニューがおすすめです。</span>` };
+    return { level: 'high', html: `❤️ 安静時心拍(推定) <b style="color:var(--warn)">${hr}</b> bpm(平常 ${base}）・<b style="color:var(--warn)">+${diff}</b><br><span style="font-size:12px">疲労や寝不足のサインかも。今日は休養か、軽めのメニューがおすすめです。</span>` };
   }
   if (diff >= RHR_WARN) {
-    return { level: 'warn', html: `❤️ 安静時心拍 <b style="color:var(--accent2)">${hr}</b> bpm(平常 ${base}）・+${diff}<br><span style="font-size:12px">少し高めです。重量は無理せず、いつもの8割くらいで。</span>` };
+    return { level: 'warn', html: `❤️ 安静時心拍(推定) <b style="color:var(--accent2)">${hr}</b> bpm(平常 ${base}）・+${diff}<br><span style="font-size:12px">少し高めです。重量は無理せず、いつもの8割くらいで。</span>` };
   }
-  return { level: 'ok', html: `❤️ 安静時心拍 <b style="color:var(--accent)">${hr}</b> bpm(平常 ${base}）・<span style="color:var(--accent)">good</span> <span style="font-size:12px;color:var(--ink-dim)">回復はできています</span>` };
+  return { level: 'ok', html: `❤️ 安静時心拍(推定) <b style="color:var(--accent)">${hr}</b> bpm(平常 ${base}）・<span style="color:var(--accent)">good</span> <span style="font-size:12px;color:var(--ink-dim)">回復はできています</span>` };
 }
 
 // ホームの「今日のカラダ」カード(歩数+睡眠推定)。ネイティブ+プロフィールありで表示。歩数はApple Health同期済みのみ
@@ -5387,6 +5414,10 @@ document.addEventListener('DOMContentLoaded', () => {
   setInterval(markActive, 60000);     // 使用中は操作時刻を更新し続ける(睡眠推定の精度用)
   initWatchBridge();                  // Apple Watchからのセット完了を受ける(未組み込みはno-op)
   if (isNativeApp()) {
+    // アプリ内ではダブルタップ拡大を止める。touch-action だけでは WKWebView で止まらないため
+    // ビューポート側で禁止する。Web版はそのまま拡大できるよう、ネイティブ時だけ差し替える。
+    const vp = document.querySelector('meta[name=viewport]');
+    if (vp) vp.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover');
     // アプリを強制終了するとLive Activityがロック画面に残る。タイマー未稼働なら残骸を掃除
     if (!timer.iv && !iTimer.iv) endTimerActivity();
     consumeNativeAction();              // Siriショートカット/Spotlight経由の起動アクションを実行
