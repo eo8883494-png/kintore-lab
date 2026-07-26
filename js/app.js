@@ -120,6 +120,8 @@ async function queryTodaySteps(H) {
 async function importHealthWeight(silent) {
   const H = healthPlugin();
   if (!H) { if (!silent) toast('この端末ではApple Healthを使えません'); return; }
+  // 手動で押した時だけ「試した」印を付ける(自動同期では診断ボタンを増やさない)
+  if (!silent) { const hp = loadHealthPref(); if (!hp.tried) { hp.tried = true; saveHealthPref(hp); } }
   try {
     // プラグインの対応データ型はバージョンで違い、未対応の型を混ぜると要求ごと例外になる
     // (7.2.15 は steps/distance/calories/heartRate/weight のみ)。1つの非対応で
@@ -165,6 +167,7 @@ async function importHealthWeight(silent) {
     const stepEl = document.getElementById('hk-steps');
     if (stepEl) stepEl.textContent = steps != null ? `🚶 今日の歩数: ${steps.toLocaleString()}歩` : '';
     if (silent) return; // 自動同期時はトーストを出さない(静かに反映)
+    if (currentView() === 'tools') renderTools(); // 「うまく同期できない時は」ボタンを出す
     if (rows.length) toast(`体重を取り込みました(新規${added}件・更新${updated}件)${steps != null ? ' / 歩数' + steps.toLocaleString() : ''}`);
     else toast(steps != null ? `今日の歩数: ${steps.toLocaleString()}歩(体重データは未登録)` : 'Apple Healthにデータが見つかりませんでした');
   } catch (e) { console.warn('[health] import failed', e); if (!silent) toast('ヘルスケアから取り込めませんでした。設定でアクセスを許可してください'); }
@@ -184,7 +187,9 @@ async function writeHealthWeight(kg, dateStr) {
 }
 
 // 歩数・睡眠のホーム表示設定(端末内)。一度でも同期したら autoSteps=true
-function loadHealthPref() { try { return { autoSteps: false, ...JSON.parse(localStorage.getItem('kintoreLab.health') || '{}') }; } catch (e) { return { autoSteps: false }; } }
+// tried: 同期を一度でも試したか。診断ボタンの出し分けに使う。
+// 成功ではなく「試した」で判定するのは、失敗した人こそ診断が必要なため。
+function loadHealthPref() { try { return { autoSteps: false, tried: false, ...JSON.parse(localStorage.getItem('kintoreLab.health') || '{}') }; } catch (e) { return { autoSteps: false, tried: false }; } }
 function saveHealthPref(p) { try { localStorage.setItem('kintoreLab.health', JSON.stringify(p)); } catch (e) {} }
 let hkTodaySteps = { date: '', steps: null };
 // 今日の歩数を取得してキャッシュ&表示更新(ネイティブ+同期済みのみ)。失敗は無視
@@ -4426,7 +4431,7 @@ function renderLog() {
         <input type="number" id="bw-input" placeholder="今日の体重 kg" step="0.1" min="20">
         <button class="btn small" id="bw-save" style="white-space:nowrap">保存</button>
       </div>
-      ${isNativeApp() ? '<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthと同期(体重・歩数・心拍)</button><div id="hk-steps" class="card-note" style="margin-top:6px"></div><button class="btn ghost small" id="hk-diag" style="margin-top:6px;width:100%;font-size:11.5px;opacity:.75">🩺 ヘルスケア連携を診断</button>' : ''}
+      ${isNativeApp() ? `<button class="btn ghost small" id="hk-weight" style="margin-top:8px;width:100%">🍎 Apple Healthと同期(体重・歩数・心拍)</button><div id="hk-steps" class="card-note" style="margin-top:6px"></div>${loadHealthPref().tried ? '<button class="btn ghost small" id="hk-diag" style="margin-top:6px;width:100%;font-size:11.5px;opacity:.7">🩺 うまく同期できない時は(接続状況を確認)</button>' : ''}` : ''}
       ${S.weights.length ? '<canvas class="chart" id="bw-chart" style="margin-top:10px"></canvas><p class="card-note">太線=トレンド(日々のブレを均した実際の推移)、点線=このペースなら目標に着く予測。体重は1日で±1kg動くので、線で見るのが大事。</p>' : ''}
     </div>`;
 
