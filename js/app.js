@@ -554,6 +554,15 @@ function homeWeightCardHtml() {
   </div>`;
 }
 
+// 体型写真は「一番見たい成果」なのに記録タブの奥にあり、ダイエット層には遠い。
+// 減量・健康維持の人にはホームにも置く(描画は renderPhotoCard に任せる)。
+function homePhotoCardHtml() {
+  const p = S.profile;
+  if (!p || (p.goal !== 'diet' && p.goal !== 'fit')) return '';
+  return `<div class="card"><h2>📷 体型フォト<span class="sub">体重より変化が分かる</span></h2>
+    <div id="home-photo-card"><p class="card-note">読み込み中...</p></div></div>`;
+}
+
 // ===== 有酸素(減量向け) =====
 // 減量では「筋トレで筋肉を守り、有酸素と食事で赤字を作る」のが基本。筋トレDBは
 // 部位×セットの世界なので混ぜず、分数で測る別枠として扱う。
@@ -3474,6 +3483,7 @@ function renderHome() {
     { id: 'onboard', name: 'はじめの3ステップ', html: onboardCardHtml() },
     { id: 'omakase', name: '今日のおすすめ(回復ベース)', html: omakaseCardHtml() },
     { id: 'weight', name: '今日の体重(減量向け)', html: homeWeightCardHtml() },
+    { id: 'photo', name: '体型フォト(減量向け)', html: homePhotoCardHtml() },
     { id: 'cardio', name: '今日の有酸素(減量向け)', html: cardioCardHtml() },
     { id: 'slack', name: 'サボり検知', html: slackCardHtml() },
     { id: 'health', name: '今日のカラダ(歩数・睡眠)', html: healthHtml },
@@ -3511,6 +3521,8 @@ function renderHome() {
   }));
   const omk = $('#omakase-go', root);
   if (omk) omk.addEventListener('click', startOmakase);
+  const hpc = $('#home-photo-card', root);
+  if (hpc && typeof renderPhotoCard === 'function') renderPhotoCard(hpc);
   const hwSave = $('#hw-save', root);
   if (hwSave) hwSave.addEventListener('click', () => {
     const el = $('#hw-input', root);
@@ -4559,12 +4571,17 @@ function renderSim() {
   if (!simState) simState = { minutes: S.profile.minutes, days: S.profile.days, usePlan: !!S.plan };
   const opt = optimalPlan(S.profile);
 
+  // 減量目的は脂肪の落ちるペースで最適解を出しているので、表示する単位も揃える
+  const optDiet = S.profile.goal === 'diet';
+  const fmtEff = (c) => optDiet ? `−${(Math.round(c.eff * 10) / 10).toFixed(1)}kg/月` : `効率${Math.round(c.eff * 100)}%`;
   const optCard = `<div class="card"><h2>🏆 あなたの最適解<span class="sub">全56通りを試算</span></h2>
       <div class="focus-chips">
-        <span class="chip grow">コスパ最強: 週${opt.eco.days}日 × ${opt.eco.minutes}分 (効率${Math.round(opt.eco.eff * 100)}%)</span>
-        <span class="chip">理論上の最高: 週${opt.best.days}日 × ${opt.best.minutes}分 (${Math.round(opt.best.eff * 100)}%)</span>
+        <span class="chip grow">コスパ最強: 週${opt.eco.days}日 × ${opt.eco.minutes}分 (${fmtEff(opt.eco)})</span>
+        <span class="chip">理論上の最高: 週${opt.best.days}日 × ${opt.best.minutes}分 (${fmtEff(opt.best)})</span>
       </div>
-      <p class="card-note">「コスパ最強」は最高効率の95%以上を最小の週合計時間で出せる設定。これ以上増やしても伸びは数%です。効率%は標準的な部位配分での試算なので、現在のメニュー配分とは数%前後します。</p>
+      <p class="card-note">${optDiet
+        ? '「コスパ最強」は最高ペースの95%以上を最小の週合計時間で出せる設定。減量は食事の影響が大きいので、運動時間を増やしても差は数%です。無理なく続く時間を選ぶのが結局いちばん速い。'
+        : '「コスパ最強」は最高効率の95%以上を最小の週合計時間で出せる設定。これ以上増やしても伸びは数%です。効率%は標準的な部位配分での試算なので、現在のメニュー配分とは数%前後します。'}</p>
       <button class="btn small ghost" id="opt-apply">この設定をスライダーで試す</button>
     </div>`;
   const simCard = `<div class="card"><h2>⚗️ 効率シミュレーター</h2>
@@ -4612,7 +4629,26 @@ function renderSimResults(container) {
   const trained = r.partResults.filter(x => x.sets > 0);
   const avgSets = trained.length ? trained.reduce((s, x) => s + x.sets, 0) / trained.length : 0;
 
-  let html = `
+  // 減量・健康維持の人にとって「効率スコア%」は筋肥大の指標で、知りたいのは体重の着地点。
+  // 先に到達予測を出してから、参考として効率スコアを見せる。
+  let html = '';
+  if ((S.profile.goal === 'diet' || S.profile.goal === 'fit') && typeof weightNav === 'function') {
+    try {
+      const nav = weightNav(S.profile, S.weights || []);
+      if (nav.mode === 'cut' && nav.weeks) {
+        const eta = fmtDate(dateAdd(todayStr(), nav.weeks * 7));
+        html += `<div class="card" style="border-color:var(--accent)"><h2>🎯 このペースなら</h2>
+          <div class="hero-num">${nav.target}<small>kg</small></div>
+          <p class="card-note">今より<b style="color:var(--accent)">-${nav.diff}kg</b>。週${nav.pace}kg(筋肉を守れる上限)で約${nav.weeks}週間、<b>${eta}頃</b>に到達する計算です。
+          ${nav.advice ? '<br>' + esc(nav.advice) : ''}</p>
+          <p class="card-note">下の効率スコアは筋肉のつきやすさの指標です。減量中は「筋肉を落とさない」ことが目的になります。</p>
+        </div>`;
+      } else if (nav.msg) {
+        html += `<div class="card"><h2>🎯 体重の方針</h2><p style="font-size:13.5px">${esc(nav.msg)}</p></div>`;
+      }
+    } catch (e) { /* meals.js 未読込時は従来表示のみ */ }
+  }
+  html += `
     <div class="card"><h2>🏆 総合効率スコア</h2>
       <div class="hero-num">${pct}<small>%</small></div>
       <p class="card-note">週${r.totalSets}セット(1回あたり約${r.setsPerDay}セット)。理論上の最大成長ペースに対する到達度です。${S.profile.goal === 'posture' ? '<br>姿勢改善は筋量より「引く筋肉を起こす」のが目的。4〜8週で肩の開き・立ち姿の変化を実感するのが目安です。' : ''}</p>

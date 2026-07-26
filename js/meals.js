@@ -323,18 +323,37 @@ function renderMeals() {
     if (!items.length) return '';
     return `<optgroup label="${FOOD_CAT_LABEL[cat]}">${items.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${esc(f.per)}・${g(f.kcal)}kcal）</option>`).join('')}</optgroup>`;
   }).join('');
+  // よく食べるもの: 直近30日の記録から上位6件。毎日同じものを食べる人ほど入力が速くなる
+  function frequentFoodsHtml() {
+    const since = dateAdd(todayStr(), -30);
+    const cnt = new Map();
+    Object.keys(S.foodLog || {}).forEach(d => {
+      if (d < since) return;
+      (S.foodLog[d] || []).forEach(it => { if (it && it.id) cnt.set(it.id, (cnt.get(it.id) || 0) + 1); });
+    });
+    const top = [...cnt.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+      .map(([id]) => FOOD_BY_ID[id]).filter(Boolean);
+    if (!top.length) return '';
+    return `<div style="margin-top:10px">
+      <div style="font-size:11.5px;color:var(--ink-dim);margin-bottom:4px">よく食べるもの</div>
+      <div class="focus-chips" style="flex-wrap:wrap;gap:6px">
+        ${top.map(f => `<button class="btn ghost small fl-quick" data-id="${esc(f.id)}">${esc(f.name)}</button>`).join('')}
+      </div></div>`;
+  }
   const cFoodlog = `<div class="card"><h2>🍽️ 食べたものを記録<span class="sub">今日の実測 vs 目標</span></h2>
     ${flBar('kcal', flTot.kcal, t.kcal)}
     ${flBar('P', flTot.p, t.p)}
     ${flBar('F', flTot.f, t.f)}
     ${flBar('C', flTot.c, t.c)}
     <div id="fl-items" style="margin-top:8px">${flItems}</div>
-    <div style="display:flex;gap:6px;margin-top:10px">
+    ${frequentFoodsHtml()}
+    <input type="search" id="fl-search" placeholder="🔍 食品を検索(例: ラーメン、チョコ)" style="margin-top:10px" autocomplete="off">
+    <div style="display:flex;gap:6px;margin-top:6px">
       <select id="fl-food" style="flex:1;min-width:0">${flOpts}</select>
       <input type="number" id="fl-qty" value="1" min="0.5" step="0.5" style="width:52px;text-align:right">
       <button class="btn small" id="fl-add">追加</button>
     </div>
-    <p class="card-note">数量は「1食あたりの単位(表示中)」の個数。例: ご飯100gを1.5なら150g。</p>
+    <p class="card-note">数量は「1食あたりの単位(表示中)」の個数。例: ご飯100gを1.5なら150g。外食やお菓子も入っています。</p>
   </div>`;
 
   // 💧 水分トラッキング
@@ -474,6 +493,38 @@ function renderMeals() {
     renderMeals();
   });
   // 食事ログ 追加/削除
+  // 検索: 入力に一致する食品だけをセレクトに残す。品目が増えたので目視で探すのは無理があるため
+  const flSearch = $('#fl-search', root);
+  const flSel = $('#fl-food', root);
+  if (flSearch && flSel) {
+    const norm = (x) => String(x || '').toLowerCase();
+    flSearch.addEventListener('input', () => {
+      const q = norm(flSearch.value).trim();
+      const hit = q ? FOODS.filter(f => norm(f.name).includes(q) || norm(f.note).includes(q)) : FOODS;
+      if (!hit.length) {
+        flSel.innerHTML = '<option value="">該当なし</option>';
+        return;
+      }
+      flSel.innerHTML = Object.keys(FOOD_CAT_LABEL).map(cat => {
+        const items = hit.filter(f => f.cat === cat);
+        if (!items.length) return '';
+        return `<optgroup label="${FOOD_CAT_LABEL[cat]}">${items.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${esc(f.per)}・${g(f.kcal)}kcal）</option>`).join('')}</optgroup>`;
+      }).join('');
+    });
+  }
+  // よく食べるものは1タップで1つ追加
+  const addFood = (id, qty) => {
+    if (!id || !FOOD_BY_ID[id]) return;
+    const dt = todayStr();
+    if (!S.foodLog[dt]) S.foodLog[dt] = [];
+    if (S.foodLog[dt].length >= 60) { toast('記録は1日60件までです'); return; }
+    S.foodLog[dt].push({ id, qty });
+    saveState(); renderMeals();
+  };
+  $all('.fl-quick', root).forEach(b => b.addEventListener('click', () => {
+    addFood(b.dataset.id, 1);
+    toast(`${FOOD_BY_ID[b.dataset.id].name} を追加しました`);
+  }));
   const flAdd = $('#fl-add', root);
   if (flAdd) flAdd.addEventListener('click', () => {
     const id = $('#fl-food', root).value;

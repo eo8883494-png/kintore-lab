@@ -110,19 +110,31 @@ function simulate(minutes, days, profile, plan) {
 
 // 最適な時間×日数を全探索: 「最高効率」と「最高の95%を最小の週合計時間で達成(コスパ最強)」
 function optimalPlan(profile) {
+  // 減量目的では「筋肥大の効率」で最適解を選んでも意味がない。
+  // ただし脂肪減少は運動時間にほぼ比例して増え続け、頭打ちが無い。そのまま最大値を選ぶと
+  // 「週7日×120分」を勧めてしまい、現実的でないうえ続かない。
+  // 続けられる範囲(週2〜5日・20〜60分)に絞って探し、その中での最小時間を勧める。
+  const diet = profile.goal === 'diet';
+  const dayMin = diet ? 2 : 1, dayMax = diet ? 5 : 7;
+  const minMin = diet ? 20 : 15, minMax = diet ? 60 : 120;
   const candidates = [];
-  for (let days = 1; days <= 7; days++) {
-    for (let m = 15; m <= 120; m += 15) {
-      const eff = simulate(m, days, profile, null).overallEffect;
-      candidates.push({ days, minutes: m, eff, weekly: days * m });
+  for (let days = dayMin; days <= dayMax; days++) {
+    for (let m = minMin; m <= minMax; m += 15) {
+      const r = simulate(m, days, profile, null);
+      const eff = diet ? r.monthlyFatLoss : r.overallEffect;
+      candidates.push({ days, minutes: m, eff, weekly: days * m, fat: r.monthlyFatLoss, growth: r.overallEffect });
     }
   }
   let best = candidates[0];
   candidates.forEach(c => { if (c.eff > best.eff + 1e-9) best = c; });
+  // 減量は運動より食事の寄与が大きく、時間を倍にしても差は小さい。
+  // 筋肥大の95%基準をそのまま使うと最大時間しか残らないので、閾値を下げて
+  // 「短くても十分近い」設定を勧める。
+  const thr = diet ? 0.8 : 0.95;
   const eco = candidates
-    .filter(c => c.eff >= best.eff * 0.95)
+    .filter(c => c.eff >= best.eff * thr)
     .sort((a, b) => (a.weekly - b.weekly) || (b.eff - a.eff))[0] || best;
-  return { best, eco };
+  return { best, eco, diet };
 }
 
 // 総合効果だけをさっと出す補助 (限界効用の計算用)
