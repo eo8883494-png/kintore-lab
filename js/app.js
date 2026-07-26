@@ -90,7 +90,8 @@ function hkToKg(value, unit) {
 async function queryTodaySteps(H) {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const opts = { dataType: 'steps', startDate: startOfDay.toISOString(), endDate: now.toISOString() };
+  // limit を指定しないと100件で打ち切られ、1日分を数え切れずに過小表示になる
+  const opts = { dataType: 'steps', startDate: startOfDay.toISOString(), endDate: now.toISOString(), limit: HK_SAMPLE_LIMIT };
   // 1) 集計API(ソース重複はHealthKit側で排除される)
   try {
     if (H.queryAggregated) {
@@ -125,8 +126,9 @@ async function importHealthWeight(silent) {
     // 他まで巻き添えにしないよう、必須ぶんと追加ぶんを分けて要求する。
     try { await H.requestAuthorization({ read: ['steps', 'weight'], write: ['weight'] }); }
     catch (e) { console.warn('[health] auth denied', e); if (!silent) toast('Apple Healthへのアクセスが許可されませんでした(設定→プライバシー→ヘルスケア で許可)'); return; }
-    // 追加ぶん(Apple Watch連携)。1つずつ頼み、非対応/拒否はそのまま無視する
-    for (const t of [...HK_ACTIVE_KCAL, ...HK_RESTING_HR]) {
+    // 追加ぶん(Apple Watch連携)。1つずつ頼み、非対応/拒否はそのまま無視する。
+    // heartRate は安静時心拍の推定に使うので必ず含める。
+    for (const t of [...HK_ACTIVE_KCAL, HK_HEART_RATE, ...HK_RESTING_HR]) {
       try { await H.requestAuthorization({ read: [t] }); } catch (e) { console.warn('[health] optional auth skipped: ' + t, e); }
     }
     const end = new Date();
@@ -194,13 +196,16 @@ let hkTodaySteps = { date: '', steps: null };
 const HK_ACTIVE_KCAL = ['calories'];
 const HK_RESTING_HR = ['restingHeartRate'];
 const HK_HEART_RATE = 'heartRate';
+// readSamples は limit 未指定だと100件で打ち切られる。1日分の歩数・活動カロリーは
+// 100サンプルを超えるため、明示しないと合計が過小になる。
+const HK_SAMPLE_LIMIT = 3000;
 // 眠っている時間帯の心拍を安静時の代用にする。3〜7時に限ると件数が少なく精度も高い。
 const REST_HR_FROM = 3, REST_HR_TO = 7;
 // 合計値の取得。iPhoneとWatchの両方が同じ指標を記録するため、単純合算だと二重計上になる。
 // 歩数と同じく集計APIを優先し、使えなければソース別に合計して最大の1つだけ採る。
 async function hkSum(H, types, startISO, endISO) {
   for (const dataType of types) {
-    const opts = { dataType, startDate: startISO, endDate: endISO };
+    const opts = { dataType, startDate: startISO, endDate: endISO, limit: HK_SAMPLE_LIMIT };
     try {
       if (H.queryAggregated) {
         const r = await H.queryAggregated({ ...opts, bucket: 'day' });
@@ -636,12 +641,16 @@ async function openHealthDiag() {
   try { const a = await H.isAvailable(); L.push(`利用可否: ${a && a.available ? 'OK' : 'NG'}${a && a.reason ? ' (' + a.reason + ')' : ''}`); }
   catch (e) { L.push('利用可否: 例外 ' + (e && e.message)); }
 
-  const want = ['steps', 'weight', 'calories', 'restingHeartRate'];
-  try {
-    const st = await H.checkAuthorization({ read: want, write: ['weight'] });
-    L.push('', '許可された読み取り: ' + ((st && st.readAuthorized) || []).join(', '));
-    L.push('拒否/未許可: ' + ((st && st.readDenied) || []).join(', '));
-  } catch (e) { L.push('', '許可状態: 例外 ' + (e && e.message)); }
+  const want = ['steps', 'weight', 'calories', 'heartRate', 'restingHeartRate'];
+  // まとめて聞くと非対応の型が1つあるだけで全体が例外になるので、1件ずつ確認する
+  L.push('', '— 許可状態 —');
+  for (const t of want) {
+    try {
+      const st = await H.checkAuthorization({ read: [t] });
+      const ok = ((st && st.readAuthorized) || []).includes(t);
+      L.push(`${t}: ${ok ? '許可' : '未許可'}`);
+    } catch (e) { L.push(`${t}: 非対応 (${(e && e.message) || e})`); }
+  }
 
   // 実際に読めるかを1つずつ試す(許可されていてもデータが無ければ0件になる)
   const now = new Date();
