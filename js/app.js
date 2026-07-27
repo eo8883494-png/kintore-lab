@@ -631,6 +631,10 @@ const CARDIO = [
   { id: 'jump-rope', name: '縄跳び',           mets: 8.8, where: 'in',  note: '短時間で高消費。マンションでは注意' },
   { id: 'burpee',    name: 'バーピー',         mets: 8.0, where: 'in',  note: 'きつい代わりに一番短く済む' },
   { id: 'march',     name: 'その場もも上げ',   mets: 4.5, where: 'in',  note: '道具も音もほぼ不要。雨の日の保険' },
+  // 音楽に合わせて動ける系。「運動」より「楽しい」が入口の人向け。動画を見ながらの想定
+  { id: 'dance',     name: 'ダンスエクササイズ', mets: 5.5, where: 'in', note: '好きな曲に合わせて。動画を見ながらが続けやすい', yt: 'ダンスエクササイズ 初心者 10分' },
+  { id: 'aerobics',  name: 'エアロビクス',     mets: 6.5, where: 'in',  note: '音楽に合わせた全身運動。マンションOKの低衝撃版もある', yt: 'エアロビクス 初心者 自宅' },
+  { id: 'tabata',    name: 'タバタ(HIIT)',     mets: 11.0, where: 'in', note: '20秒動いて10秒休むを8回=4分。短いが最強クラス', yt: 'タバタ 4分 自宅' },
   { id: 'treadmill', name: 'トレッドミル',     mets: 7.0, where: 'gym', note: '速度と傾斜で強度を調整できる' },
   { id: 'ergo',      name: 'エアロバイク',     mets: 6.8, where: 'gym', note: '負荷調整が細かく、膝に優しい' },
 ];
@@ -698,11 +702,15 @@ function openCardioAdd(id) {
   const mins = [5, 10, 15, 20, 30, 45, 60];   // 5分から選べるようにする(まず始める心理的ハードルを下げる)
   const bg = openModal(`<h2>${esc(c.name)}</h2>
     <p class="modal-sub">${esc(c.note)}</p>
+    ${c.yt ? `<button class="btn" id="cardio-yt" style="margin-bottom:4px">🎬 一緒に動ける動画を探す (YouTube)</button>
+    <p class="card-note" style="margin-bottom:8px">動画に合わせて動いたら、下から時間を記録してください。</p>` : ''}
     <div style="display:flex;flex-direction:column;gap:8px;margin:12px 0">
       ${mins.map(m => `<button class="btn ghost cardio-min" data-m="${m}" style="justify-content:space-between">
         <span>${m}分</span><small style="opacity:.75">約${cardioKcal(c, m, w)}kcal</small></button>`).join('')}
     </div>
     <button class="btn ghost" onclick="closeModal()">閉じる</button>`);
+  const cy = $('#cardio-yt', bg);
+  if (cy) cy.addEventListener('click', () => openYouTubeSearch(c.yt));
   $all('.cardio-min', bg).forEach(b => b.addEventListener('click', () => {
     const t = todayStr();
     if (!S.cardio) S.cardio = {};
