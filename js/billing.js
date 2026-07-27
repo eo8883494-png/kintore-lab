@@ -193,7 +193,10 @@
     } catch (e) {
       if (e && (e.userCancelled || e.code === '1' || /cancel/i.test(e.message || ''))) return { cancelled: true };
       console.warn('[billing] purchase failed', e);
-      return { error: (e && e.message) || 'purchase_failed' };
+      // コードとメッセージを両方返す。表示側でそのまま出せば、失敗の原因が
+      // ストア側(例: レシート検証)なのか設定なのかを実機だけで切り分けられる
+      const parts = [e && e.code, e && e.message].filter(Boolean);
+      return { error: parts.join(': ') || 'purchase_failed' };
     }
   }
 

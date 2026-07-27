@@ -2389,11 +2389,14 @@ function bindPaywall(bg, gate) {
         //    ただし1回の失敗で開けるとタダ乗りされるので、2回連続で失敗した時だけ開放する。
         gateFailCount++;
         const canRetry = gate && gateFailCount < GATE_FAIL_LIMIT;
-        toast(canRetry
+        // エラー内容を末尾に出す。「接続できませんでした」だけでは、購入失敗の原因が
+        // 端末側/ストア側/検証サーバー側のどれなのか切り分けられず、毎回推測になるため。
+        const detail = r && r.error && r.error !== 'purchase_failed' ? `\n(${String(r.error).slice(0, 120)})` : '';
+        toast((canRetry
           ? 'うまく接続できませんでした。もう一度お試しください'
           : (r && r.error === 'no_offering'
             ? '商品情報を取得できませんでした。時間をおいて再度お試しください'
-            : '購入を完了できませんでした。時間をおいて再度お試しください'));
+            : '購入を完了できませんでした。時間をおいて再度お試しください')) + detail);
         if (gate && !canRetry) { closeModal(); route(); afterGatePassed(); }
       }
     } finally { start.disabled = false; start.textContent = orig; }
