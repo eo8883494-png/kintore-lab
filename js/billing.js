@@ -108,7 +108,7 @@
       return true;
     } catch (e) {
       console.warn('[billing] configure failed', e);
-      lastDiag = { stage: 'configure例外', error: [e && e.code, e && e.message].filter(Boolean).join(': ').slice(0, 200) };
+      lastDiag = { stage: 'configure例外', error: errText(e) };
       return false;
     }
   }
@@ -129,6 +129,27 @@
 
   // no_offering の原因特定用。どの段階で落ちたかを記録し、ペイウォールの診断から見られるようにする
   let lastDiag = { stage: 'init' };
+  // エラー詳細を全部拾う(code/message だけだと underlyingError が切れて原因が読めない)
+  function errText(e) {
+    if (!e) return 'unknown';
+    const parts = [];
+    ['code', 'message', 'underlyingErrorMessage', 'readableErrorCode'].forEach(k => { if (e[k]) parts.push(k + '=' + e[k]); });
+    if (!parts.length) { try { parts.push(JSON.stringify(e)); } catch (_) { parts.push(String(e)); } }
+    return parts.join(' | ').slice(0, 600);
+  }
+  // 切り分け用: RevenueCatのOffering設定を介さず、商品IDを直接StoreKitに問い合わせる。
+  // ここでも0件なら Apple側(商品状態/伝播/障害)、ここで取れるならRevenueCatのOffering設定が原因。
+  async function probeProducts() {
+    if (!configured) { const ok = await configure(); if (!ok) return 'configure失敗'; }
+    const P = plugin();
+    if (!P || !P.getProducts) return 'getProducts非対応';
+    try {
+      const res = await P.getProducts({ productIdentifiers: ['kintorelab_yearly', 'kintorelab_monthly'] });
+      const list = (res && res.products) || [];
+      if (!list.length) return '0件(StoreKitが商品を返さない=Apple側)';
+      return list.map(p => (p.identifier || p.productIdentifier) + '=' + (p.priceString || '?')).join(', ');
+    } catch (e) { return '例外: ' + errText(e); }
+  }
   // ペイウォール用: 実際の Offering から価格入りプラン配列を返す。取れなければ null(=UIは既定文言)
   async function getPlans() {
     if (!configured) { const ok = await configure(); if (!ok) { lastDiag = { stage: 'configure失敗' }; return null; } }
@@ -164,7 +185,7 @@
       return plans.length ? plans : null;
     } catch (e) {
       console.warn('[billing] getOfferings failed', e);
-      lastDiag = { stage: 'getOfferings例外', error: [e && e.code, e && e.message].filter(Boolean).join(': ').slice(0, 200) };
+      lastDiag = { stage: 'getOfferings例外', error: errText(e) };
       return null;
     }
   }
@@ -234,5 +255,5 @@
   // ネイティブ課金が実際に使えるか(ペイウォールCTAの出し分け用)
   function ready() { return native() && !!plugin() && keyLooksReal(platformKey()); }
 
-  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility, lastDiag: () => lastDiag };
+  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility, lastDiag: () => lastDiag, probeProducts };
 })();

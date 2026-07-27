@@ -2419,10 +2419,14 @@ function bindPaywall(bg, gate) {
     diagBtn.textContent = '🩺 取得中…';
     try { await B2.getPlans(); } catch (e) {}
     const ld = B2.lastDiag ? B2.lastDiag() : null;
+    // StoreKit直接照会(Offering設定を介さない)。ここで0件ならApple側の問題と確定できる
+    let probe = '-';
+    try { probe = B2.probeProducts ? await B2.probeProducts() : '未対応(旧資産)'; } catch (e) { probe = '例外'; }
     diagBtn.textContent = '🩺 接続診断';
     alert('資産: v' + ((document.querySelector('script[src*="app.js"]') || { src: '' }).src.match(/[?&]v=(\d+)/) || [])[1] +
       '\n基本: ' + (B2.diag ? B2.diag() : '-') +
-      '\n直近: ' + JSON.stringify(ld));
+      '\n直近: ' + JSON.stringify(ld) +
+      '\n直接照会: ' + probe);
   });
   // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
   const B = window.__klBilling;
