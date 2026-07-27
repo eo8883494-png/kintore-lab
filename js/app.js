@@ -5028,10 +5028,14 @@ function renderLog() {
         const setsTxt = l.sets.map(s => s.w > 0 ? `${s.w}kg×${s.r}` : `${s.r}${u}`).join(' / ');
         return `<div class="log-entry"><div><div class="nm">${ex ? esc(ex.name) : esc(l.exId)}</div>
           <div class="sets">${esc(setsTxt)}</div></div>
+          <button class="icon-btn-sm" data-edit-log="${l.id}" aria-label="この記録を修正">✎</button>
           <button class="del" data-del="${l.id}" aria-label="この記録を削除">🗑</button></div>`;
       }).join('')}</div>`).join('');
     $all('[data-share]', list).forEach(btn => {
       btn.addEventListener('click', () => openShareModal(btn.dataset.share));
+    });
+    $all('[data-edit-log]', list).forEach(btn => {
+      btn.addEventListener('click', () => openLogEdit(Number(btn.dataset.editLog)));
     });
     $all('[data-del]', list).forEach(btn => {
       btn.addEventListener('click', () => {
@@ -5048,6 +5052,72 @@ function renderLog() {
       });
     });
   }
+}
+
+// ===== 記録の修正 =====
+// 重量の打ち間違い(100kgと10kgなど)を直せず削除→再記録しかなかった。
+// 日付も変えられるので「昨日の分を今日思い出して記録する」もこれで済む
+// (今日記録して日付を昨日に直す)。過去日への付け替えでサボり検知の誤発動も防げる。
+function openLogEdit(logId) {
+  const log = S.logs.find(l => l.id === logId);
+  if (!log) return;
+  const ex = DB.byId[log.exId];
+  const isBW = ex && ex.equipment === 'bodyweight';
+  const u = ex && ex.isometric ? '秒' : '回';
+  const rows = log.sets.map((s, i) => `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <span style="font-size:12px;color:var(--ink-dim);width:44px">セット${i + 1}</span>
+      ${isBW ? '<span class="unit" style="flex:1">自重</span>'
+        : `<input type="number" class="le-w" data-i="${i}" value="${s.w > 0 ? s.w : ''}" placeholder="kg" step="0.5" min="0" style="flex:1" inputmode="decimal"><span class="unit">kg</span>`}
+      <input type="number" class="le-r" data-i="${i}" value="${s.r}" min="1" step="1" style="flex:1" inputmode="numeric"><span class="unit">${u}</span>
+    </div>`).join('');
+  const bg = openModal(`<h2>✎ 記録を修正</h2>
+    <p class="modal-sub">${ex ? esc(ex.name) : esc(log.exId)}</p>
+    <div class="field"><label>日付</label><input type="date" id="le-date" value="${log.date}" max="${todayStr()}"></div>
+    <div class="field"><label>セット</label>${rows}</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+      <button class="btn" id="le-save">保存</button>
+      <button class="btn ghost" onclick="closeModal()">キャンセル</button>
+    </div>`);
+  $('#le-save', bg).addEventListener('click', () => {
+    const newDate = $('#le-date', bg).value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate) || newDate > todayStr()) { toast('日付が正しくありません'); return; }
+    const sets = log.sets.map((s, i) => {
+      const wEl = bg.querySelector(`.le-w[data-i="${i}"]`);
+      const rEl = bg.querySelector(`.le-r[data-i="${i}"]`);
+      const w = wEl ? Math.max(0, Math.round((Number(wEl.value) || 0) * 2) / 2) : 0;
+      const r = Math.max(1, Math.min(999, Math.round(Number(rEl && rEl.value) || s.r)));
+      return { ...s, w, r };
+    });
+    const oldDate = log.date;
+    const changed = newDate !== oldDate || JSON.stringify(sets) !== JSON.stringify(log.sets);
+    if (changed) {
+      // 墓標のキーは日付+種目+セット内容なので、書き換える前の姿で立てる
+      // (書き換え後に立てると旧内容の墓標にならず、同期マージで旧記録が復活する)
+      tombstoneLog({ ...log });
+    }
+    log.sets = sets;
+    if (newDate !== oldDate) {
+      // dayDone の紐付けも日付ごと動かす(今日の分を昨日に移すと、ホームのチェックが正しく外れる)
+      const e = S.dayDone[oldDate] && Object.keys(S.dayDone[oldDate]).find(k => { const x = ddGet(S.dayDone[oldDate], k); return x && x.id === log.id; });
+      if (e) {
+        const entry = ddGet(S.dayDone[oldDate], e);
+        delete S.dayDone[oldDate][e];
+        if (!S.dayDone[newDate]) S.dayDone[newDate] = {};
+        S.dayDone[newDate][e] = entry;
+      }
+      log.date = newDate;
+    }
+    if (changed) {
+      // 新しい姿の墓標だけを完全一致で除く。clearLogTombstone(前方一致)を使うと、
+      // 直前に立てた旧姿の墓標(同じ日付+種目)まで巻き添えで消えてしまう
+      const nk = logContentKey(log);
+      S.logTombstones = (S.logTombstones || []).filter(t => t.k !== nk);
+    }
+    saveState(); closeModal();
+    toast('記録を修正しました');
+    route();
+  });
 }
 
 // ===== マイメニュー作成モーダル =====
