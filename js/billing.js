@@ -106,7 +106,11 @@
         } catch (e) { /* リスナ非対応でも致命ではない */ }
       }
       return true;
-    } catch (e) { console.warn('[billing] configure failed', e); return false; }
+    } catch (e) {
+      console.warn('[billing] configure failed', e);
+      lastDiag = { stage: 'configure例外', error: [e && e.code, e && e.message].filter(Boolean).join(': ').slice(0, 200) };
+      return false;
+    }
   }
 
   // 現在の課金状態を取得して S.pro を同期。起動・復帰時に呼ぶ
@@ -123,15 +127,24 @@
     } catch (e) { console.warn('[billing] refreshEntitlement failed', e); return null; }
   }
 
+  // no_offering の原因特定用。どの段階で落ちたかを記録し、ペイウォールの診断から見られるようにする
+  let lastDiag = { stage: 'init' };
   // ペイウォール用: 実際の Offering から価格入りプラン配列を返す。取れなければ null(=UIは既定文言)
   async function getPlans() {
-    if (!configured) { const ok = await configure(); if (!ok) return null; }
+    if (!configured) { const ok = await configure(); if (!ok) { lastDiag = { stage: 'configure失敗' }; return null; } }
     const P = plugin();
-    if (!P || !P.getOfferings) return null;
+    if (!P || !P.getOfferings) { lastDiag = { stage: 'プラグイン無し' }; return null; }
     try {
       const res = await P.getOfferings();
+      const allIds = res && res.all ? Object.keys(res.all) : [];
       const cur = res && res.current ? res.current : (res && res.all && Object.values(res.all)[0]);
-      if (!cur || !Array.isArray(cur.availablePackages)) return null;
+      if (!cur || !Array.isArray(cur.availablePackages)) {
+        // current が無い最頻の原因: どの商品も StoreKit から取得できず、Offering が空扱いになる
+        // (RevenueCat は「App Store から商品を取得できない」時にこうなる)
+        lastDiag = { stage: 'offering空', all: allIds.join(',') || '(0件)', current: !!(res && res.current) };
+        return null;
+      }
+      lastDiag = { stage: 'OK', current: cur.identifier, pkgs: (cur.availablePackages || []).map(p => (p.product && (p.product.identifier || p.product.productIdentifier)) || p.identifier).join(',') };
       lastOffering = cur;
       const plans = cur.availablePackages.map(pkg => {
         const t = pkg.packageType || '';
@@ -149,7 +162,11 @@
         };
       }).filter(p => p.id === 'annual' || p.id === 'monthly');
       return plans.length ? plans : null;
-    } catch (e) { console.warn('[billing] getOfferings failed', e); return null; }
+    } catch (e) {
+      console.warn('[billing] getOfferings failed', e);
+      lastDiag = { stage: 'getOfferings例外', error: [e && e.code, e && e.message].filter(Boolean).join(': ').slice(0, 200) };
+      return null;
+    }
   }
 
   // このApple IDが無料トライアルを使えるか確認する。
@@ -217,5 +234,5 @@
   // ネイティブ課金が実際に使えるか(ペイウォールCTAの出し分け用)
   function ready() { return native() && !!plugin() && keyLooksReal(platformKey()); }
 
-  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility };
+  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility, lastDiag: () => lastDiag };
 })();

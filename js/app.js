@@ -2361,6 +2361,7 @@ function paywallHtml(gate) {
     <div class="pw-plans">${plans}</div>
     <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。困ったときは<a href="https://eo8883494-png.github.io/kintore-lab/support.html" target="_blank" rel="noopener">サポート</a>へ。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
+    <button class="btn ghost small" id="pw-diag" style="width:100%;margin-top:4px;font-size:11px;opacity:.6">🩺 接続診断</button>
     <!-- CTAと料金説明は常に画面内に見えるよう最下部に固定する(小型端末で押せない事故を防ぐ) -->
     <div class="pw-foot">
       <button class="btn pw-cta" id="pw-start">${pwCtaText()}</button>
@@ -2408,6 +2409,20 @@ function bindPaywall(bg, gate) {
     const r = await B.restore();
     if (r && r.ok) { gateFailCount = 0; toast('購入を復元しました'); closeModal(); if (gate) { route(); afterGatePassed(); } }
     else toast('復元できる購入が見つかりませんでした');
+  });
+  // 接続診断: no_offering がどの段階で起きているかを実機で確認できるようにする。
+  // その場でもう一度取得を試み、直近の失敗段階とエラー内容を表示する
+  const diagBtn = $('#pw-diag', bg);
+  if (diagBtn) diagBtn.addEventListener('click', async () => {
+    const B2 = window.__klBilling;
+    if (!B2) { alert('billing未読込'); return; }
+    diagBtn.textContent = '🩺 取得中…';
+    try { await B2.getPlans(); } catch (e) {}
+    const ld = B2.lastDiag ? B2.lastDiag() : null;
+    diagBtn.textContent = '🩺 接続診断';
+    alert('資産: v' + ((document.querySelector('script[src*="app.js"]') || { src: '' }).src.match(/[?&]v=(\d+)/) || [])[1] +
+      '\n基本: ' + (B2.diag ? B2.diag() : '-') +
+      '\n直近: ' + JSON.stringify(ld));
   });
   // 実際のOfferingが取れれば価格を差し替える(取れなければ既定のPRO_PLANS文言のまま)
   const B = window.__klBilling;
