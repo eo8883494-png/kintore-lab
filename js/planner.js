@@ -352,8 +352,13 @@ function generatePlan(db, profile, focus, seed) {
       for (const p of pools) {
         const { part } = parsePartSpec(p.spec);
         const isPriority = !!focus[part];
-        // 姿勢改善は高頻度・低ボリューム(1部位1日1種目)。多日にまたがるので週セット数が最適帯に収まる
-        const maxTake = profile.goal === 'posture' && !isPriority ? 1 : (isPriority ? 3 : 2);
+        // 姿勢改善は高頻度・低ボリューム(基本1部位1日1種目)。多日にまたがるので週セット数が最適帯に収まる。
+        // ただし残り時間に1種目ぶん(約6分)の余地があるなら2種目目を許す。
+        // 1種目縛りを厳守すると「30分設定なのに23分で終わり」になり、メニューが少なく感じられるため。
+        // 予算超過はループ内の budget チェックが防ぐので、ここは「余地があるか」だけ見ればよい。
+        const curNow = items.reduce((s, it) => s + exMinutes(it), 0) + SCIENCE.warmupMin;
+        const postureCap = (budget - curNow >= 6) ? 2 : 1;
+        const maxTake = profile.goal === 'posture' && !isPriority ? postureCap : (isPriority ? 3 : 2);
         if (p.taken >= maxTake) continue;
         const goal = focus[part] === 'tone' ? 'hyp' : profile.goal; // 引き締めも刺激は筋肥大レンジ(絞りは食事で)
         const cur = items.reduce((s, it) => s + exMinutes(it), 0) + SCIENCE.warmupMin;
