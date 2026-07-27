@@ -158,6 +158,22 @@ function exercisePool(db, spec, env, level, gear) {
   return leveled;
 }
 
+// 器具の優先度。ジムやダンベルがある環境で自重ばかり選ばれるのを防ぐ。
+// 自重は多関節が多く、多関節優先のソートだけだと上位を独占してしまうため、
+// 器具が使える環境では重量を扱える種目を先に置く(漸進性過負荷を狙えるのが理由)。
+// 器具なしの自宅では差を付けない(候補が自重しかないので意味がない)。
+function equipRank(ex, env) {
+  const allow = (SCIENCE.envs[env] && SCIENCE.envs[env].allow) || [];
+  if (allow.length <= 1) return 0;
+  switch (ex.equipment) {
+    case 'barbell': return 3;
+    case 'dumbbell': return 3;
+    case 'machine': return 2;
+    case 'cable': return 2;
+    default: return 0;   // bodyweight
+  }
+}
+
 function repsFor(ex, goal) {
   if (goal === 'str') return ex.compound ? ex.repStr : ex.repHyp;
   if (goal === 'diet') return ex.repEnd;
@@ -319,9 +335,10 @@ function generatePlan(db, profile, focus, seed) {
     // 各部位の種目候補を用意 (コンパウンド優先 + シャッフル)
     const pools = specs.map(spec => {
       const pool = exercisePool(db, spec, profile.env, profile.level, profile.gear)
-        .map(ex => ({ ex, r: rng() }))
+        .map(ex => ({ ex, r: rng(), eq: equipRank(ex, profile.env) }))
         .sort((a, b) =>
           (profile.goal === 'posture' ? ((b.ex.posture ? 1 : 0) - (a.ex.posture ? 1 : 0)) : 0) ||
+          (b.eq - a.eq) ||                       // 器具が使える環境ならフリーウェイトを優先
           (b.ex.compound - a.ex.compound) || (a.r - b.r))
         .map(x => x.ex);
       return { spec, pool, taken: 0 };
@@ -403,7 +420,9 @@ function generatePlan(db, profile, focus, seed) {
       const pickEntry = scored.find(s => !s.adj);
       const light = !pickEntry; // 隣接日と重なる場合は軽い刺激入れに留める(連日高ボリュームを避ける)
       const pick = pickEntry || scored[di % focusParts.length];
-      const pool = exercisePool(db, pick.p, profile.env, profile.level, profile.gear);
+      // 埋め合わせの1種目も器具優先で選ぶ(本体と基準を揃える)
+      const pool = exercisePool(db, pick.p, profile.env, profile.level, profile.gear)
+        .slice().sort((a, b) => equipRank(b, profile.env) - equipRank(a, profile.env));
       const used = new Set(day.items.map(i => i.exId));
       const ex = pool.find(e => !used.has(e.id));
       if (ex) {
