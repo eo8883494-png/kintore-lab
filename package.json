@@ -19,9 +19,11 @@
     "@capacitor/android": "^7.0.0",
     "@capacitor/app-launcher": "^8.0.1",
     "@capacitor/core": "^7.6.8",
+    "@capacitor/filesystem": "^7.1.8",
     "@capacitor/haptics": "^7.0.5",
     "@capacitor/ios": "^7.6.8",
     "@capacitor/local-notifications": "^7.0.7",
+    "@capacitor/share": "^7.0.4",
     "@capgo/capacitor-health": "^7.2.15",
     "@revenuecat/purchases-capacitor": "^13.2.4"
   }
