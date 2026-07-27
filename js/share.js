@@ -200,7 +200,20 @@ function openShareModal(date) {
     e.target.select();
     try { navigator.clipboard.writeText(caption); toast('キャプションをコピーしました'); } catch (err) { /* 手動コピーにフォールバック */ }
   });
-  $('#share-download', bg).addEventListener('click', () => {
+  $('#share-download', bg).addEventListener('click', async () => {
+    // ネイティブ(WKWebView)では a[download] は何も起きない(ダウンロード機構が無い)のに
+    // 成功トーストだけ出ていた。iOSは共有シートを開き、標準の「画像を保存」で写真に保存してもらう。
+    const CapP = window.Capacitor && window.Capacitor.Plugins;
+    const isNat = typeof isNativeApp === 'function' && isNativeApp();
+    if (isNat && CapP && CapP.Share && CapP.Filesystem) {
+      try {
+        const base64 = dataUrl.split(',')[1];
+        const wr = await CapP.Filesystem.writeFile({ path: `kintore-lab-${stats.date}.png`, data: base64, directory: 'CACHE' });
+        toast('共有シートの「画像を保存」で写真に保存できます');
+        await CapP.Share.share({ files: [wr.uri] });
+      } catch (e) { /* キャンセルは無視 */ }
+      return;
+    }
     const a = document.createElement('a');
     a.href = dataUrl;
     a.download = `kintore-lab-${stats.date}.png`;
