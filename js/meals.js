@@ -53,9 +53,20 @@ function bodyCompEstimate(profile, weights) {
 // ===== 目標計算 =====
 // 体重ナビと献立が必ず同じ方針になるよう、閾値は共有定数で持つ
 const RECOMP_BMI = 20.5;               // これ以下は減量させない(リコンプへ)
+const SAFE_MIN_BMI = 18.5;             // WHOの低体重の境界。目標体重はここより下に設定させない
 const BULK_KEEP_BMI = { m: 23.5, f: 21.5 }; // これ以上は増量を勧めない
 const BULK_TARGET_BMI = { m: 24, f: 22 };
 const KCAL_FLOOR = { m: 1500, f: 1200 };
+
+// 目標体重に到達しているか。mealTargets と weightNav で同じ判定を使うため切り出す
+function isAtGoalWeight(profile) {
+  const hM = profile.h / 100;
+  const w = (typeof S !== 'undefined' && S && S.weights && S.weights.length) ? S.weights[S.weights.length - 1].kg : profile.w;
+  const auto = Math.max(22 * hM * hM, w * 0.9);
+  const userT = (typeof S !== 'undefined' && S && Number(S.targetWeight) > 0) ? Number(S.targetWeight) : null;
+  const target = userT ? Math.max(userT, SAFE_MIN_BMI * hM * hM) : auto;
+  return (w - target) < 1;
+}
 
 function mealTargets(profile) {
   const tdee = calcTDEE(profile);
@@ -67,6 +78,8 @@ function mealTargets(profile) {
     adjust = 0; mode = 'teen'; // 成長期のカロリー制限はさせない
   } else if (profile.goal === 'diet' && bmi <= RECOMP_BMI) {
     adjust = 0; mode = 'recomp'; // 低体重の減量は止める: 維持カロリーで引き締め
+  } else if (profile.goal === 'diet' && isAtGoalWeight(profile)) {
+    adjust = 0; mode = 'keepgoal'; // 目標到達: 削るのをやめて維持へ(リバウンド防止)
   } else if ((profile.goal === 'hyp' || profile.goal === 'str') && bmi >= BULK_KEEP_BMI[profile.sex === 'f' ? 'f' : 'm']) {
     adjust = 0; mode = 'maintain'; // 体重は足りている: 維持カロリーで重量を伸ばす
   }
@@ -202,11 +215,27 @@ function weightNav(profile, weights) {
   if (profile.age < 18) {
     nav.msg = '成長期は体重を減らすより、食べて動いて体を作る時期。体重は身長の伸びと一緒に自然に整っていきます。';
   } else if (profile.goal === 'diet') {
-    const target = Math.max(22 * hM * hM, w * 0.9); // BMI22 か −10% の高い方 (一度に欲張らない)
+    // 本人が決めた目標体重があればそれを使う。ただし痩せすぎは健康を損なうので、
+    // BMI18.5(WHOの低体重の境界)未満には設定させず、その値まで引き上げる。
+    // 「入力は受け付けるが、体に無理な数字は止める」という立場。
+    const auto = Math.max(22 * hM * hM, w * 0.9); // BMI22 か −10% の高い方 (一度に欲張らない)
+    const userT = (typeof S !== 'undefined' && S && Number(S.targetWeight) > 0) ? Number(S.targetWeight) : null;
+    const floor = SAFE_MIN_BMI * hM * hM;
+    let target = auto;
+    if (userT) {
+      target = Math.max(userT, floor);
+      nav.userTarget = userT;
+      nav.clamped = target > userT + 0.05;   // 危険域だったので引き上げた
+    }
     if (bmi <= RECOMP_BMI) {
       nav.msg = '体重はすでに十分軽め。これ以上減らすより、体重維持のまま筋トレで引き締める(リコンプ)のがおすすめ。献立も維持カロリーに切り替えています。';
     } else if (w - target < 1) {
-      nav.msg = 'ほぼ適正体重。ここからは体重計より見た目と写真を指標にしよう。';
+      // 目標に到達。ダイエットで一番難しいのはここから先(リバウンド防止)なので、
+      // 「終わり」にせず維持モードとして続きを用意する。
+      nav.mode = 'maintain';
+      nav.target = Math.round(target * 10) / 10;
+      nav.keepRange = [Math.round((target - 1) * 10) / 10, Math.round((target + 1) * 10) / 10];
+      nav.msg = `目標に到達しました。ここからは「戻さない」フェーズです。${nav.keepRange[0]}〜${nav.keepRange[1]}kgに収まっていればOK。カロリーは維持に切り替えました。`;
     } else {
       nav.mode = 'cut';
       nav.diff = Math.round((w - target) * 10) / 10;

@@ -550,8 +550,62 @@ function homeWeightCardHtml() {
       <button class="btn small" id="hw-save" style="white-space:nowrap">記録</button>
     </div>
     ${line}
+    <button class="btn ghost small" id="hw-target" style="width:100%;margin-top:8px">🎯 目標体重を設定${S.targetWeight ? `(${S.targetWeight}kg)` : ''}</button>
     <p class="card-note">毎朝トイレ後・食事前が一番ブレません。1日で±1kg動くので、線で見るのが大事です。</p>
   </div>`;
+}
+
+// 体重を何日連続で記録したか(実績用)。日付の連続で数える
+function weighStreak(weights) {
+  const ds = [...new Set((weights || []).map(w => w.date))].sort().reverse();
+  if (!ds.length) return 0;
+  let cur = ds[0], n = 1;
+  for (let i = 1; i < ds.length; i++) {
+    if (ds[i] === dateAdd(cur, -1)) { n++; cur = ds[i]; } else break;
+  }
+  return n;
+}
+// 最初の記録から今日までで何kg落ちたか(増えた場合は0)
+function weightLost(weights) {
+  const ws = (weights || []).slice().sort((a, b) => a.date < b.date ? -1 : 1);
+  if (ws.length < 2) return 0;
+  return Math.max(0, Math.round((ws[0].kg - ws[ws.length - 1].kg) * 10) / 10);
+}
+
+// 目標体重の設定。本人の数字を受け入れつつ、痩せすぎは止める。
+// 拒否して終わりにせず「ここまでなら安全」を提示して選べるようにする。
+function openTargetWeight() {
+  const p = S.profile;
+  if (!p) return;
+  const hM = p.h / 100;
+  const safe = Math.round(SAFE_MIN_BMI * hM * hM * 10) / 10;
+  const cur = (S.weights && S.weights.length) ? S.weights[S.weights.length - 1].kg : p.w;
+  const bg = openModal(`<h2>🎯 目標体重</h2>
+    <p class="modal-sub">現在 ${cur}kg / 身長 ${p.h}cm</p>
+    <div class="field"><label>目標</label>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input type="number" id="tw-input" value="${S.targetWeight || ''}" placeholder="${Math.round(22 * hM * hM * 10) / 10}" step="0.1" min="25" max="250" inputmode="decimal">
+        <span class="unit">kg</span>
+      </div>
+    </div>
+    <p class="card-note">健康的に設定できる下限は <b>${safe}kg</b>(BMI18.5)です。それより軽い数字を入れた場合は ${safe}kg として扱います。
+    体重より見た目が目的なら、体型フォトで比べる方が確かです。</p>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:12px">
+      <button class="btn" id="tw-save">この目標にする</button>
+      ${S.targetWeight ? '<button class="btn ghost" id="tw-clear">自動(BMI22)に戻す</button>' : ''}
+      <button class="btn ghost" onclick="closeModal()">閉じる</button>
+    </div>`);
+  $('#tw-save', bg).addEventListener('click', () => {
+    const v = Number($('#tw-input', bg).value);
+    if (!v || v < 25 || v > 250) { toast('目標体重を入力してください'); return; }
+    S.targetWeight = Math.round(v * 10) / 10;
+    saveState(); closeModal(); route();
+    toast(v < safe ? `${safe}kg(健康的な下限)を目標にしました` : `目標を${S.targetWeight}kgにしました`);
+  });
+  const clr = $('#tw-clear', bg);
+  if (clr) clr.addEventListener('click', () => {
+    S.targetWeight = null; saveState(); closeModal(); route(); toast('自動計算に戻しました');
+  });
 }
 
 // 体型写真は「一番見たい成果」なのに記録タブの奥にあり、ダイエット層には遠い。
@@ -1154,8 +1208,9 @@ const WEEKDAY_REMINDER_IDS = [4230, 4231, 4232, 4233, 4234, 4235, 4236];
 // 世代カウンタ: ON/OFF/時刻変更の非同期処理が交錯した時、古い処理が新しい状態を上書きしないように
 let reminderGen = 0;
 const WEEKLY_REPORT_ID = 4240; // 月曜朝の「先週のまとめ」通知
+const WEIGH_REMINDER_ID = 4241; // 毎朝の体重リマインド(減量・健康維持のみ)
 async function cancelAllReminderNotifs(LN) {
-  try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }, { id: WEEKLY_REPORT_ID }, ...WEEKDAY_REMINDER_IDS.map(id => ({ id }))] }); } catch (e) {}
+  try { await LN.cancel({ notifications: [{ id: LOCAL_REMINDER_ID }, { id: WEEKLY_REPORT_ID }, { id: WEIGH_REMINDER_ID }, ...WEEKDAY_REMINDER_IDS.map(id => ({ id }))] }); } catch (e) {}
 }
 async function enableLocalReminder(hour, minute, silent) {
   const LN = capPlugin('LocalNotifications');
@@ -1191,6 +1246,17 @@ async function enableLocalReminder(hour, minute, silent) {
       body: '先週のトレ日数・ボリューム・自己ベストを振り返ろう',
       schedule: { on: { weekday: 2, hour: 8, minute: 0 }, repeats: true, allowWhileIdle: true },
     });
+    // 減量・健康維持の人には毎朝の体重リマインド。トレは週数回でも体重は毎日で、
+    // 記録が続くかどうかが停滞検知もペース判定も左右するため。
+    const g = S.profile && S.profile.goal;
+    if (g === 'diet' || g === 'fit') {
+      notifications.push({
+        id: WEIGH_REMINDER_ID,
+        title: '⚖️ 今日の体重をはかりましょう',
+        body: '朝トイレ後・食事前がいちばんブレません',
+        schedule: { on: { hour: 7, minute: 30 }, repeats: true, allowWhileIdle: true },
+      });
+    }
     await LN.schedule({ notifications });
     if (gen !== reminderGen) { await cancelAllReminderNotifs(LN); return { ok: false, reason: 'superseded' }; }
     saveLocalReminder({ enabled: true, hour: h, minute: m });
@@ -1313,7 +1379,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -1559,6 +1625,12 @@ function sanitizeState(s) {
         ? { id: it.id.slice(0, 60), qty: numIn(it.qty, 0.1, 50, 1) } : null).filter(Boolean);
       if (arr.length) out.foodLog[dt] = arr;
     });
+  }
+  // 目標体重(kg)。本人が決めた数字。危険な値は weightNav 側で健康的な下限に丸める
+  // 範囲外は捨てずに丸める(0になって「未設定」に化けると、本人が決めた目標が黙って消えるため)
+  if (Number(s.targetWeight) > 0) {
+    const tw = Math.round(Math.min(250, Math.max(25, Number(s.targetWeight))) * 10) / 10;
+    if (isFinite(tw)) out.targetWeight = tw;
   }
   // 有酸素の記録(日付→[{id, min}])。種目IDと分数のみ保持し、消費kcalは体重から都度算出する
   if (s.cardio && typeof s.cardio === 'object') {
@@ -1922,6 +1994,7 @@ function mergeStates(local, remote) {
   out.mealTargets = primary.mealTargets || secondary.mealTargets; // 手動目標はprimary優先
   out.cycle = primary.cycle || secondary.cycle; // 生理周期はprimary優先
   out.lastCalAdjust = primary.lastCalAdjust || secondary.lastCalAdjust || '';
+  out.targetWeight = primary.targetWeight || secondary.targetWeight || null;
   // 公開プロフィール(表示名・アイコン・画像・アピール・リンク)を引き継ぐ(mergeで消さない)
   out.publicName = primary.publicName || secondary.publicName || '';
   out.publicIcon = primary.publicIcon || secondary.publicIcon || '';
@@ -2372,6 +2445,7 @@ function calorieAdviceText(p) {
     if (t && t.mode === 'teen') return '成長期のため、カロリーは削らない設計です。維持カロリー＋タンパク質＋筋トレで体を作りましょう。';
     if (t && t.mode === 'recomp') return '体重は十分にあるため、カロリーは削らずに引き締める設計です(維持カロリー＋筋トレ)。';
     if (t && t.mode === 'maintain') return '体重は足りているので、増やさず維持カロリーで重量を伸ばしましょう。';
+    if (t && t.mode === 'keepgoal') return '目標に到達したので、削るのをやめて維持カロリーに切り替えました。ここからは戻さないことが目標です。';
   } catch (e) { /* meals.js 未読込時は既定文言へ */ }
   return p.goal === 'diet' ? '減量はここから−300〜500kcal。' : p.goal === 'hyp' ? '筋肥大はここから+200〜300kcal。' : 'このカロリーを維持でOK。';
 }
@@ -3145,10 +3219,20 @@ function sorenessAdviceHtml(ctx) {
 // ===== 実績バッジ =====
 const BADGES = [
   { id: 'first-log', icon: '🎯', name: 'はじめの一歩', desc: '初めてトレを記録', check: st => st.logs.length >= 1 },
+  { id: 'first-weigh', icon: '⚖️', name: '現在地を知った', desc: '初めて体重を記録', check: st => (st.weights || []).length >= 1 },
   { id: 'days-10', icon: '🔟', name: '10日戦士', desc: '総トレ日数10日', check: st => new Set(st.logs.map(l => l.date)).size >= 10 },
   { id: 'days-50', icon: '💪', name: '継続の鬼', desc: '総トレ日数50日', check: st => new Set(st.logs.map(l => l.date)).size >= 50 },
   { id: 'days-100', icon: '👑', name: 'レジェンド', desc: '総トレ日数100日', check: st => new Set(st.logs.map(l => l.date)).size >= 100 },
   { id: 'streak-4', icon: '🔥', name: '習慣化成功', desc: '週目標を4週連続達成', check: st => calcWeekStreak(st.logs, st.plan ? Math.max(1, st.plan.days.length) : (st.profile ? st.profile.days : 3)) >= 4 },
+  // ダイエット層の努力が報われる実績。従来は全て筋トレ由来で、体重を記録し続ける
+  // ことや体脂肪を落としたことが一切評価されていなかった。
+  { id: 'weigh-7', icon: '⚖️', name: '毎日はかった', desc: '体重を7日連続で記録', check: st => weighStreak(st.weights) >= 7 },
+  { id: 'weigh-30', icon: '📈', name: '記録が習慣に', desc: '体重を30日ぶん記録', check: st => (st.weights || []).length >= 30 },
+  { id: 'lose-1', icon: '🎈', name: 'まず1kg', desc: '開始から1kg減', check: st => weightLost(st.weights) >= 1 },
+  { id: 'lose-3', icon: '🌱', name: '見た目が変わる3kg', desc: '開始から3kg減', check: st => weightLost(st.weights) >= 3 },
+  { id: 'lose-5', icon: '✨', name: '別人級の5kg', desc: '開始から5kg減', check: st => weightLost(st.weights) >= 5 },
+  { id: 'food-30', icon: '🍽️', name: '食事を見える化', desc: '食事を30日ぶん記録', check: st => Object.keys(st.foodLog || {}).length >= 30 },
+  { id: 'cardio-10', icon: '🏃', name: '走り出した', desc: '有酸素を10日ぶん記録', check: st => Object.keys(st.cardio || {}).length >= 10 },
   { id: 'vol-10t', icon: '🚚', name: '10トン持ち上げた', desc: '累計ボリューム10,000kg', check: st => totalVolumeAll(st.logs) >= 10000 },
   { id: 'vol-100t', icon: '🏗️', name: '100トンクラブ', desc: '累計ボリューム100,000kg', check: st => totalVolumeAll(st.logs) >= 100000 },
   { id: 'first-pr', icon: '🏆', name: '自己ベスト!', desc: '初めて推定1RMを更新', check: st => prCountBetween(st.logs, '2000-01-01', '2999-12-31') >= 1 },
@@ -3523,6 +3607,8 @@ function renderHome() {
   if (omk) omk.addEventListener('click', startOmakase);
   const hpc = $('#home-photo-card', root);
   if (hpc && typeof renderPhotoCard === 'function') renderPhotoCard(hpc);
+  const hwTarget = $('#hw-target', root);
+  if (hwTarget) hwTarget.addEventListener('click', openTargetWeight);
   const hwSave = $('#hw-save', root);
   if (hwSave) hwSave.addEventListener('click', () => {
     const el = $('#hw-input', root);
