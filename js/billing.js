@@ -144,7 +144,8 @@
     const P = plugin();
     if (!P || !P.getProducts) return 'getProducts非対応';
     try {
-      const res = await P.getProducts({ productIdentifiers: ['kintorelab_yearly', 'kintorelab_monthly'] });
+      // v2 = 2026-07-29作り直し(旧yearly/monthlyはApple側で壊れ「ご利用いただけません」のまま)
+      const res = await P.getProducts({ productIdentifiers: ['kintorelab_yearly2', 'kintorelab_monthly2'] });
       const list = (res && res.products) || [];
       if (!list.length) return '0件(StoreKitが商品を返さない=Apple側)';
       return list.map(p => (p.identifier || p.productIdentifier) + '=' + (p.priceString || '?')).join(', ');
