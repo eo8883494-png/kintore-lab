@@ -5376,6 +5376,23 @@ function bindCloudCard(root) {
   });
 }
 
+// Appleヘルスケア(HealthKit)連携の明示カード。App Reviewガイドライン2.5.1により、
+// HealthKit機能はUI上で明確に識別できる必要がある(2026-07-30の却下対応)。
+function healthCardHtml() {
+  const linked = loadHealthPref().tried;
+  return `<div class="card"><h2>🍎 Apple ヘルスケア連携</h2>
+      <p class="card-note" style="margin-top:-2px">本アプリはAppleの「ヘルスケア」アプリ(HealthKit)と連携します。連携は任意で、いつでも解除できます。</p>
+      <div class="tool-result" style="font-size:13.5px;line-height:1.9">
+        <div>📥 <b>読み取り:</b> 体重・歩数・心拍数</div>
+        <div>📤 <b>書き込み:</b> 体重・睡眠(手動で確認した値のみ)</div>
+      </div>
+      <div class="card-note" style="margin-top:6px">状態: ${linked ? '連携を設定済み。同期ボタンで最新データを取得できます。' : '未連携。下のボタンをタップすると許可画面が開きます。'}</div>
+      <button class="btn" id="hk2-sync" style="width:100%;margin-top:8px">🍎 ヘルスケアと同期する</button>
+      <button class="btn ghost small" id="hk2-diag" style="width:100%;margin-top:6px">🩺 接続状況を確認</button>
+      <p class="card-note" style="margin-top:8px">取得した健康データは、アプリ内の記録・分析の表示のみに使用し、広告や第三者提供には使用しません。アクセス許可は「設定 > プライバシーとセキュリティ > ヘルスケア」からいつでも変更できます。</p>
+    </div>`;
+}
+
 function renderTools() {
   const root = $('#view-tools');
   const p = S.profile;
@@ -5449,6 +5466,7 @@ function renderTools() {
     <div class="tool-sec">アカウント・同期</div>
     ${cloudCardHtml()}
     ${publicProfileCardHtml()}
+    ${isNativeApp() ? '<div class="tool-sec">Apple ヘルスケア</div>' + healthCardHtml() : ''}
     ${isNativeApp() ? '<div class="tool-sec">通知</div>' + localReminderCardHtml() : ''}
     <div class="tool-sec">ツール・計算</div>
     ${arrangeCards('tools', toolCards)}
@@ -5475,6 +5493,11 @@ function renderTools() {
 
   bindCloudCard(root);
   bindLocalReminder(root);
+  // ヘルスケア連携カード(記録タブの同期ボタンと同じ処理を使う)
+  const hk2s = $('#hk2-sync', root);
+  if (hk2s) hk2s.addEventListener('click', () => importHealthWeight());
+  const hk2d = $('#hk2-diag', root);
+  if (hk2d) hk2d.addEventListener('click', openHealthDiag);
   bindCustomize(root, toolCards.map(c => ({ id: c.id, name: c.name })), 'tools');
   const pwBtn = $('#open-paywall', root);
   if (pwBtn) pwBtn.addEventListener('click', () => openPaywall());
