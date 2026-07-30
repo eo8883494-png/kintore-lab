@@ -2,6 +2,16 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
+<script>
+// Web版廃止: ブラウザアクセスはランディングへ(ネイティブアプリ(capacitor:)とローカル開発は対象外)。
+// 既存Webユーザーのデータ救済用に ?app=1 でバイパス可(サポート案内用・非公開)。
+(function(){
+  var p = location.protocol, h = location.hostname;
+  if ((p === 'http:' || p === 'https:') && h !== 'localhost' && h !== '127.0.0.1' && location.search.indexOf('app=1') === -1) {
+    location.replace('landing/');
+  }
+})();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0e1013">
