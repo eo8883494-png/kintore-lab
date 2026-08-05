@@ -542,22 +542,44 @@ function bodyFatHistory() {
     return { date: d, pct, kg, lbm: Math.round(kg * (1 - pct / 100) * 10) / 10 };
   }).filter(r => r.kg > 0);
 }
+function waistHistory() {
+  if (!S.waist) return [];
+  return Object.keys(S.waist).sort().map(d => ({ date: d, cm: S.waist[d] }));
+}
 // 腹筋が見え始める体脂肪率の目安。男性12%・女性20%(いずれも「割れて見える」ライン)。
 const ABS_BF = { m: 12, f: 20 };
 function bodyCompCardHtml() {
   const p = S.profile;
   if (!p) return '';
   const h = bodyFatHistory();
-  if (!h.length) {
-    // 一度も記録が無い人には出さない(空カードを増やさない)。体重カードの%欄が入口。
+  const ws = waistHistory();
+  if (!h.length && !ws.length) {
+    // 一度も記録が無い人には出さない(空カードを増やさない)。体重カードの%・cm欄が入口。
     return '';
   }
+  const sign = v => (v > 0 ? '+' : '') + v;
+  const dWaist = ws.length >= 2 ? Math.round((ws[ws.length - 1].cm - ws[0].cm) * 10) / 10 : null;
+
+  // 体脂肪率の記録が無く、へそ周りだけの人にも意味のあるカードにする。
+  if (!h.length) {
+    const lastW = ws[ws.length - 1];
+    return `<div class="card"><h2>🧬 体組成<span class="sub">${ws.length}回記録</span></h2>
+      <table class="cmp-table">
+        <tr><th></th><th>開始</th><th>最新</th><th>変化</th></tr>
+        <tr><td>へそ周り</td><td>${ws[0].cm}</td><td>${lastW.cm}</td><td class="${dWaist != null && dWaist < 0 ? 'best' : ''}">${dWaist == null ? '—' : sign(dWaist) + 'cm'}</td></tr>
+      </table>
+      <p style="font-size:12.5px;margin:8px 0 0">${dWaist == null ? 'もう1回測ると変化が出ます。同じ時間・同じ姿勢(息を吐いて力を抜く)で測ってください。'
+        : dWaist < 0 ? '<b style="color:var(--ok)">サイズは落ちています。</b>体重が止まっていても、ここが減っていれば順調です。'
+        : '横ばいです。体重の推移と合わせて、摂取カロリーの記録漏れが無いか見直してください。'}</p>
+      <p class="card-note">体脂肪率も入れると、落ちたのが脂肪か筋肉かを判定できます(体重カードの%欄)。</p>
+    </div>`;
+  }
+
   const last = h[h.length - 1];
   const first = h[0];
   const n = h.length;
   const dBf = Math.round((last.pct - first.pct) * 10) / 10;
   const dLbm = Math.round((last.lbm - first.lbm) * 10) / 10;
-  const sign = v => (v > 0 ? '+' : '') + v;
 
   let verdict = '';
   if (n < 2) {
@@ -591,10 +613,12 @@ function bodyCompCardHtml() {
       <tr><td>体重</td><td>${first.kg}</td><td>${last.kg}</td><td class="${last.kg < first.kg ? 'best' : ''}">${sign(Math.round((last.kg - first.kg) * 10) / 10)}kg</td></tr>
       <tr><td>体脂肪率</td><td>${first.pct}%</td><td>${last.pct}%</td><td class="${dBf < 0 ? 'best' : ''}">${sign(dBf)}%</td></tr>
       <tr><td>除脂肪体重</td><td>${first.lbm}</td><td>${last.lbm}</td><td class="${dLbm >= -0.5 ? 'best' : ''}">${sign(dLbm)}kg</td></tr>
+      ${ws.length ? `<tr><td>へそ周り</td><td>${ws[0].cm}</td><td>${ws[ws.length - 1].cm}</td><td class="${dWaist != null && dWaist < 0 ? 'best' : ''}">${dWaist == null ? '—' : sign(dWaist) + 'cm'}</td></tr>` : ''}
     </table>
     <p style="font-size:12.5px;margin:8px 0 0">${verdict}</p>
+    ${dWaist != null && dWaist < 0 ? '<p style="font-size:12.5px;margin:6px 0 0">へそ周りも落ちています。横腹の脂肪は最後に減る場所なので、ここが動いていれば確実に進んでいます。</p>' : ''}
     ${absLine}
-    <p class="card-note">除脂肪体重=筋肉・骨・水分の合計。<b>減量の成否はここが減っていないかで決まります</b>。体重カードの%欄から記録できます。</p>
+    <p class="card-note">除脂肪体重=筋肉・骨・水分の合計。<b>減量の成否はここが減っていないかで決まります</b>。体重カードの%・cm欄から記録できます。</p>
   </div>`;
 }
 
@@ -608,6 +632,8 @@ function homeWeightCardHtml() {
   const cur = (S.weights && S.weights.length) ? S.weights[S.weights.length - 1] : null;
   const bfHist = bodyFatHistory();
   const curBf = bfHist.length ? bfHist[bfHist.length - 1].pct : null;
+  const wsHist = waistHistory();
+  const curWaist = wsHist.length ? wsHist[wsHist.length - 1].cm : null;
   let line = '';
   if (typeof weightNav === 'function') {
     try {
@@ -621,16 +647,19 @@ function homeWeightCardHtml() {
     } catch (e) {}
   }
   return `<div class="card weight-card"><h2>⚖️ 今日の体重<span class="sub">${done ? '記録済み' : '未記録'}</span></h2>
-    <div style="display:flex;gap:8px;align-items:center">
-      <input type="number" id="hw-input" placeholder="${cur ? cur.kg : p.w}" step="0.1" min="20" inputmode="decimal">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="number" id="hw-input" placeholder="${cur ? cur.kg : p.w}" step="0.1" min="20" inputmode="decimal" style="max-width:96px">
       <span class="unit">kg</span>
       <input type="number" id="hw-bf" placeholder="${curBf != null ? curBf : '体脂肪'}" step="0.1" min="3" max="60" inputmode="decimal" style="max-width:88px">
       <span class="unit">%</span>
-      <button class="btn small" id="hw-save" style="white-space:nowrap">記録</button>
+      <input type="number" id="hw-waist" placeholder="${curWaist != null ? curWaist : 'へそ周り'}" step="0.1" min="30" max="200" inputmode="decimal" style="max-width:96px">
+      <span class="unit">cm</span>
+      <button class="btn small" id="hw-save" style="white-space:nowrap;margin-left:auto">記録</button>
     </div>
     ${line}
     <button class="btn ghost small" id="hw-target" style="width:100%;margin-top:8px">🎯 目標体重を設定${S.targetWeight ? `(${S.targetWeight}kg)` : ''}</button>
-    <p class="card-note">毎朝トイレ後・食事前が一番ブレません。1日で±1kg動くので、線で見るのが大事です。</p>
+    <p class="card-note">毎朝トイレ後・食事前が一番ブレません。1日で±1kg動くので、線で見るのが大事です。<br>
+      体脂肪率とへそ周りは測った日だけでOK(週1回で十分)。へそ周りは息を吐いて力を抜き、へその高さで水平に測ります。</p>
   </div>`;
 }
 
@@ -1466,7 +1495,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, bodyFat: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, bodyFat: {}, waist: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -1742,6 +1771,14 @@ function sanitizeState(s) {
       if (!DATE_RE.test(dt)) return;
       const n = Math.round(numIn(s.bodyFat[dt], 3, 60, 0) * 10) / 10;
       if (n >= 3) out.bodyFat[dt] = n;
+    });
+  }
+  // へそ周り(日付→cm)。体組成計が無くても測れる唯一の実測値で、横腹の変化は体重より先に出る。
+  if (s.waist && typeof s.waist === 'object') {
+    Object.keys(s.waist).forEach(dt => {
+      if (!DATE_RE.test(dt)) return;
+      const n = Math.round(numIn(s.waist[dt], 30, 200, 0) * 10) / 10;
+      if (n >= 30) out.waist[dt] = n;
     });
   }
   // アクティブレスト実施記録(日付→moveId→true)
@@ -3738,14 +3775,21 @@ function renderHome() {
     const bf = Math.round(Number(bfRaw) * 10) / 10;
     const bfSaved = bfRaw !== '';
     if (bfSaved && !(bf >= 3 && bf <= 60)) { toast('体脂肪率は3〜60%で入力してください'); return; }
+    const wsEl = $('#hw-waist', root);
+    const wsRaw = wsEl ? wsEl.value : '';
+    const ws = Math.round(Number(wsRaw) * 10) / 10;
+    const wsSaved = wsRaw !== '';
+    if (wsSaved && !(ws >= 30 && ws <= 200)) { toast('へそ周りは30〜200cmで入力してください'); return; }
     S.weights = (S.weights || []).filter(w => w.date !== todayStr());
     S.weights.push({ date: todayStr(), kg: Math.round(v * 10) / 10 });
     S.weights.sort((a, b) => a.date < b.date ? -1 : 1);
     if (bfSaved) { if (!S.bodyFat) S.bodyFat = {}; S.bodyFat[todayStr()] = bf; }
+    if (wsSaved) { if (!S.waist) S.waist = {}; S.waist[todayStr()] = ws; }
     syncProfileWeight();          // profile.w も追従(TDEE・PFCが古い体重で計算されるのを防ぐ)
     if (isNativeApp()) writeHealthWeight(v, todayStr()); // Apple Healthにも書き戻す(双方向)
     saveState(); route();
-    toast(bfSaved ? '体重と体脂肪率を記録しました' : '体重を記録しました');
+    const extra = [bfSaved ? '体脂肪率' : '', wsSaved ? 'へそ周り' : ''].filter(Boolean).join('・');
+    toast(extra ? `体重と${extra}を記録しました` : '体重を記録しました');
   });
   $all('.cardio-add', root).forEach(b => b.addEventListener('click', () => openCardioAdd(b.dataset.id)));
   $all('.cardio-del', root).forEach(b => b.addEventListener('click', () => {
