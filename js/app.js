@@ -5450,6 +5450,23 @@ function renderTools() {
       <details class="acc"><summary>2. 栄養 — 体重×2gのタンパク質</summary><div class="acc-body">筋肉の材料が無ければ何も作られない。タンパク質は毎食20g以上×1日3〜5回。増量なら+300kcal、減量でも−500kcalまで。</div></details>
       <details class="acc"><summary>3. 回復 — 筋肉は寝てる間に育つ</summary><div class="acc-body">睡眠不足は筋合成を大きく下げることが繰り返し報告されている。同部位は48〜72時間空ける。2ヶ月に1回は軽い週(ディロード)を入れると停滞を破れる。</div></details>
     </div>`;
+  // 有酸素のタイミング比較。「腹が割れない→走ろう→いつ走る?」で必ず詰まるので、
+  // 目標(goal)に関係なくツールに置く(有酸素カード自体は減量・健康の人にしか出ないため)。
+  const tCardioWhen = `<div class="card"><h2>🏃 有酸素はいつやるのが得か</h2>
+      <p class="card-note" style="margin-top:-2px">同じ時間・同じ強度なら、<b>脂肪の落ち方はタイミングでほとんど変わりません</b>。消費カロリーは順番では変わらないからです。差が出るのは<b>筋肉の残り方</b>と<b>時間効率</b>です。</p>
+      <table class="cmp-table">
+        <tr><th>筋トレとの関係</th><th>脂肪</th><th>筋肉</th><th>時間</th></tr>
+        <tr><td>別の日にやる</td><td>◎</td><td class="best">◎</td><td class="weak">△</td></tr>
+        <tr><td>同じ日・6時間以上あける</td><td>◎</td><td class="best">◎</td><td>○</td></tr>
+        <tr><td>筋トレの<b>後</b></td><td>◎</td><td>○</td><td class="best">◎</td></tr>
+        <tr><td>筋トレの<b>前</b></td><td>◎</td><td class="weak">△</td><td class="best">◎</td></tr>
+      </table>
+      <p class="card-note" style="margin-top:8px"><b>迷ったら「筋トレの後に20〜30分」</b>。別日が理想ですが、続く確率まで含めると後にくっつけるのが現実的です。</p>
+      <details class="acc"><summary>なぜ「筋トレの前」だけ評価が下がるのか</summary><div class="acc-body">有酸素で脚と心肺が先に疲れると、そのあとの筋トレで扱える重量とセット数が落ちます。減量中に筋肉を守っているのは筋トレの強度そのものなので、ここが削れると落ちるはずのない筋肉まで落ちます。脂肪を減らす効果は前でも後でも同じなので、わざわざ前に置く理由がありません。</div></details>
+      <details class="acc"><summary>食前(空腹)と食後、どちらが痩せるか</summary><div class="acc-body">空腹で走ると<b>運動中は</b>脂肪が多く使われますが、そのぶん後の時間帯で使われる脂肪が減るため、<b>1日の合計では差がつきません</b>。カロリーを揃えて比べた研究でも体脂肪の減り方に差は出ていません。むしろ食後のほうが強度を出せてトータルの消費は増えやすいので、好きなほうで大丈夫です。<br><b>ただし「空腹で走ってそのまま筋トレ」は最悪の組み合わせ</b>です。エネルギーが無い状態で最も重要な筋トレに入ることになります。</div></details>
+      <details class="acc"><summary>脚の日に走ってはいけない</summary><div class="acc-body">ランニングは着地の衝撃で脚に筋ダメージを残すため、筋トレとぶつかりやすい種目です(自転車やウォーキングはこれが小さい)。スクワットやデッドリフトをやる日は、走るのを別の日に回すか、その日はウォーキングか自転車に替えてください。上半身の日なら走っても干渉はほぼ気になりません。</div></details>
+      <details class="acc"><summary>そもそも何分やればいいか</summary><div class="acc-body">健康の下限が週150分(WHO)。減量目的ならここに、食事の管理を足して赤字を作ります。有酸素だけで痩せようとすると必要な時間が現実的でなくなるので、<b>赤字は食事で作り、有酸素は上乗せ</b>と考えるほうが続きます。</div></details>
+    </div>`;
   const toolCards = [
     { id: 'timer', name: '休憩タイマー', html: tTimer },
     { id: 'interval', name: 'インターバルタイマー', html: itCardHtml() },
@@ -5458,6 +5475,7 @@ function renderTools() {
     { id: 'protein', name: 'タンパク質&カロリー', html: tProtein },
     { id: 'ffmi', name: 'FFMI', html: tFFMI },
     { id: 'recovery', name: '超回復ガイド', html: tRecov },
+    { id: 'cardio-when', name: '有酸素のタイミング', html: tCardioWhen },
     { id: 'principles', name: '筋トレの三原則', html: tPrinciples },
   ];
 

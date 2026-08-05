@@ -455,6 +455,14 @@ label.btn input[type="file"] { display: none; }
 .recov-table td { padding: 7px 4px; border-bottom: 1px solid var(--line); }
 .recov-table td:last-child { text-align: right; font-weight: 700; }
 
+/* 比較表(有酸素のタイミングなど。項目名は左、評価は中央) */
+.cmp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cmp-table th { font-size: 11px; color: var(--ink-dim); font-weight: 600; padding: 0 2px 5px; text-align: center; }
+.cmp-table th:first-child, .cmp-table td:first-child { text-align: left; }
+.cmp-table td { padding: 7px 2px; border-bottom: 1px solid var(--line); text-align: center; }
+.cmp-table .best { color: var(--accent); font-weight: 700; }
+.cmp-table .weak { opacity: .55; }
+
 /* ===== modal / onboarding ===== */
 .modal-bg {
   position: fixed; inset: 0; z-index: 50;
