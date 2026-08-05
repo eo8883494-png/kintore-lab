@@ -523,6 +523,81 @@ function homeStatRowHtml(weekStreak, weekDone, target) {
   return `<div class="stat-row">${trainTiles}${tile('📚 総トレ日', new Set(S.logs.map(l => l.date)).size, '日')}</div>`;
 }
 
+// ===== 体組成(体脂肪率・除脂肪体重) =====
+// 体重だけでは「落ちたのが脂肪か筋肉か」が分からない。減量が成功しているかどうかは
+// 体重ではなく除脂肪体重が減っていないかで決まるので、そこを可視化する。
+// 体脂肪率は測れない日があるため体重(S.weights)とは別枠で持ち、記録がある日だけ点で扱う。
+function bodyFatHistory() {
+  if (!S.bodyFat) return [];
+  const ws = S.weights || [];
+  const wAt = (d) => {
+    const same = ws.find(w => w.date === d);
+    if (same) return same.kg;
+    let prev = null;
+    for (const w of ws) { if (w.date <= d) prev = w; else break; }
+    return prev ? prev.kg : (S.profile ? S.profile.w : 0);
+  };
+  return Object.keys(S.bodyFat).sort().map(d => {
+    const pct = S.bodyFat[d], kg = wAt(d);
+    return { date: d, pct, kg, lbm: Math.round(kg * (1 - pct / 100) * 10) / 10 };
+  }).filter(r => r.kg > 0);
+}
+// 腹筋が見え始める体脂肪率の目安。男性12%・女性20%(いずれも「割れて見える」ライン)。
+const ABS_BF = { m: 12, f: 20 };
+function bodyCompCardHtml() {
+  const p = S.profile;
+  if (!p) return '';
+  const h = bodyFatHistory();
+  if (!h.length) {
+    // 一度も記録が無い人には出さない(空カードを増やさない)。体重カードの%欄が入口。
+    return '';
+  }
+  const last = h[h.length - 1];
+  const first = h[0];
+  const n = h.length;
+  const dBf = Math.round((last.pct - first.pct) * 10) / 10;
+  const dLbm = Math.round((last.lbm - first.lbm) * 10) / 10;
+  const sign = v => (v > 0 ? '+' : '') + v;
+
+  let verdict = '';
+  if (n < 2) {
+    verdict = 'もう1回記録すると、落ちているのが脂肪か筋肉かを判定します。';
+  } else if (dLbm <= -0.5) {
+    verdict = `<b style="color:var(--ng)">筋肉も落ちています。</b>減量ペースが速すぎるか、タンパク質が足りていません。落とす速さを週${Math.max(0.2, Math.round(last.kg * 0.005 * 10) / 10)}kgまでに緩めて、タンパク質を体重×2gまで上げてください。`;
+  } else if (dBf < -0.3 && dLbm >= -0.5) {
+    verdict = '<b style="color:var(--ok)">理想的です。</b>脂肪だけが落ちて筋肉は守れています。今のやり方を変えないでください。';
+  } else if (dLbm >= 0.5 && dBf <= 0.3) {
+    verdict = '<b style="color:var(--ok)">筋肉が増えています。</b>体重が増えても中身は筋肉なので問題ありません。';
+  } else {
+    verdict = '大きな変化はまだ出ていません。体組成は体重より動きが遅いので、2〜4週間の間隔で見てください。';
+  }
+
+  // 「腹が割れるまであと何kg」。除脂肪体重が変わらない前提で、目標体脂肪率になる体重を逆算する。
+  const targetBf = ABS_BF[p.sex === 'f' ? 'f' : 'm'];
+  let absLine = '';
+  if (last.pct > targetBf + 0.5) {
+    const targetW = last.lbm / (1 - targetBf / 100);
+    const need = Math.round((last.kg - targetW) * 10) / 10;
+    const weeks = Math.ceil(need / Math.max(0.2, last.kg * 0.005));
+    absLine = `<p class="card-note" style="margin-top:8px">腹筋が割れて見える目安は体脂肪率${targetBf}%。今の筋肉量を保ったまま落とすなら
+      <b style="color:var(--accent)">あと${need}kg</b>(${Math.round(targetW * 10) / 10}kg)が目標です。筋肉を守れるペースなら約${weeks}週間。</p>`;
+  } else {
+    absLine = `<p class="card-note" style="margin-top:8px">体脂肪率は腹筋が見える水準(${targetBf}%)に届いています。ここからは落とすより維持してください。</p>`;
+  }
+
+  return `<div class="card"><h2>🧬 体組成<span class="sub">${n}回記録</span></h2>
+    <table class="cmp-table">
+      <tr><th></th><th>開始</th><th>最新</th><th>変化</th></tr>
+      <tr><td>体重</td><td>${first.kg}</td><td>${last.kg}</td><td class="${last.kg < first.kg ? 'best' : ''}">${sign(Math.round((last.kg - first.kg) * 10) / 10)}kg</td></tr>
+      <tr><td>体脂肪率</td><td>${first.pct}%</td><td>${last.pct}%</td><td class="${dBf < 0 ? 'best' : ''}">${sign(dBf)}%</td></tr>
+      <tr><td>除脂肪体重</td><td>${first.lbm}</td><td>${last.lbm}</td><td class="${dLbm >= -0.5 ? 'best' : ''}">${sign(dLbm)}kg</td></tr>
+    </table>
+    <p style="font-size:12.5px;margin:8px 0 0">${verdict}</p>
+    ${absLine}
+    <p class="card-note">除脂肪体重=筋肉・骨・水分の合計。<b>減量の成否はここが減っていないかで決まります</b>。体重カードの%欄から記録できます。</p>
+  </div>`;
+}
+
 // 体重の入力はダイエットの生命線なのに食事タブの奥にあり、毎日測る導線として遠い。
 // 減量・健康維持の人には、ホームから1タップで記録できるようにする。
 function homeWeightCardHtml() {
@@ -531,6 +606,8 @@ function homeWeightCardHtml() {
   const today = todayStr();
   const done = (S.weights || []).some(w => w.date === today);
   const cur = (S.weights && S.weights.length) ? S.weights[S.weights.length - 1] : null;
+  const bfHist = bodyFatHistory();
+  const curBf = bfHist.length ? bfHist[bfHist.length - 1].pct : null;
   let line = '';
   if (typeof weightNav === 'function') {
     try {
@@ -547,6 +624,8 @@ function homeWeightCardHtml() {
     <div style="display:flex;gap:8px;align-items:center">
       <input type="number" id="hw-input" placeholder="${cur ? cur.kg : p.w}" step="0.1" min="20" inputmode="decimal">
       <span class="unit">kg</span>
+      <input type="number" id="hw-bf" placeholder="${curBf != null ? curBf : '体脂肪'}" step="0.1" min="3" max="60" inputmode="decimal" style="max-width:88px">
+      <span class="unit">%</span>
       <button class="btn small" id="hw-save" style="white-space:nowrap">記録</button>
     </div>
     ${line}
@@ -1387,7 +1466,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, bodyFat: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -1655,6 +1734,14 @@ function sanitizeState(s) {
       if (!DATE_RE.test(dt)) return;
       const n = Math.round(numIn(s.water[dt], 0, 30, 0));
       if (n > 0) out.water[dt] = n;
+    });
+  }
+  // 体脂肪率(日付→%)。体重と別枠なのは、毎日測る体重と違って測れる日だけ入るため。
+  if (s.bodyFat && typeof s.bodyFat === 'object') {
+    Object.keys(s.bodyFat).forEach(dt => {
+      if (!DATE_RE.test(dt)) return;
+      const n = Math.round(numIn(s.bodyFat[dt], 3, 60, 0) * 10) / 10;
+      if (n >= 3) out.bodyFat[dt] = n;
     });
   }
   // アクティブレスト実施記録(日付→moveId→true)
@@ -3644,13 +3731,21 @@ function renderHome() {
     const el = $('#hw-input', root);
     const v = Number(el && el.value);
     if (!v || v < 20 || v > 300) { toast('体重を入力してください'); return; }
+    // 体脂肪率は任意。空欄でも体重は保存する。ただし検証は書き込みより先に済ませる
+    // (先に体重を入れてから中断すると、保存されないままメモリ上の体重だけ変わってしまう)。
+    const bfEl = $('#hw-bf', root);
+    const bfRaw = bfEl ? bfEl.value : '';
+    const bf = Math.round(Number(bfRaw) * 10) / 10;
+    const bfSaved = bfRaw !== '';
+    if (bfSaved && !(bf >= 3 && bf <= 60)) { toast('体脂肪率は3〜60%で入力してください'); return; }
     S.weights = (S.weights || []).filter(w => w.date !== todayStr());
     S.weights.push({ date: todayStr(), kg: Math.round(v * 10) / 10 });
     S.weights.sort((a, b) => a.date < b.date ? -1 : 1);
+    if (bfSaved) { if (!S.bodyFat) S.bodyFat = {}; S.bodyFat[todayStr()] = bf; }
     syncProfileWeight();          // profile.w も追従(TDEE・PFCが古い体重で計算されるのを防ぐ)
     if (isNativeApp()) writeHealthWeight(v, todayStr()); // Apple Healthにも書き戻す(双方向)
     saveState(); route();
-    toast('体重を記録しました');
+    toast(bfSaved ? '体重と体脂肪率を記録しました' : '体重を記録しました');
   });
   $all('.cardio-add', root).forEach(b => b.addEventListener('click', () => openCardioAdd(b.dataset.id)));
   $all('.cardio-del', root).forEach(b => b.addEventListener('click', () => {
@@ -4917,6 +5012,7 @@ function renderLog() {
     { id: 'mymenu', name: 'マイメニュー', html: cMymenu },
     { id: 'gallery', name: 'みんなのメニュー', html: cGallery },
     { id: 'weight', name: '体重記録', html: cWeight },
+    { id: 'bodycomp', name: '体組成(体脂肪率・除脂肪体重)', html: bodyCompCardHtml() },
     { id: 'growth', name: '種目の成長(推定1RM)', html: cGrowth },
     { id: 'volchart', name: '週間ボリューム(セット数)', html: cVolc },
     { id: 'calendar', name: 'トレーニングカレンダー', html: cCal },
@@ -5439,7 +5535,7 @@ function renderTools() {
   const tFFMI = `<div class="card"><h2>💪 FFMI（筋肉の発達度）</h2>
       <p class="card-note" style="margin-top:-2px">身長あたりの筋肉量の指数。体脂肪の影響を除くのでBMIより「鍛えてる度」を表します。ナチュラルの上限目安は男性25・女性21。</p>
       <div id="ffmi-out"></div>
-      <div class="field" style="margin-top:8px"><label>体脂肪率 %（測定値があれば入力・空欄なら自動推定）</label><input type="number" id="ffmi-bf" placeholder="自動推定で計算中" step="0.1"></div>
+      <div class="field" style="margin-top:8px"><label>体脂肪率 %（測定値があれば入力・空欄なら自動推定）</label><input type="number" id="ffmi-bf" placeholder="自動推定で計算中" step="0.1" value="${(() => { const h = bodyFatHistory(); return h.length ? h[h.length - 1].pct : ''; })()}"></div>
     </div>`;
   const tRecov = `<div class="card"><h2>🔋 超回復ガイド</h2>
       <table class="recov-table">${SCIENCE.parts.map(pt => `<tr><td>${esc(pt.name)}</td><td>${pt.recoveryH}時間</td></tr>`).join('')}</table>
