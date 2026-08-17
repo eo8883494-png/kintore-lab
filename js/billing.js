@@ -96,6 +96,7 @@
     try {
       await P.configure({ apiKey: key });
       configured = true;
+      await syncUser();          /* 匿名IDのままにしない。詳細は syncUser のコメント */
       // 課金情報の更新を購読(別端末での購入/解約・トライアル満了→自動課金を追従)
       if (!listenerBound && P.addListener) {
         try {
@@ -110,6 +111,39 @@
       console.warn('[billing] configure failed', e);
       lastDiag = { stage: 'configure例外', error: errText(e) };
       return false;
+    }
+  }
+
+  /* ===== 誰として買ったかを、端末ではなくアカウントに紐づける =====
+     configure だけだと RevenueCat は「匿名ID」を作る。この匿名IDは
+     **インストールごとに作り直される**ので、機種変して入れ直すと別人になり、
+     前の権利に二度と届かない(Appleの購入履歴が同じでも復元できない)。
+     実際に 2026-08-17 にこれが起きた: 旧端末 $RCA…b1d8 に付いていた
+     オファーコード(friend-free-1y)の年額1年が、新端末 $RCA…5adb からは見えず、
+     「購入を復元」も効かず、代わりに7日トライアルが新規に始まってしまった。
+     復旧はダッシュボードから手で Transfer する以外に無かった。
+
+     Firebase のログインがあるなら、その uid を RevenueCat の App User ID にする。
+     こうすると別端末でも同じ人として扱われ、復元が普通に効く。
+     ログインしていない間は匿名のまま(ログインを強制はしない)。 */
+  let lastUid = null;
+  async function syncUser() {
+    if (!configured) return;
+    const P = plugin(); if (!P) return;
+    let uid = null;
+    try { uid = (window.__klCloud && window.__klCloud.myUid && window.__klCloud.myUid()) || null; } catch (e) {}
+    if (uid === lastUid) return;                 /* 変化なしは触らない */
+    try {
+      if (uid) {
+        if (P.logIn) await P.logIn({ appUserID: uid });   /* 匿名で買った分はここで統合される */
+      } else if (lastUid && P.logOut) {
+        await P.logOut();                        /* サインアウト時だけ匿名に戻す */
+      }
+      lastUid = uid;
+      await refreshEntitlement();                /* 付け替えた直後の状態を反映 */
+    } catch (e) {
+      console.warn('[billing] syncUser failed', e);
+      lastDiag = { stage: 'logIn失敗', error: errText(e) };
     }
   }
 
@@ -256,5 +290,5 @@
   // ネイティブ課金が実際に使えるか(ペイウォールCTAの出し分け用)
   function ready() { return native() && !!plugin() && keyLooksReal(platformKey()); }
 
-  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility, lastDiag: () => lastDiag, probeProducts };
+  window.__klBilling = { configure, refreshEntitlement, getPlans, purchase, restore, ready, diag, checkTrialEligibility, lastDiag: () => lastDiag, probeProducts, syncUser };
 })();

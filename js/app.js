@@ -1495,7 +1495,7 @@ function avatarFromFile(file, cb) {
 const LS_KEY = 'kintoreLab.v1';
 
 function defaultState() {
-  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, bodyFat: {}, waist: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false };
+  return { profile: null, focus: {}, exclude: {}, plan: null, logs: [], weights: [], lastW: {}, lastR: {}, nextId: 1, dayDone: {}, mealSeed: 0, swap: null, swapDismiss: '', customEx: [], myMenus: [], menuTombstones: [], logTombstones: [], myToday: null, timerPresets: [], mealTargets: null, publicName: '', publicIcon: '', publicAvatar: '', publicAppeal: '', publicLink: '', fillDays: false, activeRest: false, setCount: {}, recoveryDone: {}, foodLog: {}, cardio: {}, bodyFat: {}, waist: {}, targetWeight: null, cycle: null, water: {}, lastCalAdjust: '', soreness: {}, soreSkip: null, badges: {}, exGoals: {}, setDetail: {}, cardPrefs: {}, blockedUids: [], pro: false, proUntil: 0 };
 }
 
 // 数値検証: 範囲外・非数は fallback
@@ -2117,6 +2117,9 @@ function mergeStates(local, remote) {
     // サブスクは解約で失効するため OR(sticky-true)にしてはいけない。
     // 新しい方の状態を採用し、ネイティブでは RevenueCat の refreshEntitlement を最終的な真実とする。
     pro: primary.pro,
+    // 引換コードの期限は解約で失効しないので、長いほう(無期限が最強)を採る。
+    proUntil: (primary.proUntil === -1 || secondary.proUntil === -1)
+      ? -1 : Math.max(primary.proUntil || 0, secondary.proUntil || 0),
   });
   out._updatedAt = Math.max(at, bt); // マージ結果の鮮度(次回マージの新旧判定用)
   // タイマープリセット: 内容で union(primary優先・上限30)
@@ -2315,14 +2318,44 @@ document.addEventListener('visibilitychange', () => { if (document.hidden && sav
 // 現状は「無料検証フェーズ」= どの機能もロックしない(isPro参照箇所ゼロ)。
 // Web牽引ゲート到達時に PRO_UI_ENABLED=true + 各機能を if(!isPro()) でゲートすれば解禁。
 // アンロック機構(状態フラグ/解除コード/端末間sticky-true同期)だけ先に通しておく。
-const PRO_UI_ENABLED = false;           // trueにすると設定にProコード入力欄が出る(launch時)
-const PRO_CODE = 'KLPRO-SETME';         // launch時に確定=BOOTH/note配布コード。ドーマント中は未使用
-function isPro() { return !!(S && S.pro); }
-// 解除コード適用: 成功でtrue。S.proを立ててsaveState()→cloud syncにも伝播、mergeでsticky維持。
+const PRO_UI_ENABLED = false;           /* 引換コードの欄をふだんから出すか。false のまま。
+                                           出したいときは設定の版表示を7回叩く(bindProCodeReveal)。
+                                           画面に置きっぱなしにすると、審査でアプリ外の購入導線と
+                                           誤解される余地があるので、既定は隠す。 */
+
+/* 引換コード。コード → 有効日数(0 は無期限)。
+   ここに行を足せば新しいコードが増える。大文字小文字とハイフンは無視して照合する。
+
+   なぜ RevenueCat と別に持つのか:
+   サブスクは未購入なら setEntitlement(false) が必ず飛んでくる。S.pro を使うと、
+   コードで開けた状態がその false で毎回消える。だから S.proUntil を別に置いて、
+   isPro() で OR を取る。billing.js は S.pro しか触らない。 */
+const PRO_CODES = {
+  'KLYEAR7Q3MTD': 365,   // 年額プラン相当(1年)
+  'KLHALF4XN2VK': 180,   // 半年
+  'KLLIFE9DPW6R': 0      // 無期限(関係者・自分用)
+};
+function normCode(c) { return String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+/* コードで開けている間か。0(無期限)は Infinity として持つ。 */
+function codePro() { return !!(S && S.proUntil && (S.proUntil === -1 || Date.now() < S.proUntil)); }
+function isPro() { return !!(S && (S.pro || codePro())); }
+/* 引換コードの残り。画面に出すため。無期限は -1、切れていれば 0。 */
+function proCodeDaysLeft() {
+  if (!S || !S.proUntil) return 0;
+  if (S.proUntil === -1) return -1;
+  const d = Math.ceil((S.proUntil - Date.now()) / 86400000);
+  return d > 0 ? d : 0;
+}
+/* 解除コード適用: 成功で残り日数(無期限は -1)、失敗で false。
+   すでに有効なコードがある場合は、残りに足す(短いコードで上書きして損しないように)。 */
 function applyProCode(code) {
-  if (typeof code !== 'string' || code.trim().toUpperCase() !== PRO_CODE) return false;
-  if (!S.pro) { S.pro = true; saveState(); }
-  return true;
+  const k = normCode(code);
+  if (!Object.prototype.hasOwnProperty.call(PRO_CODES, k)) return false;
+  const days = PRO_CODES[k];
+  if (days === 0) { S.proUntil = -1; saveState(); return -1; }
+  const base = (S.proUntil && S.proUntil !== -1 && S.proUntil > Date.now()) ? S.proUntil : Date.now();
+  if (S.proUntil !== -1) { S.proUntil = base + days * 86400000; saveState(); }
+  return proCodeDaysLeft();
 }
 // RevenueCatエンタイトルメント(pro)のキャッシュ更新。billing.jsが起動/復帰/購入/解約時に呼ぶ。
 // サブスクは失効するため true/false 両方向を反映(買い切りのsticky-trueと異なる)。
@@ -2333,7 +2366,51 @@ function setEntitlement(active) {
   saveState();
   if (!$('#modal-bg')) route();        // モーダル操作中でなければ反映
 }
-window.__klPro = { isPro, applyCode: applyProCode, setEntitlement, uiEnabled: PRO_UI_ENABLED };
+window.__klPro = { isPro, applyCode: applyProCode, setEntitlement, uiEnabled: PRO_UI_ENABLED, daysLeft: proCodeDaysLeft };
+
+/* 引換コードのカード(設定 > その他)。
+   キャンペーンや配布でもらったコードを入れる場所。ここで金銭のやり取りはしない。 */
+function proCodeCardHtml() {
+  const d = proCodeDaysLeft();
+  const state = (d === -1)
+    ? '<p class="card-note" style="color:var(--ok,#3a8)">いま使えています(期限なし)</p>'
+    : (d > 0
+      ? `<p class="card-note" style="color:var(--ok,#3a8)">いま使えています(あと ${d} 日)</p>`
+      : '');
+  return `<div class="card"><h2>🎟 引換コード</h2>
+    ${state}
+    <p class="card-note" style="margin-bottom:8px">キャンペーンなどで受け取ったコードがあれば、ここに入力してください。</p>
+    <input id="pro-code-in" type="text" inputmode="latin" autocapitalize="characters" autocomplete="off"
+           placeholder="KL-XXXX-XXXXXX" style="width:100%;padding:10px;font-size:15px;letter-spacing:.06em">
+    <div id="pro-code-msg" style="font-size:13px;margin:6px 0 8px;min-height:18px"></div>
+    <button class="btn" id="pro-code-go">使う</button>
+  </div>`;
+}
+/* 引換コードの欄は、ふだんは出さない。
+   版表示を続けて7回叩くと出る。配布はこちらから伝えた人だけなので、
+   画面に置きっぱなしにする必要がない(ストアの審査で購入導線と誤解されるのも避ける)。 */
+let proCodeRevealed = false;
+let verTapCount = 0, verTapAt = 0;
+function bindProCodeReveal(root) {
+  const v = $('#kl-ver', root); if (!v || proCodeRevealed) return;
+  v.style.cursor = 'default';
+  v.addEventListener('click', () => {
+    const now = Date.now();
+    verTapCount = (now - verTapAt < 1200) ? verTapCount + 1 : 1;
+    verTapAt = now;
+    if (verTapCount >= 7) { proCodeRevealed = true; verTapCount = 0; toast('引換コードの入力欄を出しました'); route(); }
+  });
+}
+function bindProCodeCard(root) {
+  const go = $('#pro-code-go', root); if (!go) return;
+  go.addEventListener('click', () => {
+    const el = $('#pro-code-in', root), msg = $('#pro-code-msg', root);
+    const r = applyProCode(el ? el.value : '');
+    if (r === false) { msg.style.color = 'var(--danger,#c33)'; msg.textContent = 'このコードは使えません。'; return; }
+    toast(r === -1 ? '使えるようになりました' : `使えるようになりました(あと ${r} 日)`);
+    route();
+  });
+}
 
 // ===== cloud.js とのブリッジ =====
 // 現在の状態を取得 (クラウドへ書き込む用)
@@ -2359,7 +2436,12 @@ window.__klApplyRemote = (remoteState) => {
   return { changed, state: S };
 };
 // ログイン状態が変わったら該当画面(ツール)を再描画
-window.__klOnAuth = () => { if (currentView() === 'tools' && !$('#modal-bg')) route(); };
+window.__klOnAuth = () => {
+  /* ログイン状態が変わったら、RevenueCat 側の「誰か」も合わせる。
+     これを忘れると匿名IDのままになり、機種変で権利が迷子になる(2026-08-17に発生)。 */
+  try { if (window.__klBilling && window.__klBilling.syncUser) window.__klBilling.syncUser(); } catch (e) {}
+  if (currentView() === 'tools' && !$('#modal-bg')) route();
+};
 
 // 状態の初期化は全ヘルパー定義後に行う (const のTDZを踏まないよう必ずこの位置)
 let S = loadState();
@@ -2485,6 +2567,7 @@ function paywallHtml(gate) {
     <div class="pw-plans">${plans}</div>
     <p class="pw-legal">解約はいつでも<b>App Storeの登録管理</b>から。お支払いはApple ID経由。<a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>・<a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>に同意の上ご登録ください。困ったときは<a href="https://eo8883494-png.github.io/kintore-lab/support.html" target="_blank" rel="noopener">サポート</a>へ。</p>
     <button class="btn ghost small" id="pw-restore" style="width:100%;margin-top:4px">購入を復元</button>
+    <p class="pw-legal" style="margin-top:6px">機種変更やアプリの入れ直しで引き継ぐには、<b>設定からログイン</b>しておいてください。ログインしていないと、同じApple Accountでも復元できないことがあります。</p>
     <button class="btn ghost small" id="pw-diag" style="width:100%;margin-top:4px;font-size:11px;opacity:.6">🩺 接続診断</button>
     <!-- CTAと料金説明は常に画面内に見えるよう最下部に固定する(小型端末で押せない事故を防ぐ) -->
     <div class="pw-foot">
@@ -5630,6 +5713,7 @@ function renderTools() {
     ${arrangeCards('tools', toolCards)}
     ${customizeBtnHtml('tools')}
     <div class="tool-sec">その他</div>
+    ${(PRO_UI_ENABLED || proCodeRevealed) ? proCodeCardHtml() : ''}
     <div class="card"><h2>💾 データ管理</h2>
       <button class="btn danger" id="reset-data">全データ削除</button>
       <p class="card-note">データはこの端末の${storeWord()}にのみ保存されています。${isNativeApp() ? 'ログインすると別端末と同期できます。' : ''}</p>
@@ -5646,7 +5730,7 @@ function renderTools() {
       <a href="https://eo8883494-png.github.io/kintore-lab/terms.html" target="_blank" rel="noopener">利用規約</a>
       <a href="https://eo8883494-png.github.io/kintore-lab/privacy.html" target="_blank" rel="noopener">プライバシーポリシー</a>
       <a href="https://eo8883494-png.github.io/kintore-lab/support.html" target="_blank" rel="noopener">サポート・お問い合わせ</a><br>
-      筋トレLAB v1.0
+      <span id="kl-ver">筋トレLAB v1.0</span>
     </p>`;
 
   bindCloudCard(root);
@@ -5659,6 +5743,8 @@ function renderTools() {
   bindCustomize(root, toolCards.map(c => ({ id: c.id, name: c.name })), 'tools');
   const pwBtn = $('#open-paywall', root);
   if (pwBtn) pwBtn.addEventListener('click', () => openPaywall());
+  bindProCodeCard(root);
+  bindProCodeReveal(root);
   const unblockBtn = $('#unblock-all', root);
   if (unblockBtn) unblockBtn.addEventListener('click', () => {
     if (!confirm('非表示にしたユーザーをすべて解除しますか?')) return;
